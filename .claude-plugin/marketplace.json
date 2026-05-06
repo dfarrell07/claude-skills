@@ -1,12 +1,12 @@
 {
-  "name": "ai-helpers",
+  "name": "claude-skills",
   "owner": {
     "name": "Daniel Farrell",
     "url": "https://github.com/dfarrell07"
   },
   "plugins": [
     {
-      "name": "ai-helpers",
+      "name": "claude-skills",
       "description": "Productivity skills for collecting and reporting on work activities",
       "author": {
         "name": "Daniel Farrell",
@@ -14,7 +14,7 @@
       },
       "source": "./",
       "category": "productivity",
-      "homepage": "https://github.com/dfarrell07/ai-helpers"
+      "homepage": "https://github.com/dfarrell07/claude-skills"
     }
   ]
 }

@@ -1,14 +1,14 @@
 {
-  "name": "ai-helpers",
-  "version": "1.0.0",
+  "name": "claude-skills",
+  "version": "1.1.0",
   "description": "Productivity skills for collecting and reporting on work activities",
   "author": {
     "name": "Daniel Farrell",
     "email": "dfarrell@redhat.com",
     "url": "https://github.com/dfarrell07"
   },
-  "homepage": "https://github.com/dfarrell07/ai-helpers",
-  "repository": "https://github.com/dfarrell07/ai-helpers",
+  "homepage": "https://github.com/dfarrell07/claude-skills",
+  "repository": "https://github.com/dfarrell07/claude-skills",
   "license": "Apache-2.0",
   "keywords": ["productivity", "git", "work-summary", "reporting", "notes", "jira"]
 }

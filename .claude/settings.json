@@ -1,12 +1,12 @@
 {
   "enabledPlugins": {
-    "ai-helpers@ai-helpers": true
+    "claude-skills@claude-skills": true
   },
   "extraKnownMarketplaces": {
-    "ai-helpers": {
+    "claude-skills": {
       "source": {
         "source": "git",
-        "url": "https://github.com/dfarrell07/ai-helpers.git"
+        "url": "https://github.com/dfarrell07/claude-skills.git"
       }
     }
   }

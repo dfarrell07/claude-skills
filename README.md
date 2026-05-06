@@ -1,12 +1,12 @@
-# AI Helpers
+# Claude Skills
 
 Claude Code marketplace for work tracking and session notes.
 
 ## Installation
 
 ```bash
-/plugin marketplace add ai-helpers https://github.com/dfarrell07/ai-helpers
-/plugin install ai-helpers@ai-helpers
+/plugin marketplace add claude-skills https://github.com/dfarrell07/claude-skills
+/plugin install claude-skills@claude-skills
 ```
 
 ## Skills
