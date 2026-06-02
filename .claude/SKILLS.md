@@ -54,3 +54,20 @@ Take and manage persistent markdown notes organized by topic.
 ```
 
 Notes are stored as plain markdown files in `~/notes-ai/<topic>/`.
+
+## /cve-agent
+
+Continuous Submariner security agent. Discovers, triages,
+verifies, fixes, and audits CVEs across all active branches.
+
+```bash
+/cve-agent                   # One cycle, interactive
+/cve-agent --auto            # Auto-act on safe items
+/cve-agent --dry-run         # Full cycle, no Jira changes
+/cve-agent --branch 0.21    # Focus on one branch
+/cve-agent --full-scan       # Force full grype scan
+```
+
+Designed for `/loop 1h /cve-agent --auto` — runs
+continuously, handles safe false positives unattended,
+accumulates genuine findings for interactive review.
