@@ -64,8 +64,6 @@ verifies, fixes, and audits CVEs across all active branches.
 /cve-agent                   # One cycle, interactive
 /cve-agent --auto            # Auto-act on safe items
 /cve-agent --dry-run         # Full cycle, no Jira changes
-/cve-agent --branch 0.21    # Focus on one branch
-/cve-agent --full-scan       # Force full grype scan
 ```
 
 Designed for `/loop 1h /cve-agent --auto` — runs
