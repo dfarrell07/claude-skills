@@ -69,3 +69,55 @@ jobs:
 
       - name: Run gitlint
         run: gitlint --commits origin/main..HEAD
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Run cve-agent unit tests (Level 1)
+        run: bash skills/cve-agent/scripts/test.sh --level 1
+
+  skillsaw:
+    name: Plugin Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Run skillsaw
+        uses: stbenjam/skillsaw@c85a25ebbde5a9e8b4cae8f7854dbf7e36e59dfa  # v0.11.4
+
+  markdown-link-check:
+    name: Markdown Links
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Run markdown-link-check
+        uses: gaurav-nelson/github-action-markdown-link-check@3c3b66f1f7d0900e37b71eca45b63ea9eedfce31  # v1
+        with:
+          config-file: ".markdownlinkcheck.json"
+          check-modified-files-only: "yes"
+          base-branch: ${{ github.base_ref }}
+
+  gitleaks:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

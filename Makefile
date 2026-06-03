@@ -1,18 +1,23 @@
-.PHONY: help lint shellcheck markdownlint yamllint gitlint test work-summary
+.PHONY: help lint test unit-test shellcheck markdownlint yamllint gitlint work-summary
 
 help:
 	@echo "Available targets:"
 	@echo "  lint          - Run all linters"
+	@echo "  test          - Run linters + unit tests"
+	@echo "  unit-test     - Run cve-agent unit tests (Level 1)"
 	@echo "  shellcheck    - Check bash scripts with shellcheck"
 	@echo "  markdownlint  - Check markdown files with markdownlint"
 	@echo "  yamllint      - Check YAML files with yamllint"
 	@echo "  gitlint       - Check commit messages with gitlint"
-	@echo "  test          - Run all tests (currently just linting)"
 	@echo "  work-summary  - Generate work summary (last 7 days, or DAYS=N)"
 
 lint: shellcheck markdownlint yamllint
 
-test: lint
+test: lint unit-test
+
+unit-test:
+	@echo "Running cve-agent unit tests..."
+	@bash skills/cve-agent/scripts/test.sh --level 1
 
 shellcheck:
 	@echo "Running shellcheck..."
