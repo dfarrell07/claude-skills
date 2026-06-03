@@ -1,6 +1,6 @@
 ---
 name: work-summary
-description: Show recent work: git commits and GitHub activity (PRs, issues)
+description: "Show recent work: git commits and GitHub activity (PRs, issues)"
 version: 1.0.0
 argument-hint: "[days]"
 user-invocable: true
