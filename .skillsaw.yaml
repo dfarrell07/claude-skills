@@ -1,0 +1,7 @@
+---
+rules:
+  context-budget:
+    limits:
+      skill:
+        warn: 4000
+        error: 8000
