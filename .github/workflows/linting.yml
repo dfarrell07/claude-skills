@@ -88,7 +88,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Run skillsaw
-        uses: stbenjam/skillsaw@c85a25ebbde5a9e8b4cae8f7854dbf7e36e59dfa  # v0.11.4
+        uses: stbenjam/skillsaw@3e1188f446413e6d6818c98644d2d6a84e4038e7  # v0.14.1
 
   markdown-link-check:
     name: Markdown Links
