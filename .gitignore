@@ -12,3 +12,6 @@ package-lock.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Career advocate private data (transcrypt-encrypted when committed)
+skills/career-advocate/private/

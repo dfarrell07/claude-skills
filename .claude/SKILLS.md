@@ -55,6 +55,35 @@ Take and manage persistent markdown notes organized by topic.
 
 Notes are stored as plain markdown files in `~/notes-ai/<topic>/`.
 
+## /career-advocate
+
+Gather contribution evidence and build career advocacy documents.
+
+```bash
+/career-advocate                             # Promote mode (default, 180 days)
+/career-advocate promote                     # Build promotion case
+/career-advocate assess                      # Self-assessment for review cycle
+/career-advocate meeting                     # 1:1 prep (14 days)
+/career-advocate scan                        # Discover repos, update registry
+/career-advocate promote --since 2026-01-01  # Custom date range
+```
+
+**First run:** `/career-advocate scan` to discover repos and build
+`private/repos.yml` registry. Finds GitHub repos via GraphQL,
+local clones via directory scan, detects hosting type (GitHub,
+GitLab, Gerrit). Add internal repos manually to the registry.
+
+**Data sources:** git commits, GitHub PRs/issues/reviews, PR commit
+depth (pre-squash), user branches (by author), Jira issues, plus
+manual inputs (career-context.md, one-on-ones.md).
+
+**Analysis:** 4 lens subagents review in parallel (technical delivery,
+collaboration, leadership, innovation), then synthesize into final
+document with Manager Briefing.
+
+**Setup:** Create `private/` dir with curated job expectations from
+the progression spreadsheet. See `reference/analysis-guide.md`.
+
 ## /cve-agent
 
 Continuous Submariner security agent. Discovers, triages,
