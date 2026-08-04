@@ -20,6 +20,6 @@
   "author": "Daniel Farrell <dfarrell@redhat.com>",
   "license": "Apache-2.0",
   "devDependencies": {
-    "markdownlint-cli2": "^0.22.0"
+    "markdownlint-cli2": "^0.23.2"
   }
 }
