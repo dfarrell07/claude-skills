@@ -53,7 +53,8 @@ class PacketCase(unittest.TestCase):
             "sources": [],
             "inventory": [{"key": KEY, "role": "assigned", "active": True, "site": SITE}],
             "gaps": [], "leads": [], "local": [],
-            "scope": {"selected_context_keys": []},
+            "scope": {"user_request": "Audit my assigned synthetic issues and draft needed tracking corrections.",
+                      "selected_context_keys": []},
         }
         self.identity = self.source("identity", "jira_identity", "myself", {
             "accountId": "synthetic-user", "emailAddress": "synthetic@example.invalid", "active": True,
@@ -412,6 +413,7 @@ class PacketCase(unittest.TestCase):
         responses = {}
         remote = "origin\tssh://synthetic-user:fake-secret@example.invalid:2222/example/demo.git?token=fake-token (fetch)\n"
         for command, stdout in ((["remote", "-v"], remote),
+                                (["worktree", "list", "--porcelain", "-z"], "worktree " + str(checkout) + "\0\0"),
                                 (["status", "--porcelain=v1"], " M dirty.txt\n"),
                                 (["branch", "--format=%(refname:short)"], "feature/example\n")):
             responses[json.dumps(["git", "-C", str(checkout)] + command)] = {"stdout": stdout}
@@ -428,7 +430,7 @@ class PacketCase(unittest.TestCase):
         self.assertNotIn("fake-token", saved_remote)
         self.assertEqual((gitfile.read_bytes(), dirty.read_bytes()), original)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(all(call[:3] == ["git", "-C", str(checkout)] for call in calls))
 
     def test_duplicate_inventory_ids_are_not_silently_deduplicated(self):
@@ -437,6 +439,174 @@ class PacketCase(unittest.TestCase):
         result, packet, _ = self.native_collect(responses)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(packet["gaps"])
+
+    def complete_discovery_imports(self):
+        self.source("inventory", "jira_inventory", "assigned", [])
+        for role in ("reporter", "watcher", "former-assignee"):
+            self.source("jira-" + role, "jira_context", role, [])
+        self.source("git-identity", "git_identity", "user", {"id": 77, "login": "synthetic-user"})
+        for role in ("author", "assignee", "review-requested", "involves"):
+            self.source("git-" + role, "git_search", role, [])
+
+    def test_offline_explicit_pr_requires_matching_complete_capture(self):
+        self.complete_discovery_imports()
+        url = "https://github.com/example/demo/pull/42"
+        for case in ("missing", "incomplete", "complete", "wrong-host"):
+            if case == "incomplete":
+                self.source("selected-pr", "git_pr", "example/demo#42", {
+                    "number": 42, "html_url": url, "head": {"sha": "head"},
+                    "base": {"sha": "base", "repo": {"full_name": "example/demo"}}})
+                self.packet["sources"][-1]["complete"] = False
+            elif case == "complete":
+                self.packet["sources"][-1]["complete"] = True
+            requested = url if case != "wrong-host" else url.replace("github.com", "other.example.invalid")
+            destination = self.root / ("offline-pr-" + case)
+            result = self.invoke("collect", "--offline", "--imports", self.import_manifest(),
+                                 "--run-dir", destination, "--pr", requested)
+            packet = json.loads((destination / "packet.json").read_text())
+            self.assertEqual(result.returncode, 0 if case == "complete" else 2, result.stdout + result.stderr)
+            self.assertEqual(bool(packet["gaps"]), case != "complete")
+        self.assertFalse(self.log.exists())
+
+    def test_distinct_id_inventory_snapshots_are_not_temporally_unioned(self):
+        self.complete_discovery_imports()
+        old = copy.deepcopy(self.issue)
+        old["fields"]["status"]["statusCategory"]["key"] = "done"
+        self.update_source("inventory", [old])
+        new = copy.deepcopy(old)
+        new.update(key="EXAMPLE-18", id="102")
+        self.source("new-inventory", "jira_inventory", "assigned", [new])
+        result, packet = self.offline_collect()
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual([i["key"] for i in packet["inventory"]], [KEY])
+        self.assertTrue(any("contradictory duplicate native resource" in gap["reason"] for gap in packet["gaps"]))
+
+    def test_incomplete_imports_fall_back_to_native_reads_without_changing_original(self):
+        self.source("inventory", "jira_inventory", "assigned", [])
+        self.source("jira-reporter", "jira_context", "reporter", [])
+        for source in self.packet["sources"]:
+            if source["kind"] in {"jira_inventory", "jira_context", "jira_issue", "jira_comments"}:
+                source.update(complete=False, pagination={"terminated": False})
+        manifest = self.import_manifest()
+        original = {path: path.read_bytes() for path in self.run.rglob("*.json")}
+        responses, search = self.native_responses([self.issue])
+        self.stub_clients(responses)
+        destination = self.root / "native-fallback"
+        result = self.invoke("collect", "--imports", manifest, "--run-dir", destination)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        packet = json.loads((destination / "packet.json").read_text())
+        self.assertEqual([i["key"] for i in packet["inventory"]], [KEY])
+        self.assertFalse(packet["gaps"])
+        for identifier in ("inventory", "jira-reporter", "issue", "comments"):
+            self.assertTrue(next(s for s in packet["sources"] if s["id"] == identifier)["complete"])
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertIn(search, calls)
+        self.assertIn(["acli", "jira", "workitem", "view", KEY, "--fields", "*all", "--json"], calls)
+
+    def test_failed_native_fallback_retains_incomplete_import(self):
+        self.source("inventory", "jira_inventory", "assigned", [self.issue])
+        source = self.packet["sources"][-1]
+        source.update(complete=False, pagination={"terminated": False})
+        original = (self.run / source["raw_path"]).read_bytes()
+        responses, search = self.native_responses([self.issue])
+        responses[json.dumps(search)]["exit"] = 1
+        self.stub_clients(responses)
+        destination = self.root / "failed-native-fallback"
+        result = self.invoke("collect", "--imports", self.import_manifest(), "--run-dir", destination)
+        self.assertEqual(result.returncode, 2)
+        packet = json.loads((destination / "packet.json").read_text())
+        saved = next(s for s in packet["sources"] if s["id"] == "inventory")
+        self.assertFalse(saved["complete"])
+        self.assertEqual((destination / saved["raw_path"]).read_bytes(), original)
+        self.assertEqual([i["key"] for i in packet["inventory"]], [KEY])
+        self.assertTrue(any("native read exit 1" in gap["reason"] for gap in packet["gaps"]))
+
+    def test_native_git_fills_incomplete_role_and_keeps_complete_imported_roles(self):
+        self.complete_discovery_imports()
+        next(s for s in self.packet["sources"] if s["id"] == "git-author").update(
+            complete=False, pagination={"terminated": False})
+        responses, _ = self.native_responses([])
+        author_query = ["gh", "api", "--hostname", "github.com", "--method", "GET", "search/issues", "-f",
+                        "q=is:pr is:open author:synthetic-user", "-f", "per_page=100", "-f", "page=1"]
+        responses[json.dumps(author_query)]["stdout"] = json.dumps({
+            "total_count": 1, "incomplete_results": False, "items": [{"id": 42, "number": 42}]})
+        self.stub_clients(responses)
+        destination = self.root / "native-git-fallback"
+        result = self.invoke("collect", "--imports", self.import_manifest(), "--run-dir", destination)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        packet = json.loads((destination / "packet.json").read_text())
+        author = next(s for s in packet["sources"] if s["id"] == "git-author")
+        self.assertTrue(author["complete"])
+        self.assertEqual(json.loads((destination / author["raw_path"]).read_text())[0]["id"], 42)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([c for c in calls if "search/issues" in c], [author_query])
+
+    def test_duplicate_incomplete_resource_alias_is_a_named_gap(self):
+        self.complete_discovery_imports()
+        inventory = next(s for s in self.packet["sources"] if s["id"] == "inventory")
+        inventory.update(complete=False, pagination={"terminated": False})
+        alias = copy.deepcopy(inventory)
+        alias["id"] = "inventory-alias"
+        self.packet["sources"].append(alias)
+        result, packet = self.offline_collect()
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(len([s for s in packet["sources"] if s["kind"] == "jira_inventory"]), 1)
+        self.assertTrue(any("duplicate incomplete native resource alias" in g["reason"] for g in packet["gaps"]))
+
+    def test_native_pr_identity_requires_successful_current_git_identity_verification(self):
+        self.complete_discovery_imports()
+        url = "https://github.com/example/demo/pull/42"
+        identity_command = ["gh", "api", "--hostname", "github.com", "--method", "GET", "user"]
+        pr_command = ["gh", "api", "--hostname", "github.com", "--method", "GET", "repos/example/demo/pulls/42"]
+        for case in ("mismatch", "unavailable", "same-account"):
+            responses, _ = self.native_responses([])
+            if case == "mismatch":
+                responses[json.dumps(identity_command)]["stdout"] = json.dumps({"id": 88, "login": "another-user"})
+            elif case == "unavailable":
+                responses[json.dumps(identity_command)]["exit"] = 1
+            responses[json.dumps(pr_command)] = {"stdout": json.dumps({
+                "number": 42, "html_url": url, "head": {"sha": "head"},
+                "base": {"sha": "base", "repo": {"full_name": "example/demo"}}})}
+            self.stub_clients(responses)
+            destination = self.root / ("native-pr-identity-" + case)
+            result = self.invoke("collect", "--imports", self.import_manifest(), "--run-dir", destination, "--pr", url)
+            self.assertEqual(result.returncode, 2, "PR enrichment is intentionally incomplete")
+            packet = json.loads((destination / "packet.json").read_text())
+            pr = next(s for s in packet["sources"] if s["kind"] == "git_pr")
+            self.assertTrue(pr["complete"])
+            self.assertEqual(pr.get("identity_ref"), "git-identity" if case == "same-account" else None)
+            if case != "same-account":
+                self.assertTrue(any(g["source"] == pr["id"] and "identity unavailable" in g["reason"] for g in packet["gaps"]))
+
+    def test_registered_worktrees_are_discovered_once_and_missing_paths_reported(self):
+        self.complete_discovery_imports()
+        main, linked = self.root / "main-clone", self.root / "linked worktree; $(literal)\nfixture"
+        missing = self.root / "missing-worktree"
+        for path in (main, linked):
+            path.mkdir()
+            (path / ".git").write_text("fixture gitfile\n")
+        (linked / "plans").mkdir()
+        (linked / "plans" / "scope.md").write_text("Relevant tracking EXAMPLE-42\n")
+        responses = {}
+        listing = "".join("worktree " + str(path) + "\0\0" for path in (main, linked, missing))
+        listing += "worktree " + str(self.root / "bare-repository") + "\0bare\0\0"
+        for path in (main, linked):
+            for command, stdout in ((["worktree", "list", "--porcelain", "-z"], listing),
+                                    (["remote", "-v"], ""), (["status", "--porcelain=v1"], ""),
+                                    (["branch", "--format=%(refname:short)"], "fixture\n")):
+                responses[json.dumps(["git", "-C", str(path)] + command)] = {"stdout": stdout}
+        self.stub_clients(responses)
+        destination = self.root / "registered-worktrees"
+        result = self.invoke("collect", "--offline", "--imports", self.import_manifest(), "--run-dir", destination,
+                             "--root", main, "--root", linked, "--root", self.root / "missing-root")
+        self.assertEqual(result.returncode, 2)
+        packet = json.loads((destination / "packet.json").read_text())
+        self.assertEqual([s["path"] for s in packet["local"] if "path" in s], [str(main), str(linked)])
+        self.assertEqual(packet["leads"][0]["candidate_keys"], ["EXAMPLE-42"])
+        self.assertTrue(any(g["source"] == "local:" + str(missing) for g in packet["gaps"]))
+        self.assertTrue(any("local root inaccessible" in g["reason"] for g in packet["gaps"]))
+        self.assertFalse(any("bare-repository" in g["source"] for g in packet["gaps"]))
 
     def test_separate_collectors_do_not_share_files_or_receipts(self):
         self.source("inventory", "jira_inventory", "assigned", [])
@@ -615,6 +785,39 @@ class PacketCase(unittest.TestCase):
         self.candidate()
         self.check()
 
+    def test_audited_scope_requires_actual_nonempty_user_request(self):
+        for user_request in (None, "", "   ", [], {"inferred": "audit"}):
+            with self.subTest(user_request=user_request):
+                self.packet["scope"]["user_request"] = user_request
+                self.candidate()
+                self.assertIn("audited draft lacks recorded user request", self.check(False)["errors"])
+        self.packet["scope"]["user_request"] = "Correct this synthetic issue's title."
+        self.candidate()
+        self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+
+    def test_explicit_candidate_supporting_evidence_requires_review_and_refresh(self):
+        child = copy.deepcopy(self.issue)
+        child.update(id="102", key="EXAMPLE-18")
+        child["fields"]["status"] = {"id": "100", "statusCategory": {"key": "done"}}
+        self.source("child", "jira_issue", child["key"], child)
+        self.decisions[0]["evidence"].append("child")
+        self.decisions[0]["reason"] = "The required child is complete, so the target can close."
+        draft = self.candidate("transition", {"transition": {"id": "31"}, "fields": {"resolution": {"id": "1"}}})
+        for review in self.reviews:
+            review["evidence_fingerprints"] = {key: value for key, value in review["evidence_fingerprints"].items() if key != "child"}
+        self.packet["refresh"]["source_ids"].remove("child")
+        self.packet["refresh"]["fingerprints"].pop("child", None)
+        self.assertIn("candidate decision evidence missing from decision inputs", self.check(False)["errors"])
+        draft["decision_inputs"].append("child")
+        draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
+        self.review_and_refresh()
+        self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+        child["fields"]["status"] = {"id": "3", "statusCategory": {"key": "indeterminate"}}
+        self.update_source("child", child)
+        result = self.check(False)
+        self.assertIn("missing/stale decision-input final refresh: child", result["errors"])
+        self.assertIn("two independent revision-bound accepting reviews required", result["errors"])
+
     def test_tampered_raw_evidence_is_rejected(self):
         self.candidate()
         write_json(self.run / "raw/issue.json", {"key": KEY, "fields": {"summary": "forged"}})
@@ -632,6 +835,19 @@ class PacketCase(unittest.TestCase):
         self.packet["inventory"][0]["active"] = False
         self.decisions = []
         self.check(False)
+
+    def test_unknown_native_status_category_cannot_skip_assigned_decisions(self):
+        native = copy.deepcopy(self.issue)
+        native["fields"].pop("status")
+        self.source("inventory", "jira_inventory", "assigned", [native])
+        self.packet["inventory"][0]["active"] = False
+        self.decisions = []
+        self.assertIn("unknown assigned status category cannot exclude decision accounting", self.check(False)["errors"])
+        self.packet["inventory"][0]["active"] = True
+        self.assertIn("missing active assigned decision", self.check(False)["errors"])
+        self.decisions = [{"key": KEY, "disposition": "held", "reason": "Native status category is unavailable.",
+                           "evidence": ["inventory"], "draft_ids": []}]
+        self.assertIn("unknown native assigned status category: " + KEY, self.check()["provisional"])
 
     def test_assigned_specialist_keeps_coverage_and_requires_a_disposition(self):
         self.source("inventory", "jira_inventory", "assigned", [self.issue])
@@ -716,6 +932,16 @@ class PacketCase(unittest.TestCase):
     def test_terminal_transition_with_valid_resolution(self):
         self.candidate("transition", {"transition": {"id": "31"}, "fields": {"resolution": {"id": "1"}}})
         self.check()
+
+    def test_nonterminal_transition_required_resolution_requires_allowed_id(self):
+        self.metadata["transitions"][0]["to"]["statusCategory"]["key"] = "indeterminate"
+        self.update_source("metadata", self.metadata)
+        for resolution in (None, {}, {"id": ""}, {"id": "unavailable"}, "1"):
+            with self.subTest(resolution=resolution):
+                self.candidate("transition", {"transition": {"id": "31"}, "fields": {"resolution": resolution}})
+                self.check(False)
+        self.candidate("transition", {"transition": {"id": "31"}, "fields": {"resolution": {"id": "1"}}})
+        self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
 
     def test_exact_existing_comment_is_not_a_new_delta(self):
         body = document("The merged source already meets the original acceptance.")
@@ -864,6 +1090,26 @@ class PacketCase(unittest.TestCase):
         draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
         self.review_and_refresh()
         self.check(False)
+
+    def test_description_link_append_requires_a_missing_link(self):
+        old_node = {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {
+            "url": "https://github.com/example/demo/pull/42"}}]}
+        self.issue["fields"]["description"] = {"version": 1, "type": "doc", "content": [old_node]}
+        self.update_source("issue", self.issue)
+        for link, valid in (("https://github.com/example/demo/pull/42", False),
+                            ("https://github.com/example/demo/pull/43", True)):
+            with self.subTest(link=link):
+                node = {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": link}}]}
+                new = copy.deepcopy(self.issue["fields"]["description"])
+                new["content"].append(node)
+                draft = self.candidate(request={"fields": {"description": new}})
+                draft["preserved_fields"] = ["customfield_keep"]
+                draft["adf_changes"] = {"description": [{"op": "append", "path": ["content"], "value": node}]}
+                draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
+                self.review_and_refresh()
+                result = self.check(valid)
+                if not valid:
+                    self.assertIn("existing content link appended again", result["errors"])
 
     def test_numeric_custom_field_cannot_be_replaced_with_adf(self):
         field = "customfield_10123"

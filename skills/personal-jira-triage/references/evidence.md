@@ -18,9 +18,11 @@ and completed receipts intact. On resume, inspect current evidence and prior rec
 `collect` saves `packet.json` and raw evidence under `raw/`; the agent authors decisions, drafts, reviews and refresh receipts.
 `--issue` selects enrichment and adds non-inventory issues as context; it does not authorize another owner's edits.
 During online collection with imports, explicit `--issue` keys omit their imported issue/comments and recapture them into the new run.
-Without explicit keys, existing imported captures retain their original cutoff; importing an old file does not refresh it.
+Without explicit keys, complete imported captures retain their original cutoff; importing an old file does not refresh it.
+Incomplete imports may be replaced by a complete online native read; retain a named gap if recapture fails.
 Offline selection uses supplied captures and reports missing selected issue/comment sources.
-`--pr` fetches explicit PRs during native collection; offline PR evidence must be imported.
+`--pr` fetches explicit PRs during native collection; offline collection reports a gap for each explicit PR lacking a complete
+matching import.
 Incomplete collection returns exit 2 while retaining named gaps.
 Valid empty collection is success. `check` returns 0 for valid packets, including honest held/provisional results; invalid packets or
 unsupported audited-ready claims return 2. It checks consistency with saved evidence, not live freshness or semantic acceptance.
@@ -40,6 +42,8 @@ Complete default discovery requires assigned inventory, active `reporter`, `watc
 plus open Git `author`, `assignee`, `review-requested` and `involves` searches. Unsupported queries remain named gaps.
 Context roles are retained separately; merging relationship roles into one issue must not convert another owner's work into assigned work.
 Local discovery records its roots, depth-four boundary, exclusions and every discovered clone/worktree path.
+Enumerate registered worktrees for discovered repositories, including worktrees outside the scanned roots;
+inaccessible roots or worktrees remain gaps.
 
 The helper's CLI captures are the starting point. The agent must enrich relevant comments, history, review threads, checks/statuses,
 field schema and operation metadata through available native reads. An unsupported service/capability is a named gap.
@@ -48,6 +52,8 @@ Do not use an old collector's capped/cache/date-filtered output to claim complet
 
 Record query, capture time, unique IDs and actual page termination. Reject repeated tokens, missing pages, contradictory duplicates
 and failures disguised as empty lists. Split GitHub searches exceeding its cap/incomplete-result signal or disclose incomplete scope.
+Different source IDs do not make conflicting captures of one service/site/kind/resource compatible. Keep one assigned snapshot;
+reject conflicting copies rather than unioning their membership.
 The host re-queries assigned membership before presentation and classifies disappeared/new members by direct reads; equal counts
 can hide different issues. On drift, use the latest complete assigned capture in a new packet, never union temporal inventories.
 Carry forward only decisions and reviews still justified by matching evidence fingerprints.
@@ -155,8 +161,8 @@ It returns named discovery gaps for absent contextual/Git captures; add those ca
 Each source includes its stable ID, service/site/kind/resource, capture time/schema, identity reference, raw path/hash,
 decision `fingerprint`, completeness and pagination. Inventory rows contain `key`, `role`, `active` and available issue/site identity;
 roles are `assigned`, `context` or `specialist`. `scope.selected_context_keys` records explicitly selected other-owned context.
-Before drafting, record the actual user request in `scope.user_request`; do not leave the collector's default scope as proof of intent
-or replace the request with inferred authorization.
+Before drafting, record the actual user request in `scope.user_request`; audited drafts require a nonempty string.
+Do not leave the collector's default scope as proof of intent or replace the request with inferred authorization.
 Retain raw hashes for provenance; fingerprints omit known transport metadata but conservatively retain full native fields and content.
 They also bind service/site/resource/schema, reader reference, access, completeness, pagination and fidelity proof.
 Artifact fingerprints additionally bind the captured byte hash; ordinary JSON formatting changes do not invalidate a review.
@@ -170,6 +176,8 @@ The agent writes three sibling JSON lists. IDs refer to saved sources; do not in
   `scope_hash`, `ready`, `hash`.
   `baseline` binds issue, comments and relevant metadata source IDs. `decision_inputs` lists every supporting input, including child,
   owner and PR/check evidence, including the baseline IDs and each referenced native identity source ID.
+  Each draft must include all evidence declared by its candidate decision in `decision_inputs`; review those sources and refresh
+  their mutable evidence.
   This reader-input closure prevents an unchanged identity reference from hiding a changed principal. `ready` defaults to `provisional`;
   `audited` requests validation of an audited claim, not proof of it.
 * `reviews.json`: `reviewer_id`, observed native `execution_id`, `lens`, `context_mode`, `draft_id`, `draft_hash`,
