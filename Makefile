@@ -1,10 +1,11 @@
-.PHONY: help lint test unit-test shellcheck markdownlint yamllint gitlint work-summary
+.PHONY: help lint test unit-test triage-test shellcheck markdownlint yamllint gitlint work-summary
 
 help:
 	@echo "Available targets:"
 	@echo "  lint          - Run all linters"
 	@echo "  test          - Run linters + unit tests"
-	@echo "  unit-test     - Run cve-agent unit tests (Level 1)"
+	@echo "  unit-test     - Run offline cve-agent and Jira triage tests"
+	@echo "  triage-test   - Run offline personal Jira triage tests"
 	@echo "  shellcheck    - Check bash scripts with shellcheck"
 	@echo "  markdownlint  - Check markdown files with markdownlint"
 	@echo "  yamllint      - Check YAML files with yamllint"
@@ -18,6 +19,10 @@ test: lint unit-test
 unit-test:
 	@echo "Running cve-agent unit tests..."
 	@bash skills/cve-agent/scripts/test.sh --level 1
+	@$(MAKE) triage-test
+
+triage-test:
+	@python3 skills/personal-jira-triage/tests/test_triage.py
 
 shellcheck:
 	@echo "Running shellcheck..."

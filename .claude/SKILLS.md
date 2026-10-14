@@ -98,3 +98,19 @@ verifies, fixes, and audits CVEs across all active branches.
 Designed for `/loop 1h /cve-agent --auto` — runs
 continuously, handles safe false positives unattended,
 accumulates genuine findings for interactive review.
+
+## /personal-jira-triage
+
+Audit assigned Jira work against related PRs and current evidence, then propose
+minimal updates with adversarial review. Stops at a summary and a first batch
+of drafts for user review; collection and validation are read-only.
+
+```text
+/personal-jira-triage                  # All accessible assigned work and relevant PRs
+/personal-jira-triage PROJECT-123       # Include a specific issue
+/personal-jira-triage first batch of 2  # Narrow the proposed batch
+```
+
+Native Jira/Git clients or connector captures supply evidence. Coverage gaps
+and unavailable independent reviewers are reported explicitly; useful drafts
+remain provisional until the required evidence and reviews are present.

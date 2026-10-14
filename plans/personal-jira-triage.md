@@ -2,8 +2,9 @@
 
 Reviewed October 14, 2026 against this repository's main `3ee5dda` and the completed personal Jira audit.
 Design scope: create `personal-jira-triage`, which discovers work, checks whether Jira needs a change, drafts minimal updates,
-gets adversarial review, and presents a summary plus the first batch to the user. This document is the implementation plan;
-the skill and its behavioral qualification do not exist yet. No Jira writes, installation, push or PR is part of this planning change.
+gets adversarial review, and presents a summary plus the first batch to the user. The canonical bundle is now implemented;
+this document retains its design and qualification criteria. Implementation status and limits appear below.
+No Jira writes, global installation, push or PR was performed.
 
 ## Outcome and boundaries
 
@@ -437,7 +438,31 @@ Official sources checked October 14, 2026; recheck host capabilities at implemen
 Local inspection confirms acli 1.3.39 supports search/comment `--paginate` and issue `--fields '*all'`; Codex 0.162.1 and
 Claude Code 2.1.299 and Antigravity CLI (`agy`) 1.2.13 are installed. Antigravity app/IDE availability was not established.
 Three expert design reviewers examined this plan and the relevant repository contracts; their supported findings are incorporated.
-This design review does not qualify future skill behavior. No host skill discovery, skill reviewer workflow or helper behavior has
-been demonstrated by this planning work.
-Qualification above is implementation acceptance,
-not a claim of tests already passing. The design is ready for implementation with those explicit checks.
+This design review alone does not qualify skill behavior. The criteria above remain the qualification contract; implementation
+evidence and unqualified host capabilities are recorded below.
+
+## Implementation and qualification status
+
+Implemented the five-file [canonical bundle](../skills/personal-jira-triage/SKILL.md), its catalog entry and existing CI integration.
+The stdlib helper has only read-only `collect` and offline `check`; provider writes, credential handling and model orchestration
+remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
+Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
+
+All 89 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
+remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
+A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
+qualification because native Jira account identity and some native comment fidelity were unavailable. Counts are run evidence,
+not discovery limits or assertions about a future portfolio. No Jira update was made.
+
+Actual separate history-free reviewers exercised the synthetic draft protocol. Their returned reports and saved checker result
+qualify that protocol at its fixture cutoff, not live portfolio correctness. Assisted Codex forward runs exposed fabricated review
+counts and an unnecessary gap comment; the skill now requires actual returned-report/check evidence and a useful missing delta.
+An unseen paired fixture then produced the needed corrections, held accurate uncertain work and reported zero validated reviews
+when the host capabilities were unavailable. Failed earlier runs remain failed qualification evidence.
+
+Strict oracle filesystem isolation was not demonstrated, so no blind behavioral qualification is claimed. Claude's runtime attempt
+was blocked by its session quota; its wrapper success did not qualify the invocation. Antigravity runtime enforcement/discovery was
+not exercised. Codex discovery and the assisted degraded-capability workflow were exercised, not every host's full audited workflow.
+Before claiming another host is qualified, run its isolated forward cases and verify actual discovery, argument handling, returned
+independent reviews or honest fallback, and the review stop. Keep private captures/oracles outside installations and source history.
