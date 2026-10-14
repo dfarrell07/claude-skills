@@ -448,7 +448,7 @@ The stdlib helper has only read-only `collect` and offline `check`; provider wri
 remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
 Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
 
-All 89 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+All 102 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
 worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
 remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
 A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
@@ -466,3 +466,10 @@ was blocked by its session quota; its wrapper success did not qualify the invoca
 not exercised. Codex discovery and the assisted degraded-capability workflow were exercised, not every host's full audited workflow.
 Before claiming another host is qualified, run its isolated forward cases and verify actual discovery, argument handling, returned
 independent reviews or honest fallback, and the review stop. Keep private captures/oracles outside installations and source history.
+
+PR review identified gaps in incomplete-import recovery, conflicting resource captures, explicit offline PR coverage and registered
+worktree discovery. The review iteration tightens those collection contracts and binds each audited draft to a nonempty user request
+and every declared candidate-decision evidence source. Duplicate description links receive the same append guard as custom fields.
+Required resolutions and unknown assigned status categories now retain their validation/accounting guards.
+Cross-review also prevents native PR captures from borrowing an imported Git reader after failed identity verification.
+These corrections do not establish additional host or blind behavioral qualification; the limits above still apply.

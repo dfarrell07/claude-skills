@@ -27,8 +27,8 @@ Use `collect --run-dir ABSOLUTE_PATH`, optionally with explicit issue, PR, repos
 Native `acli`/`gh` reads are available when installed/authenticated; `--imports MANIFEST` accepts captured native connector evidence.
 Use `--offline` for imported fixture collection. The helper does not invoke connectors, launch models or install anything.
 Read the evidence reference for the exact import contract and packet formats before creating captures or drafts.
-Before drafting, record the actual user request and explicitly selected context keys in `packet.scope`; hash that scope into each
-audited draft. A default empty scope record does not capture user intent.
+Before drafting, record the actual user request as a nonempty `packet.scope.user_request` string and explicitly selected context keys;
+hash that scope into each audited draft. A default empty scope record does not capture user intent.
 
 Inventory assigned issues across all accessible projects/statuses with full pagination; deeply triage active work using status category.
 Discover open authored, assigned and review-requested PRs without a creation-date cutoff. Add explicit user references, relevant
@@ -44,6 +44,7 @@ absence from a 404/search omission. Read-only collection can remain useful while
 Give each active assigned issue a disposition: `no_change`, `candidate`, `held`, `needs_decision` or `specialist`.
 Separate inventory coverage from issues actually triaged. Load complete native fields and all accessible comments for each triaged
 issue; inspect relevant history and related evidence when acceptance, ownership or attribution depends on them.
+Include every declared candidate-decision evidence source in each draft's decision inputs and reviews; refresh mutable inputs.
 
 Check original acceptance against supporting and opposing evidence. Read native PR state, actual merge identity/ancestry where needed,
 current head/checks and target branch when relevant. A matching title/blob, merged prerequisite, closed unmerged draft or passing

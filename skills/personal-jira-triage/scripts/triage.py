@@ -276,6 +276,15 @@ def source_id(service, site, kind, resource):
     return canonical_hash([service, site, kind, resource])[:24]
 
 
+def pr_resource(url, host):
+    parsed = urllib.parse.urlsplit(url)
+    match = re.fullmatch(r'/([^/]+)/([^/]+)/pull/([1-9][0-9]*)/?', parsed.path)
+    if parsed.scheme != 'https' or parsed.netloc != host or parsed.username or parsed.password or parsed.query or parsed.fragment or not match:
+        raise ValueError('PR URL must identify exact selected HTTPS Git host/repository/number')
+    owner, repo, number = match.groups()
+    return owner + '/' + repo + '#' + number
+
+
 class Collector:
     def __init__(self, directory, timeout):
         self.root = Path(directory).expanduser().resolve()
@@ -294,6 +303,7 @@ class Collector:
                        'scope': {'selected_context_keys': []}}
         self.data = {}
         self.cli_jira_identity_verified = False
+        self.cli_git_identity_ref = None
 
     def gap(self, source, reason):
         entry = {'source': source, 'reason': str(reason)[:500]}
@@ -319,7 +329,8 @@ class Collector:
             raise ValueError('malformed native JSON') from e
 
     def add(self, service, site, kind, resource, data, complete=True, schema='normalized-native-json-v1',
-            captured_at=None, identity_ref=None, ident=None, pagination=None, raw_bytes=None, access=None):
+            captured_at=None, identity_ref=None, ident=None, pagination=None, raw_bytes=None, access=None,
+            replace_incomplete=False):
         validate_shape(kind, data)
         if type(complete) is not bool:
             raise ValueError('source complete must be boolean')
@@ -330,6 +341,11 @@ class Collector:
             site = jira_site(site)
         resource_identity(kind, resource, site, data)
         ident = ident or source_id(service, site, kind, resource)
+        logical_prior = next((s for s in self.packet['sources']
+                              if (s['service'], s['site'], s['kind'], s['resource']) == (service, site, kind, resource)), None)
+        replacing = logical_prior and replace_incomplete and complete and not logical_prior['complete']
+        if replacing:
+            ident = logical_prior['id']  # Keep imported references valid in this new packet.
         path = 'raw/' + canonical_hash(ident)[:24] + '.json'
         record = {'id': ident, 'service': service, 'site': site, 'kind': kind,
                   'resource': resource, 'schema': schema, 'captured_at': captured_at or now(),
@@ -352,13 +368,20 @@ class Collector:
             raw_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
         record['sha256'] = hashlib.sha256(raw_bytes).hexdigest()
         record['fingerprint'] = source_fingerprint(data, record)
+        if logical_prior and not replacing and logical_prior['fingerprint'] != record['fingerprint']:
+            raise ValueError('contradictory duplicate native resource: ' + kind + ':' + resource)
+        if logical_prior and not replacing and not complete and logical_prior['id'] != ident:
+            raise ValueError('duplicate incomplete native resource alias: ' + kind + ':' + resource)
         prior = next((s for s in self.packet['sources'] if s['id'] == ident), None)
-        if prior:
+        if prior and not replacing:
             if prior['fingerprint'] != record['fingerprint']:
                 raise ValueError('contradictory duplicate source ' + ident)
             return ident
         (self.root / path).write_bytes(raw_bytes)
         (self.root / path).chmod(0o600)
+        if replacing:
+            self.packet['sources'].remove(logical_prior)
+            self.packet['gaps'] = [g for g in self.packet['gaps'] if g['source'] != ident]
         if kind == 'jira_comments':
             if record['fidelity'] != 'native':
                 self.gap(ident, 'complete rendered comment projection; native ADF/author/visibility needed for audited operations')
@@ -450,21 +473,21 @@ class Collector:
                 self.gap('jira_identity', 'CLI email cannot be matched to native /myself account; CLI evidence remains provisional')
             if not self.packet['identities']['jira'].get('account_id'):
                 self.gap('jira_identity', 'acli auth status has no native accountId; import /myself for audited ownership')
-            existing = [s for s in self.packet['sources'] if s['kind'] == 'jira_inventory']
+            existing = [s for s in self.packet['sources'] if s['kind'] == 'jira_inventory' and s['complete']]
             if not existing:
                 argv = ['acli', 'jira', 'workitem', 'search', '--jql', 'assignee = currentUser() ORDER BY key',
                         '--fields', 'key,summary,status,assignee', '--json', '--paginate']
                 data, raw = self.command(argv, capture=True)
                 self.add('jira', site, 'jira_inventory', 'assigned', data, schema='acli-search-json-v1', raw_bytes=raw,
-                         identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None)
+                         identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None, replace_incomplete=True)
             for role, clause in [('reporter', 'reporter = currentUser()'), ('watcher', 'watcher = currentUser()'), ('former-assignee', 'assignee WAS currentUser()')]:
-                if any(s['kind'] == 'jira_context' and s['resource'] == role for s in self.packet['sources']):
+                if any(s['kind'] == 'jira_context' and s['resource'] == role and s['complete'] for s in self.packet['sources']):
                     continue
                 query = clause + ' AND statusCategory != Done AND (assignee != currentUser() OR assignee IS EMPTY) ORDER BY key'
                 try:
                     data, raw = self.command(['acli', 'jira', 'workitem', 'search', '--jql', query, '--fields', 'key,summary,status,assignee', '--json', '--paginate'], capture=True)
                     self.add('jira', site, 'jira_context', role, data, identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None,
-                             pagination={'terminated': True, 'query': query}, schema='acli-search-json-v1', raw_bytes=raw)
+                             pagination={'terminated': True, 'query': query}, schema='acli-search-json-v1', raw_bytes=raw, replace_incomplete=True)
                 except ValueError as e:
                     self.gap('jira_context:' + role, e)
         except ValueError as e:
@@ -474,15 +497,27 @@ class Collector:
         return next((s['id'] for s in self.packet['sources'] if s['service'] == service and s['kind'].endswith('identity')), None)
 
     def native_git(self, host):
+        self.cli_git_identity_ref = None
         try:
             data, raw = self.command(['gh', 'api', '--hostname', host, '--method', 'GET', 'user'], capture=True)
-            identity = self.add('git', host, 'git_identity', 'user', data, schema='gh-rest-json-v1', raw_bytes=raw)
+            validate_shape('git_identity', data)
+            existing_identity = next((s for s in self.packet['sources'] if s['kind'] == 'git_identity' and s['site'] == host and s['complete']), None)
+            if existing_identity:
+                native = self.data[existing_identity['id']]
+                if (native['login'], native['id']) != (data['login'], data['id']):
+                    raise ValueError('CLI/connector Git account mismatch')
+                identity = existing_identity['id']
+            else:
+                identity = self.add('git', host, 'git_identity', 'user', data, schema='gh-rest-json-v1', raw_bytes=raw, replace_incomplete=True)
             self.identities()
+            self.cli_git_identity_ref = identity
             login = data['login']
         except ValueError as e:
             self.gap('git_identity', e)
             return
         for role in ['author', 'assignee', 'review-requested', 'involves']:
+            if any(s['kind'] == 'git_search' and s['site'] == host and s['resource'] == role and s['complete'] for s in self.packet['sources']):
+                continue
             query = 'is:pr is:open ' + role + ':' + login
             pages = []
             total, complete, page = None, False, 0
@@ -509,7 +544,7 @@ class Collector:
             # Partial accessible data remains usable as leads, with failed coverage explicit.
             try:
                 self.add('git', host, 'git_search', role, pages, complete, identity_ref=identity,
-                         pagination={'terminated': complete, 'pages': page, 'total_count': total, 'query': query})
+                         pagination={'terminated': complete, 'pages': page, 'total_count': total, 'query': query}, replace_incomplete=True)
             except ValueError as e:
                 self.gap('git_search:' + role, e)
 
@@ -547,7 +582,7 @@ class Collector:
 
     def enrich(self, keys):
         site = self.packet['identities'].get('jira', {}).get('site', '')
-        existing = {(s['kind'], s['resource']) for s in self.packet['sources']}
+        existing = {(s['kind'], s['resource']) for s in self.packet['sources'] if s['complete']}
         def read(key):
             results = []
             for kind, argv in [('jira_issue', ['acli', 'jira', 'workitem', 'view', key, '--fields', '*all', '--json']),
@@ -569,32 +604,38 @@ class Collector:
                         try:
                             schema = 'acli-comments-json-stream-v1' if kind == 'jira_comments' else 'acli-issue-json-v1'
                             self.add('jira', site, kind, key, data, schema=schema, raw_bytes=raw,
-                                     identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None)
+                                     identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None, replace_incomplete=True)
                         except ValueError as e:
                             self.gap(key + ':' + kind, e)
 
     def pr(self, url, host):
-        parsed = urllib.parse.urlsplit(url)
-        match = re.fullmatch(r'/([^/]+)/([^/]+)/pull/([1-9][0-9]*)/?', parsed.path)
-        if parsed.scheme != 'https' or parsed.hostname != host or parsed.username or parsed.password or parsed.query or parsed.fragment or not match:
-            self.gap(url, 'PR URL must identify exact selected HTTPS Git host/repository/number')
-            return
-        owner, repo, number = match.groups()
-        resource = owner + '/' + repo + '#' + number
         try:
-            data, raw = self.command(['gh', 'api', '--hostname', host, '--method', 'GET', 'repos/' + owner + '/' + repo + '/pulls/' + number], capture=True)
-            self.add('git', host, 'git_pr', resource, data, schema='gh-rest-json-v1', raw_bytes=raw, identity_ref=self.identity_ref('git'))
+            resource = pr_resource(url, host)
+        except ValueError as e:
+            self.gap(url, e)
+            return
+        repository, number = resource.split('#')
+        try:
+            data, raw = self.command(['gh', 'api', '--hostname', host, '--method', 'GET', 'repos/' + repository + '/pulls/' + number], capture=True)
+            self.add('git', host, 'git_pr', resource, data, schema='gh-rest-json-v1', raw_bytes=raw, identity_ref=self.cli_git_identity_ref, replace_incomplete=True)
             self.gap(resource, 'PR comments/review threads/checks/current target ancestry require complete native enrichment imports')
         except ValueError as e:
             self.gap(resource, e)
 
     def local(self, roots, plan_roots):
+        seen = set()
+        plan_roots = list(plan_roots)
+        def traversal_error(error):
+            self.gap('local:' + str(error.filename), 'local traversal inaccessible: ' + str(error))
         for name in roots:
             root = Path(name).expanduser().resolve()
             candidates = [root]
             self.packet['local'].append({'search_root': str(root), 'maximum_depth': 4, 'excluded_directories': ['.git', 'node_modules', '.venv', '__pycache__']})
-            if root.is_dir() and not (root / '.git').exists():
-                for current, directories, files in os.walk(root, followlinks=False):
+            if not root.is_dir():
+                self.gap('local:' + str(root), 'local root inaccessible or not a directory')
+                continue
+            if not (root / '.git').exists():
+                for current, directories, files in os.walk(root, followlinks=False, onerror=traversal_error):
                     path = Path(current)
                     depth = len(path.relative_to(root).parts)
                     if '.git' in directories or '.git' in files:
@@ -607,8 +648,24 @@ class Collector:
                                 self.gap('local:' + str(root), 'configured depth 4 omits deeper repositories')
                             directories[:] = []
             for path in candidates:
+                if path in seen:
+                    continue
                 if not (path / '.git').exists():
                     continue
+                seen.add(path)
+                try:
+                    worktrees = self.command(['git', '-C', str(path), 'worktree', 'list', '--porcelain', '-z'], False)
+                    for entry in worktrees.split('\0\0'):
+                        fields = entry.split('\0')
+                        if not fields[0].startswith('worktree ') or 'bare' in fields:
+                            continue
+                        worktree = Path(fields[0][len('worktree '):]).resolve()
+                        if not worktree.is_dir() or not (worktree / '.git').exists():
+                            self.gap('local:' + str(worktree), 'registered worktree inaccessible')
+                        elif worktree not in seen and worktree not in candidates:
+                            candidates.append(worktree)
+                except ValueError as e:
+                    self.gap('local:' + str(path), 'registered worktree discovery unavailable: ' + str(e))
                 try:
                     remotes = self.command(['git', '-C', str(path), 'remote', '-v'], False)
                     def safe_remote(match):
@@ -628,13 +685,20 @@ class Collector:
             if not root.is_dir():
                 self.gap('plans:' + str(root), 'plan root inaccessible')
                 continue
-            for path in root.rglob('*.md'):
-                if path.is_symlink():
-                    continue
-                text = path.read_text(encoding='utf-8', errors='replace')
-                keys = sorted(set(re.findall(r'\b[A-Z][A-Z0-9_]*-[1-9][0-9]*\b', text)))
-                if keys:
-                    self.packet['leads'].append({'path': str(path), 'candidate_keys': keys, 'verified': False})
+            for current, directories, files in os.walk(root, followlinks=False, onerror=traversal_error):
+                directories[:] = [d for d in directories if not (Path(current) / d).is_symlink()]
+                for filename in files:
+                    path = Path(current) / filename
+                    if path.suffix != '.md' or path.is_symlink():
+                        continue
+                    try:
+                        text = path.read_text(encoding='utf-8', errors='replace')
+                    except OSError as e:
+                        self.gap('plans:' + str(path), 'plan read inaccessible: ' + str(e))
+                        continue
+                    keys = sorted(set(re.findall(r'\b[A-Z][A-Z0-9_]*-[1-9][0-9]*\b', text)))
+                    if keys:
+                        self.packet['leads'].append({'path': str(path), 'candidate_keys': keys, 'verified': False})
 
     def finish(self):
         self.packet['collected_at'] = now()
@@ -717,6 +781,9 @@ def check(directory):
                 require(item.get('site') == site, 'inventory site differs from native query')
                 if category in {'new', 'indeterminate', 'done'}:
                     require(item.get('active') == (category != 'done'), 'inventory active category differs from native query')
+                else:
+                    provisional.append('unknown native assigned status category: ' + item['key'])
+                    require(item.get('active') is True, 'unknown assigned status category cannot exclude decision accounting')
     active = {i['key'] for i in inventory if i.get('active') and i.get('role') in {'assigned', 'specialist'}}
     require(all(i.get('role') in {'assigned', 'context', 'specialist'} for i in inventory), 'unsupported inventory role')
     decisions = load_json(root / 'decisions.json') if (root / 'decisions.json').exists() else []
@@ -743,6 +810,9 @@ def check(directory):
         ident = draft.get('id', '?')
         key = draft.get('key')
         audited = draft.get('ready', 'provisional') == 'audited'
+        if audited:
+            user_request = packet.get('scope', {}).get('user_request')
+            require(isinstance(user_request, str) and bool(user_request.strip()), 'audited draft lacks recorded user request')
         if audited or 'scope_hash' in draft:
             require(draft.get('scope_hash') == canonical_hash(packet.get('scope', {})), 'draft user scope changed since review')
         decision = next((d for d in decisions if d['key'] == key), None)
@@ -752,6 +822,8 @@ def check(directory):
         inputs = draft.get('decision_inputs', [])
         require(bool(inputs) and all(i in sources for i in inputs), 'missing/unknown decision inputs: ' + ident)
         require(set(draft.get('evidence', [])) <= set(inputs), 'draft evidence missing from decision inputs')
+        if decision is not None:
+            require(set(decision.get('evidence', [])) <= set(inputs), 'candidate decision evidence missing from decision inputs')
         baseline = draft.get('baseline', {})
         issue_id, comment_id, metadata_id = (baseline.get(k) for k in ['issue', 'comments', 'metadata'])
         require({issue_id, comment_id} <= set(inputs), 'native issue/comments baseline missing from decision inputs')
@@ -816,8 +888,7 @@ def check(directory):
                             last = path[-1]
                             if patch.get('op') == 'append':
                                 require(last == 'content' and isinstance(cursor[last], list), 'append target must be ADF content list')
-                                if field.startswith('customfield_'):
-                                    require(not (adf_links(patch['value']) & adf_links(expected)), 'existing custom-field link appended again')
+                                require(not (adf_links(patch['value']) & adf_links(expected)), 'existing content link appended again')
                                 cursor[last].append(patch['value'])
                             else:
                                 require(last == 'text' and cursor.get('type') == 'text' and isinstance(patch.get('value'), str), 'ADF replacements only change existing text values; attrs/marks/unknown nodes preserved')
@@ -855,15 +926,15 @@ def check(directory):
                 require(transition is not None, 'transition not in current native metadata')
             if transition:
                 specs = transition.get('fields', {})
+                resolution = request.get('fields', {}).get('resolution')
                 same_status = (fields.get('status') or {}).get('id') == transition.get('to', {}).get('id')
-                same_resolution = not request.get('fields', {}).get('resolution') or (fields.get('resolution') or {}).get('id') == request['fields']['resolution'].get('id')
+                same_resolution = not resolution or (isinstance(resolution, dict) and (fields.get('resolution') or {}).get('id') == resolution.get('id'))
                 require(not (same_status and same_resolution), 'no-op workflow transition')
                 require(all(k in request.get('fields', {}) for k, v in specs.items() if v.get('required')), 'missing required transition field')
-                if transition.get('to', {}).get('statusCategory', {}).get('key') == 'done':
-                    require(bool(request.get('fields', {}).get('resolution', {}).get('id')), 'terminal transition lacks explicit resolution')
-                resolution = request.get('fields', {}).get('resolution')
+                if specs.get('resolution', {}).get('required') or transition.get('to', {}).get('statusCategory', {}).get('key') == 'done':
+                    require(isinstance(resolution, dict) and bool(resolution.get('id')), 'required/terminal transition lacks explicit resolution')
                 if resolution:
-                    require(any(v.get('id') == resolution.get('id') for v in specs.get('resolution', {}).get('allowedValues', [])), 'resolution not in current allowed values')
+                    require(isinstance(resolution, dict) and any(v.get('id') == resolution.get('id') for v in specs.get('resolution', {}).get('allowedValues', [])), 'resolution not in current allowed values')
             permission = 'TRANSITION_ISSUES'
         else:
             require(False, 'unsupported operation kind')
@@ -953,6 +1024,14 @@ def main(argv=None):
                 for kind in ['jira_issue', 'jira_comments']:
                     if (kind, key) not in resources:
                         collector.gap(key + ':' + kind, 'selected issue capture unavailable in offline imports')
+            for url in args.pr:
+                try:
+                    resource = pr_resource(url, args.github_host)
+                    if not any(s['kind'] == 'git_pr' and s['site'] == args.github_host and s['resource'] == resource and s['complete']
+                               for s in collector.packet['sources']):
+                        collector.gap(resource, 'selected PR complete capture unavailable in offline imports')
+                except ValueError as e:
+                    collector.gap(url, e)
         collector.local(args.root or [str(Path.cwd())], args.plan_root)
         if not any(s['kind'] == 'jira_inventory' and s['complete'] for s in collector.packet['sources']):
             collector.gap('jira_inventory', 'complete assigned inventory unavailable')
