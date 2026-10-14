@@ -448,7 +448,7 @@ The stdlib helper has only read-only `collect` and offline `check`; provider wri
 remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
 Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
 
-All 102 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+All 111 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
 worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
 remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
 A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
@@ -472,4 +472,6 @@ worktree discovery. The review iteration tightens those collection contracts and
 and every declared candidate-decision evidence source. Duplicate description links receive the same append guard as custom fields.
 Required resolutions and unknown assigned status categories now retain their validation/accounting guards.
 Cross-review also prevents native PR captures from borrowing an imported Git reader after failed identity verification.
+The next review correction refreshes explicitly selected imported PRs, blocks native Jira enrichment under an unknown or mismatched
+CLI site, confines ADF patch paths to content children and clarifies that offline imports still permit local read-only Git discovery.
 These corrections do not establish additional host or blind behavioral qualification; the limits above still apply.

@@ -303,6 +303,8 @@ class Collector:
                        'scope': {'selected_context_keys': []}}
         self.data = {}
         self.cli_jira_identity_verified = False
+        self.cli_jira_site = None
+        self.jira_import_site_hints = set()
         self.cli_git_identity_ref = None
 
     def gap(self, source, reason):
@@ -391,7 +393,7 @@ class Collector:
             self.gap(ident, 'source capture explicitly incomplete')
         return ident
 
-    def imports(self, manifest, fresh_issue_keys=()):
+    def imports(self, manifest, fresh_issue_keys=(), fresh_pr_resources=()):
         path = Path(manifest).resolve()
         doc = load_json(path)
         if type(doc.get('schema_version')) is not int or doc['schema_version'] != VERSION or not isinstance(doc.get('sources'), list):
@@ -399,7 +401,10 @@ class Collector:
         for s in doc['sources']:
             try:
                 if s.get('kind') in {'jira_issue', 'jira_comments'} and s.get('resource') in fresh_issue_keys:
+                    self.jira_import_site_hints.add(jira_site(s['site']))
                     continue  # Original import directory remains immutable; this new run requests a live capture.
+                if s.get('kind') == 'git_pr' and (s.get('site'), s.get('resource')) in fresh_pr_resources:
+                    continue
                 raw = contained_file(path.parent, s['raw_path'])
                 if hashlib.sha256(raw.read_bytes()).hexdigest() != s['sha256']:
                     raise ValueError('import raw hash mismatch')
@@ -450,8 +455,17 @@ class Collector:
                 self.gap(s['id'], 'native authenticated account identity unavailable')
 
     def native_jira(self):
+        self.cli_jira_identity_verified = False
+        self.cli_jira_site = None
         site = self.packet['identities'].get('jira', {}).get('site')
         try:
+            source_sites = self.jira_import_site_hints | {s['site'] for s in self.packet['sources'] if s['service'] == 'jira'}
+            if site:
+                source_sites.add(site)
+            if len(source_sites) > 1:
+                raise ValueError('ambiguous imported Jira source sites')
+            if source_sites:
+                site = next(iter(source_sites))
             auth = self.command(['acli', 'jira', 'auth', 'status'], False)
             match = re.search(r'^\s*Site:\s*(\S+)\s*$', auth, re.M)
             if not match:
@@ -460,6 +474,7 @@ class Collector:
             if site and jira_site(site) != native_site:
                 raise ValueError('CLI/connector Jira site mismatch')
             site = native_site
+            self.cli_jira_site = site
             self.packet['identities'].setdefault('jira', {'site': site})
             email_match = re.search(r'^\s*Email:\s*(\S+)\s*$', auth, re.M)
             native_identity = next((self.data[s['id']] for s in self.packet['sources'] if s['kind'] == 'jira_identity' and s['complete']), {})
@@ -588,6 +603,9 @@ class Collector:
             for kind, argv in [('jira_issue', ['acli', 'jira', 'workitem', 'view', key, '--fields', '*all', '--json']),
                                ('jira_comments', ['acli', 'jira', 'workitem', 'comment', 'list', '--key', key, '--json', '--paginate'])]:
                 if (kind, key) in existing:
+                    continue
+                if self.cli_jira_site != site or not self.cli_jira_site:
+                    results.append((kind, None, None, 'selected Jira site not established by current CLI authentication'))
                     continue
                 try:
                     data, raw = self.command(argv, capture=True, comment_stream=kind == 'jira_comments')
@@ -737,8 +755,8 @@ def check(directory):
             require(resource_key not in resources or resources[resource_key] == s['fingerprint'], 'contradictory duplicate native resource')
             resources[resource_key] = s['fingerprint']
             require(valid_service(s['service'], s['kind']), 'resource service/kind mismatch')
-            if s['kind'] in {'artifact', 'artifact_identity'}:
-                require(jira_site(s['site']) == s['site'], 'artifact source site must identify canonical HTTPS host')
+            if s['service'] == 'jira' or s['kind'] in {'artifact', 'artifact_identity'}:
+                require(jira_site(s['site']) == s['site'], 'source site must identify canonical HTTPS host')
             if s['kind'] == 'artifact':
                 require(s.get('access') in {'authenticated', 'anonymous_public'}, 'artifact reader access undeclared')
                 require(s.get('access') != 'anonymous_public' or not s.get('identity_ref'), 'anonymous public artifact must not invent reader identity')
@@ -882,7 +900,13 @@ def check(directory):
                         for patch in patches:
                             cursor = expected
                             path = patch['path']
-                            require(bool(path) and all(isinstance(x, (str, int)) for x in path), 'invalid ADF patch path')
+                            valid_path = (isinstance(path, list) and bool(path) and len(path) % 2 == 1
+                                          and path[-1] in {'text', 'content'}
+                                          and all(path[index] == 'content' and type(path[index + 1]) is int
+                                                  and path[index + 1] >= 0 for index in range(0, len(path) - 1, 2)))
+                            require(valid_path, 'ADF patch path must traverse only content children with nonnegative integer indices')
+                            if not valid_path:
+                                continue
                             for part in path[:-1]:
                                 cursor = cursor[part]
                             last = path[-1]
@@ -1002,7 +1026,14 @@ def main(argv=None):
             return 0 if report['valid'] else 2
         collector = Collector(args.run_dir, args.timeout)
         if args.imports:
-            collector.imports(args.imports, args.issue if not args.offline else ())
+            fresh_pr_resources = set()
+            if not args.offline:
+                for url in args.pr:
+                    try:
+                        fresh_pr_resources.add((args.github_host, pr_resource(url, args.github_host)))
+                    except ValueError:
+                        pass  # pr() records the invalid explicit URL without discarding imports.
+            collector.imports(args.imports, args.issue if not args.offline else (), fresh_pr_resources)
         if not args.offline:
             collector.native_jira()
             collector.native_git(args.github_host)

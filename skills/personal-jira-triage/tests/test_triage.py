@@ -294,6 +294,128 @@ class PacketCase(unittest.TestCase):
         self.assertIn(["acli", "jira", "workitem", "view", KEY, "--fields", "*all", "--json"], calls)
         self.assertIn(["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"], calls)
 
+    def test_selected_jira_refresh_requires_matching_current_cli_site(self):
+        self.complete_discovery_imports()
+        self.update_source("inventory", [self.issue])
+        manifest = self.import_manifest()
+        original = {path: path.read_bytes() for path in self.run.rglob("*.json")}
+        auth = ["acli", "jira", "auth", "status"]
+        view = ["acli", "jira", "workitem", "view", KEY, "--fields", "*all", "--json"]
+        comments = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+        for case in ("mismatch", "unknown", "unavailable", "same-site", "same-site-unverified-account"):
+            with self.subTest(case=case):
+                responses, _ = self.native_responses([self.issue])
+                if case == "mismatch":
+                    responses[json.dumps(auth)]["stdout"] = "Site: https://other-jira.example.invalid\nEmail: synthetic@example.invalid\n"
+                elif case == "unknown":
+                    responses[json.dumps(auth)]["stdout"] = "Authenticated\nEmail: synthetic@example.invalid\n"
+                elif case == "unavailable":
+                    responses[json.dumps(auth)]["exit"] = 1
+                elif case == "same-site-unverified-account":
+                    responses[json.dumps(auth)]["stdout"] = "Site: " + SITE + "\n"
+                self.stub_clients(responses)
+                self.log.unlink(missing_ok=True)
+                destination = self.root / ("jira-site-" + case)
+                result = self.invoke("collect", "--imports", manifest, "--run-dir", destination, "--issue", KEY)
+                packet = json.loads((destination / "packet.json").read_text())
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                captures = [s for s in packet["sources"] if s["kind"] in {"jira_issue", "jira_comments"}]
+                if case.startswith("same-site"):
+                    self.assertIn(view, calls)
+                    self.assertIn(comments, calls)
+                    self.assertEqual(len(captures), 2)
+                    self.assertTrue(all(s["site"] == SITE for s in captures))
+                    if case == "same-site":
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 2)
+                        self.assertTrue(all(not s.get("identity_ref") for s in captures))
+                else:
+                    self.assertEqual(result.returncode, 2)
+                    self.assertNotIn(view, calls)
+                    self.assertNotIn(comments, calls)
+                    self.assertEqual(captures, [])
+                    self.assertTrue(all(any(g["source"] == KEY + ":" + kind for g in packet["gaps"])
+                                        for kind in ("jira_issue", "jira_comments")))
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
+
+    def test_jira_import_site_constrains_cli_reads_without_native_identity(self):
+        self.complete_discovery_imports()
+        self.update_source("inventory", [self.issue])
+        self.packet["sources"] = [s for s in self.packet["sources"] if s["kind"] != "jira_identity"]
+        auth = ["acli", "jira", "auth", "status"]
+        for case in ("mismatch", "same-site", "ambiguous-sites"):
+            with self.subTest(case=case):
+                responses, _ = self.native_responses([self.issue])
+                if case == "mismatch":
+                    responses[json.dumps(auth)]["stdout"] = "Site: https://other-jira.example.invalid\nEmail: synthetic@example.invalid\n"
+                elif case == "ambiguous-sites":
+                    next(s for s in self.packet["sources"] if s["kind"] == "jira_metadata")["site"] = "https://other-jira.example.invalid"
+                self.stub_clients(responses)
+                self.log.unlink(missing_ok=True)
+                destination = self.root / ("jira-no-identity-" + case)
+                result = self.invoke("collect", "--imports", self.import_manifest(), "--run-dir", destination, "--issue", KEY)
+                self.assertEqual(result.returncode, 2, "Native account provenance remains unavailable")
+                packet = json.loads((destination / "packet.json").read_text())
+                self.assertEqual(packet["inventory"][0]["site"], SITE)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                captures = [s for s in packet["sources"] if s["kind"] in {"jira_issue", "jira_comments"}]
+                if case == "same-site":
+                    self.assertEqual(len(captures), 2)
+                    self.assertTrue(all(s["site"] == SITE and not s.get("identity_ref") for s in captures))
+                    self.assertEqual(packet["identities"]["jira"], {"site": SITE})
+                else:
+                    self.assertEqual(captures, [])
+                    self.assertNotIn("jira", packet["identities"])
+                    self.assertFalse(any(call[:3] == ["acli", "jira", "workitem"] for call in calls))
+                    reason = "CLI/connector Jira site mismatch" if case == "mismatch" else "ambiguous imported Jira source sites"
+                    self.assertTrue(any(g["reason"] == reason for g in packet["gaps"]))
+
+    def test_selected_jira_imports_retain_site_constraint_when_all_captures_are_skipped(self):
+        self.packet["sources"] = [s for s in self.packet["sources"] if s["kind"] in {"jira_issue", "jira_comments"}]
+        manifest = self.import_manifest()
+        original = {path: path.read_bytes() for path in self.run.rglob("*.json")}
+        auth = ["acli", "jira", "auth", "status"]
+        for case in ("mismatch", "same-site"):
+            with self.subTest(case=case):
+                responses, _ = self.native_responses([self.issue])
+                if case == "mismatch":
+                    responses[json.dumps(auth)]["stdout"] = "Site: https://other-jira.example.invalid\nEmail: synthetic@example.invalid\n"
+                self.stub_clients(responses)
+                self.log.unlink(missing_ok=True)
+                destination = self.root / ("jira-skipped-site-" + case)
+                result = self.invoke("collect", "--imports", manifest, "--run-dir", destination, "--issue", KEY)
+                self.assertEqual(result.returncode, 2, "No native Jira account identity was supplied")
+                packet = json.loads((destination / "packet.json").read_text())
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                captures = [s for s in packet["sources"] if s["kind"] in {"jira_issue", "jira_comments"}]
+                if case == "mismatch":
+                    self.assertEqual(captures, [])
+                    self.assertNotIn("jira", packet["identities"])
+                    self.assertFalse(any(call[:3] == ["acli", "jira", "workitem"] for call in calls))
+                    self.assertTrue(any(g["reason"] == "CLI/connector Jira site mismatch" for g in packet["gaps"]))
+                else:
+                    self.assertEqual(len(captures), 2)
+                    self.assertTrue(all(s["site"] == SITE and not s.get("identity_ref") for s in captures))
+                    self.assertEqual(packet["identities"]["jira"], {"site": SITE})
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
+
+    def test_unavailable_cli_site_retains_complete_imported_jira_evidence(self):
+        self.complete_discovery_imports()
+        self.update_source("inventory", [self.issue])
+        responses, _ = self.native_responses([self.issue])
+        responses[json.dumps(["acli", "jira", "auth", "status"])]["exit"] = 1
+        self.stub_clients(responses)
+        destination = self.root / "retained-jira-imports"
+        result = self.invoke("collect", "--imports", self.import_manifest(), "--run-dir", destination)
+        self.assertEqual(result.returncode, 2)
+        packet = json.loads((destination / "packet.json").read_text())
+        self.assertTrue(all(any(s["id"] == sid and s["complete"] for s in packet["sources"])
+                            for sid in ("issue", "comments")))
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertFalse(any(call[:4] == ["acli", "jira", "workitem", "view"] or
+                             call[:4] == ["acli", "jira", "workitem", "comment"] for call in calls))
+
     def test_comment_last_page_is_retained(self):
         responses, _ = self.native_responses([self.issue])
         argv = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
@@ -553,6 +675,49 @@ class PacketCase(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(len([s for s in packet["sources"] if s["kind"] == "jira_inventory"]), 1)
         self.assertTrue(any("duplicate incomplete native resource alias" in g["reason"] for g in packet["gaps"]))
+
+    def test_explicit_online_pr_refresh_replaces_selected_capture_and_retains_other_imports(self):
+        self.complete_discovery_imports()
+        url = "https://github.com/example/demo/pull/42"
+        old = {"number": 42, "html_url": url, "head": {"sha": "old-head"},
+               "base": {"sha": "base", "repo": {"full_name": "example/demo"}}}
+        self.source("selected-pr", "git_pr", "example/demo#42", old)
+        other = copy.deepcopy(old)
+        other.update(number=43, html_url="https://github.com/example/demo/pull/43")
+        self.source("other-pr", "git_pr", "example/demo#43", other)
+        manifest = self.import_manifest()
+        original = {path: path.read_bytes() for path in self.run.rglob("*.json")}
+        native_pr = ["gh", "api", "--hostname", "github.com", "--method", "GET", "repos/example/demo/pulls/42"]
+        for case in ("changed-head", "failed-read"):
+            with self.subTest(case=case):
+                responses, _ = self.native_responses([])
+                fresh = copy.deepcopy(old)
+                fresh["head"]["sha"] = "fresh-head"
+                responses[json.dumps(native_pr)] = {"stdout": json.dumps(fresh), "exit": 1 if case == "failed-read" else 0}
+                self.stub_clients(responses)
+                self.log.unlink(missing_ok=True)
+                destination = self.root / ("pr-refresh-" + case)
+                result = self.invoke("collect", "--imports", manifest, "--run-dir", destination, "--pr", url)
+                self.assertEqual(result.returncode, 2, "PR enrichment remains an explicit gap")
+                packet = json.loads((destination / "packet.json").read_text())
+                selected = [s for s in packet["sources"] if s["kind"] == "git_pr" and s["resource"] == "example/demo#42"]
+                if case == "changed-head":
+                    self.assertEqual(len(selected), 1)
+                    self.assertEqual(json.loads((destination / selected[0]["raw_path"]).read_text())["head"]["sha"], "fresh-head")
+                    self.assertEqual(selected[0]["identity_ref"], "git-identity")
+                    self.assertTrue(selected[0]["complete"])
+                    self.assertFalse(any("contradictory" in g["reason"] for g in packet["gaps"]))
+                else:
+                    self.assertEqual(selected, [])
+                    self.assertTrue(any(g["source"] == "example/demo#42" and "native read exit 1" in g["reason"]
+                                        for g in packet["gaps"]))
+                retained = next(s for s in packet["sources"] if s["id"] == "other-pr")
+                self.assertEqual((destination / retained["raw_path"]).read_bytes(), original[self.run / "raw/other-pr.json"])
+                self.assertEqual(retained["captured_at"], NOW)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertIn(native_pr, calls)
+                self.assertFalse(any("repos/example/demo/pulls/43" in call for call in calls))
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
 
     def test_native_pr_identity_requires_successful_current_git_identity_verification(self):
         self.complete_discovery_imports()
@@ -1037,6 +1202,72 @@ class PacketCase(unittest.TestCase):
                 self.check(False)
                 edited["content"][index] = original
 
+    def test_declared_adf_patches_cannot_enter_opaque_attrs_or_marks(self):
+        old = self.issue["fields"]["description"]
+        old["content"].append({"type": "futureNode", "attrs": {
+            "parameters": {"type": "text", "text": "Keep opaque text.", "content": []}}})
+        old["content"][0]["content"][0]["marks"] = [{"type": "futureMark", "attrs": {
+            "parameters": {"type": "text", "text": "Keep opaque text.", "content": []}}}]
+        self.update_source("issue", self.issue)
+        paths = (["content", 1, "attrs", "parameters"],
+                 ["content", 0, "content", 0, "marks", 0, "attrs", "parameters"])
+        for prefix in paths:
+            for operation in ("replace", "append"):
+                with self.subTest(path=prefix, operation=operation):
+                    edited = copy.deepcopy(old)
+                    cursor = edited
+                    for part in prefix:
+                        cursor = cursor[part]
+                    if operation == "replace":
+                        patch = {"op": operation, "path": prefix + ["text"],
+                                 "old": "Keep opaque text.", "value": "Changed opaque text."}
+                        cursor["text"] = patch["value"]
+                    else:
+                        patch = {"op": operation, "path": prefix + ["content"],
+                                 "value": paragraph("Changed opaque content.")}
+                        cursor["content"].append(patch["value"])
+                    draft = self.candidate(request={"fields": {"description": edited}})
+                    draft["preserved_fields"] = ["customfield_keep"]
+                    draft["adf_changes"] = {"description": [patch]}
+                    draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
+                    self.review_and_refresh()
+                    result = self.check(False)
+                    self.assertIn("ADF patch path must traverse only content children with nonnegative integer indices",
+                                  result["errors"])
+
+    def test_adf_patch_indices_are_nonnegative_exact_integers(self):
+        old = self.issue["fields"]["description"]
+        old["content"].append(paragraph("Second paragraph."))
+        self.update_source("issue", self.issue)
+        edited = copy.deepcopy(old)
+        edited["content"][1]["content"][0]["text"] = "Corrected paragraph."
+        for index in (-1, True):
+            with self.subTest(index=index):
+                draft = self.candidate(request={"fields": {"description": edited}})
+                draft["preserved_fields"] = ["customfield_keep"]
+                draft["adf_changes"] = {"description": [{"op": "replace",
+                    "path": ["content", index, "content", 0, "text"],
+                    "old": "Second paragraph.", "value": "Corrected paragraph."}]}
+                draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
+                self.review_and_refresh()
+                self.check(False)
+
+    def test_nested_adf_append_preserves_unknown_nodes_and_attributes(self):
+        old = self.issue["fields"]["description"]
+        old["content"].append({"type": "futureNode", "attrs": {"opaque": {"keep": [1, "value"]}},
+                               "content": [paragraph("Keep nested content.")]})
+        self.update_source("issue", self.issue)
+        edited = copy.deepcopy(old)
+        added = paragraph("Append useful nested content.")
+        edited["content"][1]["content"].append(added)
+        draft = self.candidate(request={"fields": {"description": edited}})
+        draft["preserved_fields"] = ["customfield_keep"]
+        draft["adf_changes"] = {"description": [{"op": "append", "path": ["content", 1, "content"],
+                                                 "value": added}]}
+        draft["hash"] = triage.canonical_hash({key: value for key, value in draft.items() if key != "hash"})
+        self.review_and_refresh()
+        self.check()
+
     def test_private_comment_visibility_requires_native_policy(self):
         self.candidate("comment", {"body": document("Restricted owner report."),
                                    "visibility": {"type": "role", "value": "Engineering"}})
@@ -1199,6 +1430,21 @@ class PacketCase(unittest.TestCase):
         self.candidate()
         next(source for source in self.packet["sources"] if source["id"] == "issue")["site"] = "https://other.invalid"
         self.check(False)
+
+    def test_audited_jira_sources_require_one_canonical_https_host(self):
+        for site in ("http://jira.example.invalid", "https://jira.example.invalid/other/instance?x=1",
+                     "https://jira.example.invalid/", "https://JIRA.example.invalid", SITE):
+            with self.subTest(site=site):
+                self.packet["identities"]["jira"]["site"] = site
+                self.packet["inventory"][0]["site"] = site
+                for source in self.packet["sources"]:
+                    source["site"] = site
+                    payload = triage.read_source(self.run / source["raw_path"], source)
+                    self.update_source(source["id"], payload)
+                self.candidate()
+                result = self.check(site == SITE)
+                if site != SITE:
+                    self.assertEqual(result["audited_drafts"], [])
 
     def test_comments_and_metadata_must_belong_to_target_issue(self):
         self.candidate()
