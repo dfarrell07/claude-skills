@@ -18,7 +18,8 @@ and completed receipts intact. On resume, inspect current evidence and prior rec
 `collect` saves `packet.json` and raw evidence under `raw/`; the agent authors decisions, drafts, reviews and refresh receipts.
 `--issue` selects enrichment and adds non-inventory issues as context; it does not authorize another owner's edits.
 During online collection with imports, explicit `--issue` keys omit their imported issue/comments and recapture them into the new run.
-Without explicit keys, complete imported captures retain their original cutoff; importing an old file does not refresh it.
+Explicit online `--pr` URLs likewise omit matching imported PR captures before a fresh native read; the original manifest stays unchanged.
+Unrelated complete imported captures retain their original cutoff; importing an old file does not refresh it.
 Incomplete imports may be replaced by a complete online native read; retain a named gap if recapture fails.
 Offline selection uses supplied captures and reports missing selected issue/comment sources.
 `--pr` fetches explicit PRs during native collection; offline collection reports a gap for each explicit PR lacking a complete
@@ -69,7 +70,8 @@ distinct. Collect domain artifacts only when original acceptance requires them; 
 ## Connector-only imports
 
 Export native reads through available host tools into a private directory. Keep raw captures unchanged and hash their bytes.
-Pass a manifest with `collect --imports ABSOLUTE_MANIFEST --offline --run-dir ABSOLUTE_NEW_RUN_DIRECTORY` to avoid CLI calls.
+Pass a manifest with `collect --imports ABSOLUTE_MANIFEST --offline --run-dir ABSOLUTE_NEW_RUN_DIRECTORY` to avoid remote/authenticated
+client reads. Local read-only Git discovery still runs for available checkouts.
 Complete imported inventory/issues/comments can replace unavailable `acli`; corresponding Git captures can replace missing `gh`.
 Missing identity, metadata or page proof remains a gap. The helper invokes no connector and manages no credentials.
 
@@ -112,6 +114,7 @@ issue/comment/history/metadata resources use the exact issue key. Git search res
 native PR resources use `owner/repository#number`. Jira sites identify one exact HTTPS host; user-content URLs remain unchanged.
 Online CLI evidence binds to imported `/myself` only when the CLI's authenticated email matches its native `emailAddress`;
 missing cross-client identity proof leaves CLI evidence provisional, and a mismatch is a gap.
+An unknown or mismatched current CLI Jira site blocks native issue/comment enrichment; imported evidence remains available.
 
 For artifact captures choose a distinct service such as `openshift`, exact HTTPS site and native resource identity.
 Use `access: "authenticated"` with a complete same-service/site `artifact_identity` reference, or `access: "anonymous_public"`
@@ -222,8 +225,9 @@ The helper validates mechanics; semantic necessity, original acceptance, audienc
 
 ADF field drafts also declare `adf_changes`, mapping each changed field to exact patches. A replace patch contains `op: "replace"`,
 an existing text node's terminal `text` path, exact `old` string and new `value` string. An append patch uses `op: "append"`, an
-existing native `content` list path and a whole new node as `value`. Replacing subtrees, marks, attributes or unknown nodes is
-unsupported; hold such edits. The checker reconstructs the full document and rejects undeclared differences. For example:
+existing native `content` list path and a whole new node as `value`. Paths traverse only `content` children with nonnegative integer
+indices. Marks, attributes and other opaque members remain untouched; replacing subtrees or unknown nodes is unsupported.
+Hold such edits. The checker reconstructs the full document and rejects undeclared differences. For example:
 
 ```json
 {
