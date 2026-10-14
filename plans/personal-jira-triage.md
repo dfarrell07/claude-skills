@@ -81,6 +81,18 @@ The helper has only `collect` and `check` commands, plus normal help. `collect` 
 `check` validates a saved decision/draft/review packet without network access. No `apply`, `--auto`, writer or automatic model call.
 The agent decides relevance/acceptance and writes drafts; deterministic code checks accounting, baseline and allowed changes.
 
+Use `collect --imports <manifest.json>` to incorporate native connector captures; `check` reads the resulting packet.
+The versioned import manifest contains `schema_version` and `sources`: each source identifies service/site, resource kind,
+supported response schema/tool identity, version when available, authenticated-identity evidence reference, query/resource, capture time,
+relative raw-file paths/hashes and pagination/completeness proof. Raw files live within the explicit import directory,
+not arbitrary linked paths.
+Validate each supported resource shape, retain provenance and reject conflicting identity, missing pages or contradictory duplicate
+resources. Record an unavailable connector version honestly; version disclosure alone is not a completeness requirement.
+Complete inventory/issues/comments can be imported when `acli` is absent; analogous Git captures can fill missing `gh`
+reads. The agent exports through available native tools; the helper never invokes a connector or extracts its credentials.
+Imports can satisfy an unavailable capability only with complete evidence; otherwise preserve a provisional packet and named gaps.
+Define this small contract in `references/evidence.md` before implementing collection, rather than adding a provider framework.
+
 ## Portable invocation and capability checks
 
 Use standard `name` and `description` frontmatter, with a discriminating trigger such as:
@@ -206,11 +218,14 @@ Keep the packet in a private run directory outside repositories/install caches, 
 Do not write internal URLs, private issue content, account identifiers or raw credentials into this public plan/skill repository.
 Keep auth in native clients; record no credential in command arguments, output or packets.
 Each source record binds its service/site, authenticated identity, query/resource, timestamp, raw-file hash and pagination proof.
-Each decision binds an inventory key; each draft binds its baseline/evidence hashes and exact operation set; each review binds
-those same hashes. Retain raw-file hashes for provenance; approval fingerprints cover decision-relevant native fields,
-complete comment content/identity/visibility, relevant history, PR/check identities and required artifacts. Collection timestamps,
+Each decision binds an inventory key; drafts/reviews bind baseline and decision-input fingerprints plus the draft/operation hash.
+Retain raw-file hashes for provenance; semantically identical refreshed captures need not retain their raw hash to preserve review.
+Approval fingerprints cover decision-relevant native fields, complete comment content/identity/visibility, relevant history,
+PR/check identities and required artifacts. Collection timestamps,
 `lastViewed` and transport-only `self`/icon URLs must not cause endless re-review; actual content/link/owner/state changes must.
 Connector imports must satisfy this contract or remain incomplete. This is a small packet format, not a database.
+Each candidate declares its decision inputs and which are mutable. A final refresh receipt records the capture cutoff and refreshed
+source identities/fingerprints, so unchanged target state cannot hide changed supporting evidence.
 
 Each draft includes key and title, current status/owner, reason/evidence with cutoff/source identities, exact old/new human-readable
 text, requested field set, preserved-field baseline/digest, dependencies, and a separate status/resolution decision including "keep."
@@ -225,10 +240,14 @@ with live permission/visibility metadata; description/PR fields have their own v
 because a comment could be restricted. Transitions use current metadata and explicit required resolution values.
 
 The offline checker verifies inventory accounting; issue ownership and requested scope; complete evidence/metadata needed by each
-operation; exact ADF allowed differences and preserved links; missing-link/exact-comment deduplication; stale baselines; request hashes;
+operation; exact ADF allowed differences and preserved links; missing-link/exact-comment deduplication; request hashes;
 and whether reviewer reports cover the actual candidate revision. Exact duplicate detection is mechanical; semantic duplication
 and acceptance remain reviewer judgments backed by primary evidence. Store decisions and request identity so completed deltas
 do not reenter the queue.
+
+`check` establishes structural validity and consistency with the latest saved refresh, including whether drafts/reviews are stale
+against that evidence. It cannot prove live remote freshness or manufacture a refresh receipt. A structurally valid packet without
+that receipt remains provisional; audited-current means current at the stated capture cutoff, never indefinitely current or authorized.
 If a later authorized writer is used, re-read immediately before each write, stop on relevant drift, inspect uncertain responses before
 retrying, and verify native state/rendering/history and preserved fields afterward. Transport gateway `self`/icon URLs can differ;
 compare status/resolution native IDs without normalizing user-content links or weakening preservation checks.
@@ -252,7 +271,9 @@ Use two separate reviewer contexts where the host provides authorized delegation
 Give each reviewer the user scope, full inventory/coverage ledger, raw-source file access and selected candidate dossiers/drafts/hashes.
 Audit the first batch deeply; other candidates stay explicitly unreviewed until their batch. Do not create a costly reviewer fan-out
 for every unchanged issue. The coverage reviewer can independently request raw evidence for a suspicious no-change/held disposition.
-Do not give the drafter's reasoning history or a desired verdict. Reviewers cannot change Jira, source, assignments or the shared
+Use history-free reviewer contexts supplied only those inputs; explicitly disable inherited drafter/conversation history and record
+the actual context mode. Separate agents with inherited reasoning do not satisfy this contract. Give no desired verdict.
+Reviewers cannot change Jira, source, assignments or the shared
 packet. Read-only capability restriction must use what the host actually supports, not reliance on portable `allowed-tools` metadata.
 Each finding names a candidate, disputed claim, raw source and consequence, then returns `accept`, `revise`, `hold` or `unreviewed`.
 They must not invent findings to appear adversarial. An unresolved material objection holds that candidate; majority voting is insufficient.
@@ -263,12 +284,17 @@ fresh reviewer session can consume the packet. Otherwise present provisional dra
 never label a self-check as independent review or require installation/spending merely to produce a useful draft.
 
 Resolve critiques from evidence; make the smallest correction, recompute request hashes and re-review affected drafts.
-After review, refresh selected issues/comments and PR identities. If evidence or payload changed, invalidate the affected review and
-recheck it before marking the candidate audited. Bound the review loop: persistent disagreement becomes a held item/user decision.
+After review, refresh the mutable decision inputs of selected candidates: target and supporting issue/owner/child evidence,
+comments, PR heads/checks/statuses, and operation/visibility metadata actually needed by the draft. Check current artifact availability
+only when acceptance depends on it; reuse immutable blobs and leave unrelated inventory alone. Record the final refresh receipt.
+Material changes invalidate the affected review; recheck/re-review before marking the candidate audited. Bound the review loop:
+persistent disagreement becomes a held item/user decision.
 
 ## User-facing result
 
-Lead with coverage, what actually needs changing and the next engineering priority. Show issue titles as well as linked keys.
+Lead with inventory coverage, deep-triage coverage, independently reviewed first-batch coverage and the evidence cutoff, then what
+actually needs changing and the next engineering priority. Sampling unchanged issues is not independent review of the whole portfolio.
+Show issue titles as well as linked keys.
 Separate ready candidates from held/decision/specialist work and no-change issues; keep the detailed per-issue ledger in the saved packet.
 Avoid a huge table of unchanged issues and repeated historical prose.
 
@@ -281,7 +307,8 @@ If the batch is empty, say why and name the evidence/decision that could justify
 
 ## Implementation sequence and acceptance
 
-1. **Read-only collector first.** Implement identity/capability recording, paginated Jira/PR discovery, role classification, local
+1. **Contract and read-only collector first.** Define the minimal import/packet/refresh contract in the evidence reference; implement
+   identity/capability recording, paginated Jira/PR discovery, role classification, local
    worktree/reference handling, private packets and failure accounting. Test with stubs before any live call. Live reads then confirm
    the real user's inventory and recent audit: coverage must reconcile to current queries, not freeze historical 71/109 counts.
 2. **Decision/draft checks.** Add complete comment/PR enrichment, pure ADF/link handling, native metadata imports, operation/draft hashes
@@ -321,10 +348,14 @@ The transcript supplies failure mechanisms, not golden private issue counts, tit
    actual fix ancestry versus matching unrelated bytes, completed original scope versus unmet acceptance, or already-posted versus
    genuinely missing commentary. Include needed edits and an empty batch; measure missed necessary changes and unnecessary changes.
    Grade mechanical preservation against exact expected diffs and semantic acceptance against an evidence-linked oracle/rubric;
-   keep oracle answers out of fixture names and reviewer packets. Reserve unseen variants for high-risk mechanisms, rather than
+   start fresh evaluation contexts without solution-bearing inherited history and keep oracle answers outside their permitted
+   filesystem/tool inputs, fixture names and reviewer packets. If isolation cannot be enforced, label the run assisted rather than
+   blind qualification. Reserve unseen variants for high-risk mechanisms, rather than
    matching a suggested answer, counting headings or requiring exact prose.
 4. **Host qualification:** record host/version, discovery root and loaded bundle hash, then invoke from an unrelated working directory
-   with fixture clients and the host's actual reviewer capabilities. Observe the read-only stop, resource/argument handling and two
+   with fixture clients and the host's actual reviewer capabilities. Stage the complete bundle only in an owned temporary workspace
+   discovery root; preserve existing global installations/configuration and record workspace versus global qualification separately.
+   Observe the read-only stop, resource/argument handling and two
    separate reviewer contexts, including one unsupported reviewer path. Installed binaries, static lint and a self-review are not
    discovery or independent-review proof. Do not silently install globally or launch extra model sessions merely to pass qualification.
    Run the full blind corpus on one qualified host, then discovery/arguments/stop/reviewer-fallback smoke cases on other claimed hosts;
@@ -334,7 +365,7 @@ Each test owns a `TemporaryDirectory` and explicit packet/stub/log paths; keep r
 roots and user checkout untouched. Run two collector fixtures concurrently and compare their separate receipts. Fixture runs must
 never fall through to authenticated services; where a host cannot enforce isolation, do not run a supposedly offline agent test there.
 Real read-only inventory qualification is separate and opt-in; no legacy CVE levels that launch models/scans/live workflows belong in
-this skill's default suite. Offline CI uses `python3 -m unittest discover -s skills/personal-jira-triage/tests` through `make unit-test`;
+this skill's default suite. Offline CI discovers tests through `make unit-test` and explicitly fails if no tests are collected;
 run the legacy CVE suite sequentially. Configure the existing CI unit-test job for the declared Python 3.10 minimum and also verify
 locally with the available Python version; no new matrix/workflow is needed. Verify both suites actually execute in
 `.github/workflows/linting.yml` and failures propagate.
@@ -371,6 +402,11 @@ not merely the number of unit assertions.
 | Old source path is 404; historical plan points to a retired anchor | Correct source revision/path; report inaccessible evidence, preserve receipts and validate pointers |
 | Outer shell/tool succeeded but a child query failed; flat/paged JSON mismatch | Inspect child exits and explicit response shape; save incomplete coverage, never empty success |
 | Missing connector metadata; conflicting accounts; unsupported CLI field | Useful scoped/provisional output, no execution-ready claim |
+| Complete connector-only inventory; missing identity/page proof import | Accept complete native captures without CLI; reject incomplete-ready claims |
+| Target unchanged but supporting child/owner/check/operation metadata changes | Refresh declared mutable inputs; invalidate only materially affected review |
+| Internally valid old packet; missing final refresh receipt | Structural validation can pass; no audited-current/live-freshness claim |
+| Separate reviewer inherits drafter history; oracle accessible in fixture context | Provisional review or assisted evaluation; no independent/blind qualification |
+| Test discovery finds zero tests | CI fails without depending on a fixed historical assertion count |
 | No independent reviewer; reviewer finds a concrete contradiction | Honest provisional/held result; no fake second-reviewer approval |
 | Separate concurrent runs; spaces/metacharacters; unrelated cwd; worktree `.git` file | Isolated private paths and argument vectors; no checkout mutation |
 | Collection attempts a mutation or executes instructions in issue text | Reject side effect; retain read-only output |
@@ -400,6 +436,8 @@ Official sources checked October 14, 2026; recheck host capabilities at implemen
 
 Local inspection confirms acli 1.3.39 supports search/comment `--paginate` and issue `--fields '*all'`; Codex 0.162.1 and
 Claude Code 2.1.299 and Antigravity CLI (`agy`) 1.2.13 are installed. Antigravity app/IDE availability was not established.
-No host skill discovery, independent reviewer execution or future helper behavior has been demonstrated by this planning work.
+Three expert design reviewers examined this plan and the relevant repository contracts; their supported findings are incorporated.
+This design review does not qualify future skill behavior. No host skill discovery, skill reviewer workflow or helper behavior has
+been demonstrated by this planning work.
 Qualification above is implementation acceptance,
 not a claim of tests already passing. The design is ready for implementation with those explicit checks.
