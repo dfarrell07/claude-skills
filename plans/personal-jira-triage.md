@@ -42,6 +42,20 @@ Old bot warnings can remain after points/sprint are populated. An available `ope
 an unagreed `5.1.0` milestone. Rolling script/LOC/test totals create needless description churn; use durable supported-scope wording.
 These are evidence rules, not product-specific constants to embed in the new skill.
 
+The session transcript adds several recovery lessons. Read canonical messages/tool results once, including pre-compaction records;
+keyword hits and wrapper success are leads, not proof of an actual failure. Inspect each subprocess exit and resource-specific JSON
+shape: a successful shell's last command or fulfilled tool promise can mask an earlier failed query. An inaccessible resource/path
+is not proof of a missing PR, release or artifact. Authentication and permissions are service-specific; renewed `oc` login does not
+establish Jira/GitHub access or permission to inspect another namespace. Use accessible primary evidence and disclose the gap.
+Parse source URLs and match exact service/repository/issue identities; wildcard host patterns or substring matches are insufficient.
+
+A native Jira edit persisted even though a faulty rendered-text check failed. Resume from current native state and receipts, never
+from the exception alone. Heading/list/table separators and card links need structural handling; HTML is a secondary check.
+A closure legitimately changed status category and a chart-derived field. Identify derived fields through live schema/history;
+do not ignore all custom fields or count a plugin's cached status as authority. Another refresh found an Activity Type change,
+not new work: inspect the actual difference before invalidating acceptance or inventing an update. When maintaining saved plans,
+keep completed payloads/receipts immutable; refresh only current queue pointers, with correct source revisions and valid anchors.
+
 ## Small implementation shape
 
 Keep one canonical bundle under `skills/personal-jira-triage/`:
@@ -213,12 +227,18 @@ because a comment could be restricted. Transitions use current metadata and expl
 The offline checker verifies inventory accounting; issue ownership and requested scope; complete evidence/metadata needed by each
 operation; exact ADF allowed differences and preserved links; missing-link/exact-comment deduplication; stale baselines; request hashes;
 and whether reviewer reports cover the actual candidate revision. Exact duplicate detection is mechanical; semantic duplication
-and acceptance remain reviewer judgments. The checker must not pretend to prove semantic acceptance: that remains an
-agent/reviewer judgment backed by primary evidence. Store decisions and request identity so completed deltas do not reenter the queue.
+and acceptance remain reviewer judgments backed by primary evidence. Store decisions and request identity so completed deltas
+do not reenter the queue.
 If a later authorized writer is used, re-read immediately before each write, stop on relevant drift, inspect uncertain responses before
 retrying, and verify native state/rendering/history and preserved fields afterward. Transport gateway `self`/icon URLs can differ;
 compare status/resolution native IDs without normalizing user-content links or weakening preservation checks.
 No writer is included in this first implementation.
+
+On resume after interruption/compaction, recover the user's scope, exact selected draft revision, evidence cutoff, operation order
+and completed/uncertain receipts from the private packet and canonical history. Reconcile that record with live state before drafting
+again. A failed post-write verification is not permission to replay an operation. A short approval refers only to a clearly identified
+preceding draft; numbering alone, an ambiguous correction or an older batch must not select another issue. V1 still stops at review;
+this recovery rule prevents re-proposing already completed changes without introducing a writer.
 
 ## Adversarial review before the first batch
 
@@ -273,8 +293,58 @@ If the batch is empty, say why and name the evidence/decision that could justify
 4. **Qualification.** Run existing repo lint/tests, focused helper tests and plugin validation, including its context-budget rules;
    validate skill frontmatter and relative references. Run current CVE tests sequentially: their shared `/tmp/cve-triage` fixture
    makes simultaneous copies unsafe. New triage fixtures must use isolated paths.
-   Use realistic blind forward tests with raw fixtures, not the expected conclusions in the evaluator prompt. Repeat affected cases
-   after a demonstrated correction. Qualify installed-source invocation in each available host; list unavailable hosts as untested.
+   Use the layered tests below. Repeat affected cases after a demonstrated correction; do not tune against the only evaluation set.
+   Qualify installed-source invocation in each available host; list unavailable hosts as untested.
+
+## Test setup and observable acceptance
+
+Keep one stdlib `unittest` suite in `tests/test_triage.py`; use inline synthetic fixtures and small fixture files only when they
+improve readability. Do not copy private Jira exports/transcripts into the repository or add a general evaluation framework.
+The transcript supplies failure mechanisms, not golden private issue counts, titles, credentials or expected prose.
+
+1. **Pure helper tests:** inventory accounting, pagination termination, explicit native response shapes, ADF preservation and
+   decision/review fingerprints. Assert exact allowed native diffs, preserved content/URLs and useful failure diagnostics.
+   Test tampered raw evidence, missing/orphan/duplicate decisions, conflicting operations and reviews for a different revision.
+   Include a deliberately corrupted counterpart to a passing packet so the test proves the rejection, not merely that a check ran.
+   A schema-valid packet is not semantic acceptance; `check` must not certify an unaudited judgment.
+2. **Subprocess contract tests:** invoke the real helper from an unrelated directory using fake `acli`/`gh` executables first on
+   a test-local PATH. Stubs record argv and return controlled stdout, stderr, exits and paginated responses; reject unknown commands
+   and mutations. Validate the installed client's flat versus paginated/slurped shapes explicitly, not by arbitrary JSON flattening.
+   Check each process result, malformed/truncated output, timeout and successful-looking JSON accompanied by a nonzero exit.
+   Define/document exits: valid empty collection succeeds; operational failure/incomplete collection remains nonzero with a saved
+   coverage packet; invalid/stale/unreviewed ready claims fail `check`. A legitimate held disposition is not a broken packet.
+   `check` runs with all external calls forbidden. The collector only invokes known read commands; explicitly allow a read-only
+   search/GraphQL POST where a native client needs it, rather than treating every POST as a mutation or every `gh api` as safe.
+3. **Blind agent tests:** supply the actual skill, user request and raw fixture services, with a separate oracle unavailable to
+   drafter/reviewers. Inspect saved decisions, exact drafts, evidence references, reviewer identities/hashes, final batch and call log.
+   Pair cases differing in one decisive fact: a final-page owner report, merged versus closed-unmerged, a card link versus no link,
+   actual fix ancestry versus matching unrelated bytes, completed original scope versus unmet acceptance, or already-posted versus
+   genuinely missing commentary. Include needed edits and an empty batch; measure missed necessary changes and unnecessary changes.
+   Grade mechanical preservation against exact expected diffs and semantic acceptance against an evidence-linked oracle/rubric;
+   keep oracle answers out of fixture names and reviewer packets. Reserve unseen variants for high-risk mechanisms, rather than
+   matching a suggested answer, counting headings or requiring exact prose.
+4. **Host qualification:** record host/version, discovery root and loaded bundle hash, then invoke from an unrelated working directory
+   with fixture clients and the host's actual reviewer capabilities. Observe the read-only stop, resource/argument handling and two
+   separate reviewer contexts, including one unsupported reviewer path. Installed binaries, static lint and a self-review are not
+   discovery or independent-review proof. Do not silently install globally or launch extra model sessions merely to pass qualification.
+   Run the full blind corpus on one qualified host, then discovery/arguments/stop/reviewer-fallback smoke cases on other claimed hosts;
+   expand only where host differences or failures warrant it, rather than multiplying every domain fixture by every harness.
+
+Each test owns a `TemporaryDirectory` and explicit packet/stub/log paths; keep real HOME, credentials, native configs, installed skill
+roots and user checkout untouched. Run two collector fixtures concurrently and compare their separate receipts. Fixture runs must
+never fall through to authenticated services; where a host cannot enforce isolation, do not run a supposedly offline agent test there.
+Real read-only inventory qualification is separate and opt-in; no legacy CVE levels that launch models/scans/live workflows belong in
+this skill's default suite. Offline CI uses `python3 -m unittest discover -s skills/personal-jira-triage/tests` through `make unit-test`;
+run the legacy CVE suite sequentially. Configure the existing CI unit-test job for the declared Python 3.10 minimum and also verify
+locally with the available Python version; no new matrix/workflow is needed. Verify both suites actually execute in
+`.github/workflows/linting.yml` and failures propagate.
+
+Use a small call-log check to verify lightweight discovery, bounded read concurrency, lazy dossiers and immutable-blob reuse;
+change mutable comments/heads/checks and confirm a fresh read. This tests efficiency without enforcing historical timing/counts.
+Store qualification receipts privately with case/fixture revision, actual bundle hash, host, observed decisions and failures.
+Record the tested source tree after merges/rebases complete; a conflicted or subsequently changed candidate has not passed those tests.
+Record unsupported/blocked cases explicitly; do not count them as passes. Correctness gates below apply to the relevant test layer,
+not merely the number of unit assertions.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -284,7 +354,7 @@ If the batch is empty, say why and name the evidence/decision that could justify
 | Genuine title correction, requested missing PR link, completed original task | Propose exact minimal edits/closure; preserve references and status where appropriate |
 | Owner report on last comment page; incomplete preview | Full comment collection finds the report before drafting |
 | Failed auth, Forbidden, 404, bad schema, missing/repeated page token or rate limit | Explicit incomplete/held result; no empty-success or absence claim |
-| Search changed during paging; prior issue vanished | Deduplicate, bounded refresh and direct-read classification; disclose remaining uncertainty |
+| Search changed during paging; same count but different IDs; prior issue vanished | Reconcile identities, bounded refresh and direct-read classification; disclose uncertainty |
 | GitHub search >1,000, `incomplete_results`, an ancient open draft | Split/fallback or incomplete coverage; retain old open work |
 | Other-owner QE child; unassigned test child; watcher/reporter lead | Context role, no assignment or bulk-close operation |
 | Inline-card PR link; repeated text; table/code/mention/unknown ADF nodes | Existing link recognized; only exact intended differences allowed |
@@ -293,8 +363,13 @@ If the batch is empty, say why and name the evidence/decision that could justify
 | Completed research/source task but unfinished product release | Original-scope closure can be proposed; no invented release gate |
 | Parent children complete but owner/acceptance evidence missing | Hold parent closeout; never resolve test artifacts through the parent |
 | Merge already commented; stale bot warning; rolling totals drift | No duplicate comment/field write or metric-refresh churn |
-| Only retrieval time/lastViewed/gateway URL changed | Keep valid review; detect real content, link, ownership or status drift |
+| Only retrieval time/lastViewed/gateway URL changed; actual Activity Type changed | Keep irrelevant metadata from causing churn; inspect meaningful deltas without inventing edits |
 | Draft changed after review; terminal request lacks required resolution | Reject audited-ready claim until corrected and re-reviewed |
+| Native edit persisted but renderer/transport verification failed; interrupted batch | Read live state and receipts; no duplicate proposal or replay; preserve dependencies |
+| Closure changed schema-confirmed derived fields; unrelated custom field also changed | Explain only legitimate derived changes; retain detection of unrelated edits |
+| Short approval after an ambiguous numbered reference or old draft | Bind explicit issue/title/revision; unresolved selection stays held |
+| Old source path is 404; historical plan points to a retired anchor | Correct source revision/path; report inaccessible evidence, preserve receipts and validate pointers |
+| Outer shell/tool succeeded but a child query failed; flat/paged JSON mismatch | Inspect child exits and explicit response shape; save incomplete coverage, never empty success |
 | Missing connector metadata; conflicting accounts; unsupported CLI field | Useful scoped/provisional output, no execution-ready claim |
 | No independent reviewer; reviewer finds a concrete contradiction | Honest provisional/held result; no fake second-reviewer approval |
 | Separate concurrent runs; spaces/metacharacters; unrelated cwd; worktree `.git` file | Isolated private paths and argument vectors; no checkout mutation |
@@ -304,9 +379,10 @@ If the batch is empty, say why and name the evidence/decision that could justify
 
 <!-- markdownlint-enable MD013 -->
 
-Release the skill only when the collector/checker tests pass, active-scope ledger has no unexplained gaps, blind tests make the correct
-change/no-change decisions, and supported host runs preserve the same stop and argument contracts. Native runtime/ADF/request correctness
-requires behavioral evidence; static lint and the existence of `SKILL.md` are insufficient.
+Release the skill only when collector/checker and subprocess tests pass, the ledger has no unexplained gaps, blind tests find needed
+changes without unnecessary writes, and each claimed supported host preserves the stop, argument and independent-review/fallback
+contracts. Native runtime/ADF/request correctness requires behavioral evidence; static lint and the existence of `SKILL.md` are
+insufficient.
 
 ## Research and current validation limits
 
