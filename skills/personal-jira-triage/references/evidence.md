@@ -288,7 +288,8 @@ post-link baseline; a draft batch does not authorize execution or promise an old
 Refresh selected mutable decision inputs through real native reads after review. Store `packet.refresh` with `captured_at`,
 `source_ids` and `fingerprints` mapping each refreshed source ID to its saved decision fingerprint.
 For CLI target refresh, run `collect --imports BASE_MANIFEST --issue KEY --run-dir NEW_PRIVATE_RUN` without `--offline`;
-this recaptures selected issue/comments while retaining unrelated imported cutoffs. For connector-only refresh, export genuinely
+this recaptures selected issue/comments while retaining unrelated imported cutoffs. A complete imported assigned inventory is retained;
+requery membership separately before presentation. For connector-only refresh, export genuinely
 fresh native captures and use `collect --offline --imports FRESH_MANIFEST --issue KEY --run-dir NEW_PRIVATE_RUN`.
 When `--issue` selects only refresh inputs, carry forward the original recorded audit scope before reusing decisions/drafts;
 the collector's new `triage_keys` focus does not replace the user's broader request or authorize changes to supporting context.

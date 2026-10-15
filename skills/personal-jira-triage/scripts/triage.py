@@ -1016,6 +1016,14 @@ def check(directory):
             permission = 'EDIT_ISSUES'
         elif kind == 'comment':
             require(set(request) <= {'body', 'visibility'} and valid_adf(request.get('body')), 'invalid native comment request')
+            visibility = request.get('visibility')
+            valid_visibility = visibility is None or (
+                isinstance(visibility, dict) and visibility.get('type') in ('group', 'role')
+                and ('value' not in visibility or isinstance(visibility['value'], str))
+                and (visibility.get('identifier') is None or isinstance(visibility['identifier'], str))
+                and any(isinstance(visibility.get(k), str) and bool(visibility[k].strip())
+                        for k in ['value', 'identifier']))
+            require(valid_visibility, 'invalid native comment visibility')
             require(bool(adf_text(request.get('body')).strip() or adf_links(request.get('body'))), 'empty native comment')
             existing = rows(data[comment_id], 'jira_comments')
             require(not any(c.get('body') == request.get('body') and c.get('visibility') == request.get('visibility') for c in existing), 'exact duplicate comment')
@@ -1062,10 +1070,11 @@ def check(directory):
                 require(r.get('verdict') not in {'hold', 'revise'}, 'unresolved material reviewer objection')
                 if valid:
                     accepting.append(r)
-            evidence = next((r for r in accepting if r.get('lens') == 'evidence'), None)
-            preservation = next((r for r in accepting if r.get('lens') == 'preservation'), None)
-            require(evidence is not None and preservation is not None and bool(evidence.get('reviewer_id')) and bool(preservation.get('reviewer_id')) and evidence.get('reviewer_id') != preservation.get('reviewer_id'), 'two independent revision-bound accepting reviews required')
-            require(evidence is not None and preservation is not None and evidence.get('execution_id') != preservation.get('execution_id'), 'review lenses require distinct actual returned context/execution IDs')
+            pairs = [(e, p) for e in accepting if e.get('lens') == 'evidence' and e.get('reviewer_id')
+                     for p in accepting if p.get('lens') == 'preservation' and p.get('reviewer_id')
+                     and e['reviewer_id'] != p['reviewer_id']]
+            require(bool(pairs), 'two independent revision-bound accepting reviews required')
+            require(any(e['execution_id'] != p['execution_id'] for e, p in pairs), 'review lenses require distinct actual returned context/execution IDs')
             refresh = packet.get('refresh', {})
             require(bool(refresh.get('captured_at')), 'missing final refresh cutoff')
             cutoff = timestamp(refresh['captured_at']) if refresh.get('captured_at') else None
