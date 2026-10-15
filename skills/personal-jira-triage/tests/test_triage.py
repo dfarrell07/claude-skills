@@ -1340,6 +1340,34 @@ class PacketCase(unittest.TestCase):
         del self.reviews[0]["execution_id"]
         self.check(False)
 
+    def test_accepting_review_pair_is_independent_of_ledger_order(self):
+        for lens in ("evidence", "preservation"):
+            for shared in ("reviewer_id", "execution_id"):
+                with self.subTest(lens=lens, shared=shared):
+                    self.candidate()
+                    index = 0 if lens == "evidence" else 1
+                    dependent = copy.deepcopy(self.reviews[index])
+                    dependent[shared] = self.reviews[1 - index][shared]
+                    self.reviews.insert(0, dependent)
+                    self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+
+    def test_review_independence_requires_both_properties_in_one_pair(self):
+        self.candidate()
+        shared_reviewer = copy.deepcopy(self.reviews[1])
+        shared_reviewer["reviewer_id"] = self.reviews[0]["reviewer_id"]
+        self.reviews[1]["execution_id"] = self.reviews[0]["execution_id"]
+        self.reviews.append(shared_reviewer)
+        self.check(False)
+
+    def test_accepting_review_pair_does_not_override_current_material_objection(self):
+        for verdict in ("hold", "revise"):
+            with self.subTest(verdict=verdict):
+                self.candidate()
+                objection = copy.deepcopy(self.reviews[0])
+                objection.update(reviewer_id="objecting-reviewer", execution_id="objecting-context", verdict=verdict)
+                self.reviews.append(objection)
+                self.assertIn("unresolved material reviewer objection", self.check(False)["errors"])
+
     def test_inherited_context_does_not_count_as_independent_review(self):
         self.candidate()
         self.reviews[1]["context_mode"] = "inherited"
@@ -1563,6 +1591,44 @@ class PacketCase(unittest.TestCase):
         self.candidate("comment", {"body": document("Restricted owner report."),
                                    "visibility": {"type": "role", "value": "Engineering"}})
         self.check(False)
+
+    def test_native_comment_visibility_supports_public_group_and_role_forms(self):
+        cases = [None,
+                 {"type": "role", "value": "Engineering"},
+                 {"type": "role", "identifier": "Engineering"},
+                 {"type": "role", "value": "Engineering", "identifier": "Engineering"},
+                 {"type": "group", "value": "jira-developers"},
+                 {"type": "group", "identifier": "synthetic-group-id"},
+                 {"type": "group", "value": "jira-developers", "identifier": "synthetic-group-id"},
+                 {"type": "group", "value": "jira-developers", "identifier": None}]
+        for visibility in cases:
+            with self.subTest(visibility=visibility):
+                self.metadata["comment_visibility"] = {"requested": visibility}
+                self.update_source("metadata", self.metadata)
+                request = {"body": document("Useful restricted tracking correction."), "visibility": visibility}
+                self.candidate("comment", request)
+                self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+                if visibility is None:
+                    del request["visibility"]
+                    self.candidate("comment", request)
+                    self.check()
+
+    def test_matching_visibility_policy_cannot_authorize_malformed_native_shape(self):
+        cases = ["Engineering", [], False, {}, {"value": "Engineering"},
+                 {"type": "user", "value": "Engineering"},
+                 {"type": ["role"], "value": "Engineering"},
+                 {"type": "role"}, {"type": "role", "value": " "},
+                 {"type": "group", "identifier": None},
+                 {"type": "group", "identifier": 42},
+                 {"type": "role", "value": False, "identifier": "Engineering"}]
+        for visibility in cases:
+            with self.subTest(visibility=visibility):
+                self.metadata["comment_visibility"] = {"requested": visibility}
+                self.update_source("metadata", self.metadata)
+                self.candidate("comment", {"body": document("Useful tracking correction."), "visibility": visibility})
+                result = self.check(False)
+                self.assertIn("invalid native comment visibility", result["errors"])
+                self.assertEqual(result["audited_drafts"], [])
 
     def test_comment_document_cannot_contain_scalar_adf_nodes(self):
         self.metadata["comment_visibility"] = {"requested": None}

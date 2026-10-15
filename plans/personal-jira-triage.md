@@ -4,7 +4,6 @@ Reviewed October 14, 2026 against this repository's main `3ee5dda` and the compl
 Design scope: create `personal-jira-triage`, which discovers work, checks whether Jira needs a change, drafts minimal updates,
 gets adversarial review, and presents a summary plus the first batch to the user. The canonical bundle is now implemented;
 this document retains its design and qualification criteria. Implementation status and limits appear below.
-No Jira writes, global installation, push or PR was performed.
 
 ## Outcome and boundaries
 
@@ -416,10 +415,10 @@ not merely the number of unit assertions.
 
 <!-- markdownlint-enable MD013 -->
 
-Release the skill only when collector/checker and subprocess tests pass, the ledger has no unexplained gaps, blind tests find needed
-changes without unnecessary writes, and each claimed supported host preserves the stop, argument and independent-review/fallback
-contracts. Native runtime/ADF/request correctness requires behavioral evidence; static lint and the existence of `SKILL.md` are
-insufficient.
+Collector/checker and subprocess tests must pass before merging this read-only bundle. Merging it does not establish full behavioral
+or host qualification. Claim that qualification only when the ledger has no unexplained gaps, isolated blind tests find needed changes
+without unnecessary updates, and each claimed host preserves the stop, argument and independent-review/fallback contracts.
+Native runtime/ADF/request correctness requires behavioral evidence; static lint and the existence of `SKILL.md` are insufficient.
 
 ## Research and current validation limits
 
@@ -448,7 +447,7 @@ The stdlib helper has only read-only `collect` and offline `check`; provider wri
 remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
 Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
 
-All 130 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+All 135 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
 worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
 remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
 A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
