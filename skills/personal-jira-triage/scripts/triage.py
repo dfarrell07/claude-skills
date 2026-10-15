@@ -85,7 +85,12 @@ def read_source(path, source):
     text = Path(path).read_bytes().decode('utf-8-sig')
     if source.get('kind') == 'jira_comments' and source.get('schema') == 'acli-comments-json-stream-v1':
         return decode_comments(text)
-    return json.loads(text)
+    value = json.loads(text)
+    if source.get('kind') == 'jira_comments' and source.get('schema') == 'acli-issue-comments-json-v1':
+        validate_shape('jira_issue', value)
+        resource_identity('jira_issue', source['resource'], source['site'], value)
+        return issue_comments(value)
+    return value
 
 
 def source_fingerprint(value, source):
@@ -202,6 +207,17 @@ def comment_fidelity(data):
     return 'native' if all(valid_adf(v.get('body')) and isinstance(v.get('author'), dict)
                            and v['author'].get('accountId') and ('visibility' not in v or v['visibility'] is None or isinstance(v['visibility'], dict))
                            for v in rows(data, 'jira_comments')) else 'rendered'
+
+
+def issue_comments(issue):
+    comments = issue['fields'].get('comment')
+    if not isinstance(comments, dict):
+        raise ValueError('native issue comments require an object with count/offset proof')
+    try:
+        validate_shape('jira_comments', comments)
+    except (KeyError, TypeError, AttributeError) as e:
+        raise ValueError('malformed native issue comment page') from e
+    return comments
 
 
 def resource_identity(kind, resource, site, data):
@@ -597,32 +613,54 @@ class Collector:
 
     def enrich(self, keys):
         site = self.packet['identities'].get('jira', {}).get('site', '')
-        existing = {(s['kind'], s['resource']) for s in self.packet['sources'] if s['complete']}
+        existing = {(s['kind'], s['resource']): s for s in self.packet['sources']
+                    if s['complete'] and s['site'] == site}
         def read(key):
             results = []
+            issue_capture = None
+            cached = existing.get(('jira_issue', key))
+            if cached:
+                issue_capture = (self.data[cached['id']], contained_file(self.root, cached['raw_path']).read_bytes(),
+                                 {'captured_at': cached['captured_at'], 'identity_ref': cached.get('identity_ref')})
             for kind, argv in [('jira_issue', ['acli', 'jira', 'workitem', 'view', key, '--fields', '*all', '--json']),
                                ('jira_comments', ['acli', 'jira', 'workitem', 'comment', 'list', '--key', key, '--json', '--paginate'])]:
                 if (kind, key) in existing:
                     continue
+                if kind == 'jira_comments' and issue_capture:
+                    issue, issue_raw, provenance = issue_capture
+                    try:
+                        comments = issue_comments(issue)
+                        if comment_fidelity(comments) == 'native':
+                            results.append((kind, comments, issue_raw, None,
+                                            dict(provenance, schema='acli-issue-comments-json-v1')))
+                            continue
+                    except ValueError:
+                        pass  # Missing/partial/malformed native fields still need the paginated reader.
                 if self.cli_jira_site != site or not self.cli_jira_site:
-                    results.append((kind, None, None, 'selected Jira site not established by current CLI authentication'))
+                    results.append((kind, None, None, 'selected Jira site not established by current CLI authentication', {}))
                     continue
                 try:
                     data, raw = self.command(argv, capture=True, comment_stream=kind == 'jira_comments')
-                    results.append((kind, data, raw, None))
+                    provenance = {'captured_at': now(),
+                                  'identity_ref': self.identity_ref('jira') if self.cli_jira_identity_verified else None,
+                                  'schema': 'acli-comments-json-stream-v1' if kind == 'jira_comments' else 'acli-issue-json-v1'}
+                    if kind == 'jira_issue':
+                        validate_shape(kind, data)
+                        resource_identity(kind, key, site, data)
+                        issue_capture = (data, raw, provenance)
+                    results.append((kind, data, raw, None, provenance))
                 except ValueError as e:
-                    results.append((kind, None, None, str(e)))
+                    results.append((kind, None, None, str(e), {}))
             return key, results
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             for key, results in pool.map(read, sorted(set(keys))):
-                for kind, data, raw, error in results:
+                for kind, data, raw, error, provenance in results:
                     if error:
                         self.gap(key + ':' + kind, error)
                     else:
                         try:
-                            schema = 'acli-comments-json-stream-v1' if kind == 'jira_comments' else 'acli-issue-json-v1'
-                            self.add('jira', site, kind, key, data, schema=schema, raw_bytes=raw,
-                                     identity_ref=self.identity_ref('jira') if self.cli_jira_identity_verified else None, replace_incomplete=True)
+                            self.add('jira', site, kind, key, data, raw_bytes=raw,
+                                     replace_incomplete=True, **provenance)
                         except ValueError as e:
                             self.gap(key + ':' + kind, e)
 

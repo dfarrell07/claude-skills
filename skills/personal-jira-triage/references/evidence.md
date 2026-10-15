@@ -66,6 +66,16 @@ Every deeply triaged issue needs full native fields and complete accessible comm
 scope changes. PR title/blob equality is a lead, not merge attribution. Read native merge state and relevant ancestry; compare the
 current target branch separately from an old PR base SHA. Keep combined statuses and individual check failures/skips/missing jobs
 distinct. Collect domain artifacts only when original acceptance requires them; an unavailable artifact is not proven absent.
+Resolve relative PR references in their stated repository before inferring absence or completion.
+Conflicting progress receipts require candidate/artifact or owner evidence; a later empty bot receipt alone does not overturn
+historical success or justify new acceptance criteria.
+Historical blocker resolution is report-only unless current misleading fields, an explicit request or an actionable handoff needs
+an update. Keep prerequisite merges and separate contribution tasks distinct; neither supplies unverified original acceptance.
+Retain existing engineering checklists even when they look templated. Unknown acceptance is a hold, not a choice to close now or
+wait for a newly invented gate. Missing evidence supports unknown completion, not a claim that no other PR/work exists.
+Compare modification time to source capture time before calling a baseline stale: a capture after the modification reflects it.
+Complete capture counts do not prove full semantic inspection; report partial comment review separately from deep triage.
+Without native identity, assignment remains supplied scope, not verified ownership. Repeated assignee IDs do not fill that gap.
 
 ## Connector-only imports
 
@@ -127,6 +137,10 @@ Native paged responses must include all advertised rows. An embedded preview is 
 must remain separate; never select whichever identity makes an ownership assertion pass.
 For actual concatenated `acli` comment-page stdout, use `schema: "acli-comments-json-stream-v1"` and preserve the exact bytes;
 page offsets/limits, totals, termination and unique IDs must reconcile. Imports retain original raw bytes and hashes.
+The helper prefers complete native `fields.comment` from an issue capture using `schema: "acli-issue-comments-json-v1"`.
+Its raw file contains the entire unchanged issue response; the reader checks its key and extracts the comment object.
+Issue-backed comments retain that capture's time, site and reader, including when reusing a cached issue. Missing, partial,
+rendered or malformed embedded comments fall back to the paginated CLI read; reuse never establishes a fresh remote read.
 Rendered comment bodies/author strings remain useful accessible evidence with `fidelity: "rendered"` and a provisional gap.
 An audited comment baseline needs actual full native ADF, author account IDs and visibility evidence; setting a fidelity flag
 cannot upgrade rendered text. A full native embedded comment list is usable only when all advertised rows are present.
