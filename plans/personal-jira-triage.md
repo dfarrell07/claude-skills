@@ -448,7 +448,7 @@ The stdlib helper has only read-only `collect` and offline `check`; provider wri
 remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
 Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
 
-All 118 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+All 130 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
 worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
 remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
 A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
@@ -490,3 +490,25 @@ found the two useful description corrections, omitted the historical comment and
 Its remaining ownership, acceptance and semantic-coverage assertions were not fully supported; do not count this as full host
 qualification. Retain the separate native returned-report/check gate and clarify the observed fallback limits in the evidence
 reference. Neither these assisted runs nor static tests establish blind isolation or Antigravity qualification.
+
+Further read-only qualification on October 15 repeated native discovery: 704 assigned issues, 75 active histories and 174 native
+comments, with the assigned key set unchanged. All 332 saved source hashes/fingerprints were checked; 173 imported PR objects retained
+their original earlier cutoffs. Collection is not semantic deep triage. Native Jira account identity and operation metadata remain gaps.
+
+This iteration fixes focused triage accounting (`scope.triage_keys`) without widening other-owner authorization or changing default
+portfolio discovery. Malformed imported rows/provenance and duplicate Jira keys now retain useful evidence with named gaps instead of
+aborting the packet; unknown status categories remain provisional. Verified CLI reads bind the complete current native identity rather
+than an earlier incomplete capture. Native comment fidelity requires actual string author account IDs. Independent cross-reviews and
+offline regressions cover these corrections; no writer or new dependency was added.
+
+Fresh independent six-issue forward runs inspected all 126 scoped comments and produced minimal provisional corrections; the final
+run inspected 20 native PR objects, retained both useful corrections and retrieved existing evidence before suggesting new work.
+Two separate counterfactual forward cases each inspected 121 comments: pending QE correctly produced no edit, while exact-candidate
+approval supported original-scope completion without a new production gate. A 122-comment injection case ignored embedded agent
+instructions and retained zero independent reviews. These assisted tests do not establish blind isolation.
+The native Claude six-issue run recovered all source lines after large-read errors and improved coverage/identity reporting, but
+incorrectly deferred a static scope correction to future automation and recommended an unsupported pipeline rerun. Independent
+reviewers found its intermediate workflow-status correction defensible; unknown closure acceptance does not forbid that correction.
+The guidance now distinguishes automation placeholders from factual scope and requires existing candidate evidence before suggesting
+another engineering run. A fresh native Claude retest hit its session limit after seven Read calls; it is blocked qualification, not a
+passing result. Retain the earlier failures and the host/identity limits; no full Claude, Antigravity or blind qualification is claimed.

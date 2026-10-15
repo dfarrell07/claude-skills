@@ -162,6 +162,92 @@ class PacketCase(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(any("author" in gap["source"] for gap in packet["gaps"]))
 
+    def test_malformed_import_rows_preserve_valid_evidence_and_named_gaps(self):
+        self.source("inventory", "jira_inventory", "assigned", [])
+        valid_sources = copy.deepcopy(self.packet["sources"])
+        cases = [
+            ("jira_comments", "EXAMPLE-18", {"comments": [42], "startAt": 0, "total": 1}),
+            ("jira_history", "EXAMPLE-18", {"values": [42], "total": 1}),
+            ("git_search", "author", {"items": [42], "total_count": 1}),
+            ("jira_inventory", "assigned", [{"id": "102"}]),
+            ("jira_context", "reporter", [{"id": "102", "key": 42}]),
+            ("jira_context", "reporter", [{"id": "102", "key": "EXAMPLE-18", "fields": []}]),
+            ("jira_context", "reporter", [{"id": "102", "key": "EXAMPLE-18", "fields": {"status": ["bad"]}}]),
+            ("jira_context", "reporter", [{"id": "102", "key": "EXAMPLE-18", "fields": {"status": {"statusCategory": "bad"}}}]),
+        ]
+        for index, (kind, resource, payload) in enumerate(cases):
+            with self.subTest(kind=kind, payload=payload):
+                self.packet["sources"] = copy.deepcopy(valid_sources)
+                self.source("malformed", kind, resource, payload)
+                destination = self.root / ("malformed-import-" + str(index))
+                result, packet = self.offline_collect(destination=destination)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual({s["id"] for s in packet["sources"]}, {s["id"] for s in valid_sources})
+                self.assertTrue(any(gap["source"] == "import:" + resource
+                                    and ("rows must be objects" in gap["reason"]
+                                         or "issue key/fields malformed" in gap["reason"]
+                                         or "must be an object or null" in gap["reason"])
+                                    for gap in packet["gaps"]))
+                self.assertTrue(triage.check(destination)["valid"])
+
+    def test_malformed_row_identities_and_categories_preserve_useful_packet(self):
+        self.source("inventory", "jira_inventory", "assigned", [])
+        valid_sources = copy.deepcopy(self.packet["sources"])
+        cases = [("jira_comments", KEY, [{"id": ident, "body": document("Native evidence"),
+                                         "author": {"accountId": "synthetic-user"}}])
+                 for ident in (None, False, [], {}, " ", -1)]
+        invalid_category = copy.deepcopy(self.issue)
+        invalid_category["fields"]["status"]["statusCategory"]["key"] = []
+        same_key = copy.deepcopy(self.issue)
+        same_key["id"] = "102"
+        cases.extend([("jira_context", "reporter", [invalid_category]),
+                      ("jira_inventory", "assigned", [self.issue, same_key])])
+        for index, (kind, resource, payload) in enumerate(cases):
+            with self.subTest(kind=kind, payload=payload):
+                self.packet["sources"] = copy.deepcopy(valid_sources)
+                self.source("malformed", kind, resource, payload)
+                destination = self.root / ("malformed-identities-" + str(index))
+                result, packet = self.offline_collect(destination=destination)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual({s["id"] for s in packet["sources"]}, {s["id"] for s in valid_sources})
+                self.assertTrue(any(gap["source"] == "import:" + resource for gap in packet["gaps"]))
+                self.assertTrue(triage.check(destination)["valid"])
+
+    def test_malformed_import_provenance_cannot_abort_or_leave_partial_sources(self):
+        self.source("inventory", "jira_inventory", "assigned", [])
+        valid_sources = copy.deepcopy(self.packet["sources"])
+        malformed = copy.deepcopy(self.issue)
+        malformed.update(key="EXAMPLE-18", id="102")
+        cases = [{"captured_at": 42}, {"raw_path": ["bad.json"]}, {"id": ["bad"]},
+                 {"identity_ref": ["bad"]}, {"pagination": []}]
+        for index, overrides in enumerate(cases):
+            with self.subTest(overrides=overrides):
+                self.packet["sources"] = copy.deepcopy(valid_sources)
+                kind, payload = (("jira_comments", []) if "pagination" in overrides else ("jira_issue", malformed))
+                self.source("malformed", kind, "EXAMPLE-18", payload)
+                self.packet["sources"][-1].update(overrides)
+                self.packet["sources"].append(42)
+                destination = self.root / ("malformed-provenance-" + str(index))
+                result, packet = self.offline_collect(destination=destination)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual({s["id"] for s in packet["sources"]}, {s["id"] for s in valid_sources})
+                self.assertTrue(any(gap["source"] == "import:EXAMPLE-18" for gap in packet["gaps"]))
+                self.assertTrue(any(gap["source"] == "import:?" for gap in packet["gaps"]))
+                self.assertTrue(triage.check(destination)["valid"])
+
+    def test_null_assigned_status_category_stays_provisional_with_saved_packet(self):
+        issue = copy.deepcopy(self.issue)
+        issue["fields"]["status"]["statusCategory"] = None
+        self.source("inventory", "jira_inventory", "assigned", [issue])
+        result, packet = self.offline_collect()
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(packet["inventory"][0]["active"])
+        self.assertTrue(any(gap["source"] == KEY and "status category missing" in gap["reason"]
+                            for gap in packet["gaps"]))
+        report = triage.check(self.root / "collected")
+        self.assertTrue(report["valid"], report["errors"])
+        self.assertIn("unknown native assigned status category: " + KEY, report["provisional"])
+
     def test_import_rejects_forged_hash_and_still_records_failure(self):
         self.source("inventory", "jira_inventory", "assigned", [])
         self.packet["sources"][0]["sha256"] = "0" * 64
@@ -582,12 +668,18 @@ class PacketCase(unittest.TestCase):
     def test_rendered_comment_strings_cannot_support_audited_native_baseline(self):
         self.candidate()
         self.check()
-        self.comments["comments"] = [{"id": "7", "author": "synthetic-owner", "body": "Rendered useful owner evidence."}]
-        self.comments["total"] = 1
-        next(source for source in self.packet["sources"] if source["id"] == "comments")["fidelity"] = "native"
-        self.update_source("comments", self.comments)
-        self.review_and_refresh()
-        self.check(False)
+        comments = [{"id": "7", "author": "synthetic-owner", "body": "Rendered useful owner evidence."}]
+        comments.extend({"id": "7", "author": {"accountId": value}, "body": document("Owner evidence.")}
+                        for value in (True, ["synthetic-owner"], {"id": "synthetic-owner"}, " ", None))
+        for comment in comments:
+            with self.subTest(comment=comment):
+                self.comments["comments"] = [comment]
+                self.comments["total"] = 1
+                next(source for source in self.packet["sources"] if source["id"] == "comments")["fidelity"] = "native"
+                self.update_source("comments", self.comments)
+                self.review_and_refresh()
+                self.assertIn("audited operation requires complete native comment ADF/authors/visibility, not rendered CLI projection",
+                              self.check(False)["errors"])
 
     def test_rendered_cli_comment_stream_is_retained_as_provisional_evidence(self):
         responses, _ = self.native_responses([self.issue])
@@ -637,6 +729,30 @@ class PacketCase(unittest.TestCase):
         result, packet, _ = self.native_collect(responses)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(packet["gaps"])
+
+    def test_verified_cli_reads_use_complete_identity_after_incomplete_reader(self):
+        self.source("old-reader", "jira_identity", "old-reader", {
+            "accountId": "old-user", "emailAddress": "old@example.invalid",
+        })
+        old_reader = self.packet["sources"].pop()
+        old_reader["complete"] = False
+        self.packet["sources"].insert(0, old_reader)
+        self.update_source("old-reader", {"accountId": "old-user", "emailAddress": "old@example.invalid"})
+        responses, _ = self.native_responses([self.issue])
+        self.stub_clients(responses)
+        destination = self.root / "complete-current-reader"
+        result = self.invoke("collect", "--imports", self.import_manifest(), "--issue", KEY,
+                             "--run-dir", destination)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        packet = json.loads((destination / "packet.json").read_text())
+        self.assertEqual(packet["identities"]["jira"]["account_id"], "synthetic-user")
+        captures = [s for s in packet["sources"] if s["kind"] in
+                    {"jira_inventory", "jira_context", "jira_issue", "jira_comments"}]
+        self.assertTrue(captures)
+        self.assertTrue(all(s["identity_ref"] == "identity" for s in captures))
+        report = triage.check(destination)
+        self.assertTrue(report["valid"], report["errors"])
+        self.assertIn("incomplete native identity: old-reader", report["provisional"])
 
     def test_worktree_file_and_metacharacter_root_are_read_without_checkout_changes(self):
         checkout = self.root / "work tree; $(literal)"
@@ -1065,6 +1181,65 @@ class PacketCase(unittest.TestCase):
     def test_minimal_title_edit_is_audited_at_capture_cutoff(self):
         self.candidate()
         self.check()
+
+    def test_explicit_collection_records_deduplicated_focus_without_context_authorization(self):
+        destination = self.root / "scoped-collected"
+        result = self.invoke("collect", "--offline", "--imports", self.import_manifest(),
+                             "--run-dir", destination, "--issue", KEY, "--issue", KEY)
+        self.assertEqual(result.returncode, 2)  # Missing global discovery remains a named gap.
+        packet = json.loads((destination / "packet.json").read_text())
+        self.assertEqual(packet["scope"]["triage_keys"], [KEY])
+        self.assertEqual(packet["scope"]["selected_context_keys"], [])
+        self.assertEqual([row["key"] for row in packet["inventory"]], [KEY])
+        self.assertFalse(self.log.exists(), "Offline focused collection called native clients")
+
+    def test_scoped_draft_does_not_require_unselected_active_decisions(self):
+        self.packet["scope"]["triage_keys"] = [KEY]
+        self.packet["inventory"].append({"key": "EXAMPLE-99", "role": "assigned", "active": True,
+                                         "site": SITE})
+        self.candidate()
+        self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+        del self.packet["scope"]["triage_keys"]
+        self.candidate()
+        self.assertIn("missing active assigned decision", self.check(False)["errors"])
+
+    def test_drafts_outside_explicit_triage_focus_are_rejected(self):
+        self.packet["scope"]["triage_keys"] = ["EXAMPLE-99"]
+        self.packet["inventory"].append({"key": "EXAMPLE-99", "role": "context", "active": True})
+        self.decisions.append({"key": "EXAMPLE-99", "disposition": "held", "reason": "Needs evidence.",
+                               "evidence": [], "draft_ids": []})
+        self.candidate()
+        self.assertIn("draft outside declared triage scope", self.check(False)["errors"])
+
+    def test_explicit_triage_focus_rejects_empty_malformed_duplicate_or_unknown_keys(self):
+        for focus in (None, [], "EXAMPLE-17", {}, [None], [17], ["invalid"], [KEY, KEY], ["EXAMPLE-99"]):
+            with self.subTest(focus=focus):
+                self.packet["scope"]["triage_keys"] = focus
+                self.assertTrue(any("triage scope" in error for error in self.check(False)["errors"]))
+
+    def test_explicit_done_context_issue_still_requires_a_decision(self):
+        self.packet["inventory"].append({"key": "EXAMPLE-99", "role": "context", "active": False})
+        self.packet["scope"]["triage_keys"] = [KEY, "EXAMPLE-99"]
+        self.assertIn("missing scoped triage decision", self.check(False)["errors"])
+        self.decisions.append({"key": "EXAMPLE-99", "disposition": "no_change", "reason": "Already complete.",
+                               "evidence": [], "draft_ids": []})
+        self.check()
+
+    def test_explicit_triage_focus_never_authorizes_other_owner_draft(self):
+        self.packet["scope"]["triage_keys"] = [KEY]
+        self.issue["fields"]["assignee"] = {"accountId": "another-owner"}
+        self.update_source("issue", self.issue)
+        self.candidate()
+        self.assertIn("audited draft lacks ownership/explicit context scope", self.check(False)["errors"])
+        self.packet["scope"]["selected_context_keys"] = [KEY]
+        self.candidate()
+        self.assertEqual(self.check()["audited_drafts"], ["draft-1"])
+
+    def test_changed_triage_focus_invalidates_reviewed_scope_hash(self):
+        self.packet["scope"]["triage_keys"] = [KEY]
+        self.candidate()
+        del self.packet["scope"]["triage_keys"]
+        self.assertIn("draft user scope changed since review", self.check(False)["errors"])
 
     def test_audited_scope_requires_actual_nonempty_user_request(self):
         for user_request in (None, "", "   ", [], {"inferred": "audit"}):
