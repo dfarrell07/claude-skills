@@ -16,7 +16,9 @@ Never store tokens, private Jira exports or internal issue content in the public
 and completed receipts intact. On resume, inspect current evidence and prior receipts before proposing the same delta again.
 
 `collect` saves `packet.json` and raw evidence under `raw/`; the agent authors decisions, drafts, reviews and refresh receipts.
-`--issue` selects enrichment and adds non-inventory issues as context; it does not authorize another owner's edits.
+`--issue` selects enrichment, records `scope.triage_keys`, and adds non-inventory issues as context;
+it does not authorize another owner's edits. A focused run requires decisions only for those selected keys, including done/context
+issues; other inventory members remain untriaged. Without `triage_keys`, all active assigned issues require decisions.
 During online collection with imports, explicit `--issue` keys omit their imported issue/comments and recapture them into the new run.
 Explicit online `--pr` URLs likewise omit matching imported PR captures before a fresh native read; the original manifest stays unchanged.
 Unrelated complete imported captures retain their original cutoff; importing an old file does not refresh it.
@@ -29,6 +31,8 @@ Valid empty collection is success. `check` returns 0 for valid packets, includin
 unsupported audited-ready claims return 2. It checks consistency with saved evidence, not live freshness or semantic acceptance.
 Save the actual `check` output beside the packet. An empty `audited_drafts` list means zero validated independently reviewed drafts;
 without a successful saved check and actual native returned-report ledger, reviewed-batch coverage remains zero.
+`provisional` lists detected limitations, not every provisional draft. Empty errors or limitations do not certify necessity, semantic
+inspection or readiness; read each draft's `ready` value and the validated `audited_drafts` list.
 
 ## Collect and enrich
 
@@ -49,7 +53,8 @@ inaccessible roots or worktrees remain gaps.
 The helper's CLI captures are the starting point. The agent must enrich relevant comments, history, review threads, checks/statuses,
 field schema and operation metadata through available native reads. An unsupported service/capability is a named gap.
 Successful collection validates captured scope; it does not prove uncaptured services, PR roles or relationships were searched.
-Do not use an old collector's capped/cache/date-filtered output to claim completeness. Do not extract connector credentials.
+Establish completeness from uncapped, fully paginated reads with stated cutoffs; treat old capped/cache/date-filtered output as leads.
+Credentials remain in their native clients.
 
 Record query, capture time, unique IDs and actual page termination. Reject repeated tokens, missing pages, contradictory duplicates
 and failures disguised as empty lists. Split GitHub searches exceeding its cap/incomplete-result signal or disclose incomplete scope.
@@ -68,13 +73,19 @@ current target branch separately from an old PR base SHA. Keep combined statuses
 distinct. Collect domain artifacts only when original acceptance requires them; an unavailable artifact is not proven absent.
 Resolve relative PR references in their stated repository before inferring absence or completion.
 Conflicting progress receipts require candidate/artifact or owner evidence; a later empty bot receipt alone does not overturn
-historical success or justify new acceptance criteria.
+historical success or justify new acceptance criteria. Retrieve existing candidate-specific results or owner confirmation before
+recommending another engineering run; missing current evidence alone does not establish that rerunning a pipeline is needed.
 Historical blocker resolution is report-only unless current misleading fields, an explicit request or an actionable handoff needs
 an update. Keep prerequisite merges and separate contribution tasks distinct; neither supplies unverified original acceptance.
 Retain existing engineering checklists even when they look templated. Unknown acceptance is a hold, not a choice to close now or
-wait for a newly invented gate. Missing evidence supports unknown completion, not a claim that no other PR/work exists.
+wait for a newly invented gate. Missing evidence supports unknown completion or start state, not a claim that no other PR/work exists
+or that listed work has not started.
 Compare modification time to source capture time before calling a baseline stale: a capture after the modification reflects it.
-Complete capture counts do not prove full semantic inspection; report partial comment review separately from deep triage.
+Complete capture counts do not prove full semantic inspection. For large responses, inspect all scoped fields and comments in chunks
+or use a navigational projection retaining every comment's ID, timestamp, author, visibility and body text, native link/card URLs,
+mention identities and structural boundaries. Retain original bytes; inspect native ADF for selected edits and whenever omitted or
+unknown nodes affect acceptance or attribution. Truncated tool output or a sample of recent comments is partial review, not deep
+triage; report it separately. Projection is a reading aid, never a replacement baseline or capture.
 Without native identity, assignment remains supplied scope, not verified ownership. Repeated assignee IDs do not fill that gap.
 
 ## Connector-only imports
@@ -177,7 +188,10 @@ It returns named discovery gaps for absent contextual/Git captures; add those ca
 `packet.json` contains `schema_version`, `collected_at`, `identities`, `sources`, `inventory`, `gaps`, `leads`, `local` and `scope`.
 Each source includes its stable ID, service/site/kind/resource, capture time/schema, identity reference, raw path/hash,
 decision `fingerprint`, completeness and pagination. Inventory rows contain `key`, `role`, `active` and available issue/site identity;
-roles are `assigned`, `context` or `specialist`. `scope.selected_context_keys` records explicitly selected other-owned context.
+roles are `assigned`, `context` or `specialist`. Optional `scope.triage_keys` is a nonempty unique list of inventoried issue keys
+selected for deep triage; it limits required decisions and eligible drafts, not inventory discovery or authorization.
+Absent that field, the default scope is all active assigned issues. `scope.selected_context_keys` separately records explicitly
+selected other-owned context.
 Before drafting, record the actual user request in `scope.user_request`; audited drafts require a nonempty string.
 Do not leave the collector's default scope as proof of intent or replace the request with inferred authorization.
 Retain raw hashes for provenance; fingerprints omit known transport metadata but conservatively retain full native fields and content.
@@ -187,7 +201,7 @@ A real incidental field change may require re-review; it is not a reason to inve
 
 The agent writes three sibling JSON lists. IDs refer to saved sources; do not invent an unsaved evidence ID.
 
-* `decisions.json`: one row per active assigned issue, with `key`, `disposition`, `reason`, `evidence` source IDs and `draft_ids`.
+* `decisions.json`: one row per issue in the deep-triage scope, with `key`, `disposition`, `reason`, `evidence` source IDs and `draft_ids`.
   Dispositions are `no_change`, `candidate`, `held`, `needs_decision` and `specialist`.
 * `drafts.json`: `id`, `key`, `kind`, exact native `request`, `baseline`, `evidence`, `decision_inputs`, `preserved_fields`,
   `scope_hash`, `ready`, `hash`.
@@ -259,8 +273,8 @@ This footprint is part of the draft hash; semantic necessity and meaning still n
 When native baseline content is unavailable, keep the human draft provisional in the summary;
 do not fabricate an exact native request or baseline to satisfy the checker.
 
-For each human draft also provide issue key/title, current status/owner, exact old/new wording, reason/primary evidence,
-dependency order, status/resolution choice including `keep`, preserved fields and unfinished work.
+For each human draft also provide issue key/title, current status/owner, exact old/new wording (unabridged changed text leaves),
+reason/primary evidence, dependency order, status/resolution choice including `keep`, preserved fields and unfinished work.
 Comment absence alone is not a useful delta. Accurate open tracking or uncertain acceptance normally belongs in the summary/held
 ledger, unless misleading current tracking, an explicit request or an actionable handoff establishes a needed update.
 Preserve native ADF unknown nodes/marks/attributes and URLs; detect `inlineCard`/`blockCard`, mentions and structural separators.

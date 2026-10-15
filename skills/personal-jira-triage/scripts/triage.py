@@ -177,8 +177,28 @@ def validate_shape(kind, data):
         raise ValueError('unsupported resource kind: ' + str(kind))
     if kind in {'jira_inventory', 'jira_context', 'jira_comments', 'jira_history', 'git_search'}:
         values = rows(data, kind)
-        ids = [str(v.get('id', v.get('key', ''))) for v in values]
-        if any(not i for i in ids) or len(ids) != len(set(ids)):
+        if not all(isinstance(v, dict) for v in values):
+            raise ValueError('native resource rows must be objects')
+        if kind in {'jira_inventory', 'jira_context'} and any(
+                not isinstance(v.get('key'), str) or not KEY.fullmatch(v['key'])
+                or not isinstance(v.get('fields', {}), dict) for v in values):
+            raise ValueError('native inventory issue key/fields malformed')
+        if kind in {'jira_inventory', 'jira_context'}:
+            for value in values:
+                status = value.get('fields', {}).get('status')
+                if status is not None and not isinstance(status, dict):
+                    raise ValueError('native inventory status must be an object or null')
+                category = (status or {}).get('statusCategory')
+                if category is not None and not isinstance(category, dict):
+                    raise ValueError('native inventory status category must be an object or null')
+                if category and category.get('key') is not None and not isinstance(category['key'], str):
+                    raise ValueError('native inventory status category key must be a string or null')
+            if len({v['key'] for v in values}) != len(values):
+                raise ValueError('repeated native inventory Jira keys')
+        ids = [v.get('id', v.get('key')) for v in values]
+        if any(not ((isinstance(i, str) and bool(i.strip())) or (type(i) is int and i > 0)) for i in ids):
+            raise ValueError('missing/malformed resource identities')
+        if len(ids) != len({str(i) for i in ids}):
             raise ValueError('missing/repeated resource identities')
         if kind == 'jira_comments' and any(not isinstance(v.get('body'), str) and not valid_adf(v.get('body')) for v in values):
             raise ValueError('native comment body missing or malformed')
@@ -205,7 +225,8 @@ def validate_shape(kind, data):
 
 def comment_fidelity(data):
     return 'native' if all(valid_adf(v.get('body')) and isinstance(v.get('author'), dict)
-                           and v['author'].get('accountId') and ('visibility' not in v or v['visibility'] is None or isinstance(v['visibility'], dict))
+                           and isinstance(v['author'].get('accountId'), str) and bool(v['author']['accountId'].strip())
+                           and ('visibility' not in v or v['visibility'] is None or isinstance(v['visibility'], dict))
                            for v in rows(data, 'jira_comments')) else 'rendered'
 
 
@@ -215,7 +236,7 @@ def issue_comments(issue):
         raise ValueError('native issue comments require an object with count/offset proof')
     try:
         validate_shape('jira_comments', comments)
-    except (KeyError, TypeError, AttributeError) as e:
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise ValueError('malformed native issue comment page') from e
     return comments
 
@@ -359,6 +380,10 @@ class Collector:
             site = jira_site(site)
         resource_identity(kind, resource, site, data)
         ident = ident or source_id(service, site, kind, resource)
+        if not isinstance(ident, str) or not ident.strip():
+            raise ValueError('source id must be a nonempty string')
+        if identity_ref is not None and (not isinstance(identity_ref, str) or not identity_ref.strip()):
+            raise ValueError('source identity reference must be a nonempty string')
         logical_prior = next((s for s in self.packet['sources']
                               if (s['service'], s['site'], s['kind'], s['resource']) == (service, site, kind, resource)), None)
         replacing = logical_prior and replace_incomplete and complete and not logical_prior['complete']
@@ -415,6 +440,9 @@ class Collector:
         if type(doc.get('schema_version')) is not int or doc['schema_version'] != VERSION or not isinstance(doc.get('sources'), list):
             raise ValueError('unsupported import manifest')
         for s in doc['sources']:
+            if not isinstance(s, dict):
+                self.gap('import:?', 'source record must be an object')
+                continue
             try:
                 if s.get('kind') in {'jira_issue', 'jira_comments'} and s.get('resource') in fresh_issue_keys:
                     self.jira_import_site_hints.add(jira_site(s['site']))
@@ -432,7 +460,7 @@ class Collector:
                 complete = s.get('complete') is True and (not paginated or s.get('pagination', {}).get('terminated') is True)
                 self.add(s['service'], s['site'], s['kind'], s['resource'], read_source(raw, s), complete,
                          s['schema'], s['captured_at'], s.get('identity_ref'), s.get('id'), s.get('pagination'), raw.read_bytes(), s.get('access'))
-            except (ValueError, KeyError, OSError) as e:
+            except (ValueError, KeyError, OSError, TypeError, AttributeError, IndexError) as e:
                 self.gap('import:' + str(s.get('resource', '?')), e)
         self.identities()
 
@@ -525,7 +553,8 @@ class Collector:
             self.gap('jira_inventory', e)
 
     def identity_ref(self, service):
-        return next((s['id'] for s in self.packet['sources'] if s['service'] == service and s['kind'].endswith('identity')), None)
+        return next((s['id'] for s in self.packet['sources']
+                     if s['service'] == service and s['kind'] == service + '_identity' and s['complete']), None)
 
     def native_git(self, host):
         self.cli_git_identity_ref = None
@@ -589,7 +618,7 @@ class Collector:
                 if not KEY.fullmatch(key):
                     raise ValueError('invalid inventory Jira key')
                 fields = item.get('fields', {})
-                category = (fields.get('status') or {}).get('statusCategory', {}).get('key')
+                category = ((fields.get('status') or {}).get('statusCategory') or {}).get('key')
                 if category not in {'new', 'indeterminate', 'done'}:
                     self.gap(key, 'native status category missing; active membership provisional')
                 value = {'key': key, 'site': s['site'], 'issue_id': item.get('id'),
@@ -606,7 +635,7 @@ class Collector:
                 if not KEY.fullmatch(key):
                     raise ValueError('invalid contextual Jira key')
                 if key not in found:
-                    category = (item.get('fields', {}).get('status') or {}).get('statusCategory', {}).get('key')
+                    category = ((item.get('fields', {}).get('status') or {}).get('statusCategory') or {}).get('key')
                     found[key] = {'key': key, 'site': s['site'], 'issue_id': item.get('id'), 'role': 'context', 'active': category != 'done', 'context_roles': []}
                     self.packet['inventory'].append(found[key])
                 found[key].setdefault('context_roles', []).append(s['resource'])
@@ -805,6 +834,9 @@ def check(directory):
         if s['kind'].endswith('identity'):
             if s['kind'] == 'artifact_identity':
                 continue  # Reader provenance is never a Jira/Git account or issue-ownership assertion.
+            if not s.get('complete'):
+                provisional.append('incomplete native identity: ' + s['id'])
+                continue
             expected = packet.get('identities', {}).get('jira' if s['service'] == 'jira' else 'github', {})
             if s['service'] == 'jira':
                 require(expected.get('account_id') == data[s['id']].get('accountId') and expected.get('site') == s['site'], 'packet/native Jira identity mismatch')
@@ -828,7 +860,7 @@ def check(directory):
         if s['kind'] == 'jira_inventory':
             for item in rows(data[s['id']], 'jira_inventory'):
                 native_assigned.add(item['key'])
-                native_members[item['key']] = (s['site'], (item.get('fields', {}).get('status') or {}).get('statusCategory', {}).get('key'))
+                native_members[item['key']] = (s['site'], ((item.get('fields', {}).get('status') or {}).get('statusCategory') or {}).get('key'))
     if any(s['kind'] == 'jira_inventory' for s in sources.values()):
         require(native_assigned == {i['key'] for i in inventory if i.get('role') in {'assigned', 'specialist'}}, 'inventory omits/adds assigned native members')
         for item in inventory:
@@ -842,6 +874,16 @@ def check(directory):
                     require(item.get('active') is True, 'unknown assigned status category cannot exclude decision accounting')
     active = {i['key'] for i in inventory if i.get('active') and i.get('role') in {'assigned', 'specialist'}}
     require(all(i.get('role') in {'assigned', 'context', 'specialist'} for i in inventory), 'unsupported inventory role')
+    triage_keys = packet.get('scope', {}).get('triage_keys')
+    required_decisions = active
+    if 'triage_keys' in packet.get('scope', {}):
+        valid_focus = (isinstance(triage_keys, list) and bool(triage_keys)
+                       and all(isinstance(key, str) and KEY.fullmatch(key) for key in triage_keys))
+        require(valid_focus, 'triage scope must be a nonempty list of valid issue keys')
+        if valid_focus:
+            require(len(set(triage_keys)) == len(triage_keys), 'duplicate triage scope key')
+            require(set(triage_keys) <= {i['key'] for i in inventory}, 'triage scope key outside inventory')
+            required_decisions = set(triage_keys)
     decisions = load_json(root / 'decisions.json') if (root / 'decisions.json').exists() else []
     drafts = load_json(root / 'drafts.json') if (root / 'drafts.json').exists() else []
     reviews = load_json(root / 'reviews.json') if (root / 'reviews.json').exists() else []
@@ -849,7 +891,8 @@ def check(directory):
         raise ValueError('decision/draft/review files must be lists')
     if (root / 'decisions.json').exists() or drafts:
         require(len({d['key'] for d in decisions}) == len(decisions), 'duplicate decision key')
-        require(active <= {d['key'] for d in decisions}, 'missing active assigned decision')
+        require(required_decisions <= {d['key'] for d in decisions},
+                'missing scoped triage decision' if triage_keys is not None else 'missing active assigned decision')
     else:
         provisional.append('collection only; deep triage not yet recorded')
     allowed_dispositions = {'no_change', 'candidate', 'held', 'needs_decision', 'specialist'}
@@ -865,6 +908,8 @@ def check(directory):
     for draft in drafts:
         ident = draft.get('id', '?')
         key = draft.get('key')
+        if 'triage_keys' in packet.get('scope', {}):
+            require(key in required_decisions, 'draft outside declared triage scope')
         audited = draft.get('ready', 'provisional') == 'audited'
         if audited:
             user_request = packet.get('scope', {}).get('user_request')
@@ -1077,12 +1122,16 @@ def main(argv=None):
             collector.native_git(args.github_host)
         collector.inventory()
         known = {i['key'] for i in collector.packet['inventory']}
-        for key in args.issue:
+        explicit_keys = list(dict.fromkeys(args.issue))
+        if explicit_keys:
+            collector.packet['scope']['triage_keys'] = explicit_keys
+        for key in explicit_keys:
             if not KEY.fullmatch(key):
                 raise ValueError('invalid explicit Jira key')
             if key not in known:
                 collector.packet['inventory'].append({'key': key, 'role': 'context', 'active': True})
-        selected = args.issue or [i['key'] for i in collector.packet['inventory'] if i.get('active') and i.get('role') in {'assigned', 'specialist'}]
+                known.add(key)
+        selected = explicit_keys or [i['key'] for i in collector.packet['inventory'] if i.get('active') and i.get('role') in {'assigned', 'specialist'}]
         if not args.offline:
             collector.enrich(selected)
             for url in args.pr:
