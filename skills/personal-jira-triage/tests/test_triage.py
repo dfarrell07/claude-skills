@@ -416,6 +416,122 @@ class PacketCase(unittest.TestCase):
         self.assertFalse(any(call[:4] == ["acli", "jira", "workitem", "view"] or
                              call[:4] == ["acli", "jira", "workitem", "comment"] for call in calls))
 
+    def embedded_comments(self):
+        return {"startAt": 0, "maxResults": 20, "total": 1, "comments": [
+            {"id": "900", "body": document("A synthetic native owner report."),
+             "author": {"accountId": "synthetic-owner", "displayName": "Synthetic Owner"},
+             "visibility": {"type": "role", "value": "Synthetic Readers"}}]}
+
+    def test_issue_embedded_comments_preserve_bytes_capture_and_reader(self):
+        self.issue["fields"]["comment"] = self.embedded_comments()
+        responses, _ = self.native_responses([self.issue])
+        view = ["acli", "jira", "workitem", "view", KEY, "--fields", "*all", "--json"]
+        comments = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+        raw = "\ufeff  " + json.dumps(self.issue, indent=3) + "\r\n"
+        responses[json.dumps(view)]["stdout"] = raw
+        del responses[json.dumps(comments)]  # No fallback read is needed for a complete native snapshot.
+        result, packet, destination = self.native_collect(responses)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        issue = next(s for s in packet["sources"] if s["kind"] == "jira_issue")
+        source = next(s for s in packet["sources"] if s["kind"] == "jira_comments")
+        self.assertEqual(source["schema"], "acli-issue-comments-json-v1")
+        self.assertEqual(source["fidelity"], "native")
+        self.assertEqual((destination / source["raw_path"]).read_bytes(), raw.encode())
+        self.assertEqual(source["sha256"], issue["sha256"])
+        for field in ("captured_at", "site", "identity_ref"):
+            self.assertEqual(source[field], issue[field])
+        self.assertEqual(source["identity_ref"], "identity")
+        self.assertEqual(triage.read_source(destination / source["raw_path"], source), self.embedded_comments())
+        self.assertTrue(triage.check(destination)["valid"])
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertNotIn(comments, calls)
+
+    def test_unusable_embedded_comments_fall_back_to_paginated_cli(self):
+        native = self.embedded_comments()
+        rendered = copy.deepcopy(native)
+        rendered["comments"][0].update(body="Rendered report", author="Synthetic Owner")
+        malformed = copy.deepcopy(native)
+        malformed["comments"][0]["body"] = {"type": "doc", "content": [False]}
+        scalar_rows = {"startAt": 0, "maxResults": 1, "total": 1, "comments": [1]}
+        for index, embedded in enumerate((None, {**native, "total": 2}, rendered, malformed, [], scalar_rows)):
+            with self.subTest(embedded=embedded):
+                issue = copy.deepcopy(self.issue)
+                issue["fields"]["comment"] = embedded
+                responses, _ = self.native_responses([issue])
+                argv = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+                responses[json.dumps(argv)]["stdout"] = json.dumps(native)
+                result, packet, destination = self.native_collect(responses, self.root / ("embedded-fallback-" + str(index)))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                source = next(s for s in packet["sources"] if s["kind"] == "jira_comments")
+                self.assertEqual(source["schema"], "acli-comments-json-stream-v1")
+                self.assertEqual(triage.read_source(destination / source["raw_path"], source), native)
+
+    def test_partial_embedded_comments_and_failed_fallback_remain_missing(self):
+        self.issue["fields"]["comment"] = {**self.embedded_comments(), "total": 2}
+        responses, _ = self.native_responses([self.issue])
+        argv = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+        responses[json.dumps(argv)].update(exit=1, stdout="")
+        result, packet, _ = self.native_collect(responses)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(s["kind"] == "jira_comments" for s in packet["sources"]))
+        self.assertTrue(any(g["source"] == KEY + ":jira_comments" for g in packet["gaps"]))
+
+    def test_cached_imported_issue_comments_keep_original_cutoff_and_reader(self):
+        self.issue["fields"]["comment"] = self.embedded_comments()
+        self.update_source("issue", self.issue)
+        manifest = self.run / "cached-issue.json"
+        write_json(manifest, {"schema_version": 1, "sources": self.packet["sources"][:2]})
+        collector = triage.Collector(self.root / "cached-collector", 10)
+        collector.imports(manifest)
+        # A cached native snapshot needs no current CLI authentication or remote call.
+        def forbidden(*args, **kwargs):
+            self.fail("cached embedded comments should not invoke a native client")
+        collector.command = forbidden
+        collector.enrich([KEY])
+        issue = next(s for s in collector.packet["sources"] if s["kind"] == "jira_issue")
+        source = next(s for s in collector.packet["sources"] if s["kind"] == "jira_comments")
+        self.assertEqual(source["captured_at"], NOW)
+        self.assertEqual(source["site"], SITE)
+        self.assertEqual(source["identity_ref"], "identity")
+        self.assertEqual((collector.root / source["raw_path"]).read_bytes(), (self.run / "raw/issue.json").read_bytes())
+        self.assertEqual(source["sha256"], issue["sha256"])
+
+    def test_issue_backed_comment_reader_rejects_raw_issue_key_mismatch(self):
+        self.issue["fields"]["comment"] = self.embedded_comments()
+        raw = self.root / "embedded-issue.json"
+        write_json(raw, self.issue)
+        source = {"kind": "jira_comments", "schema": "acli-issue-comments-json-v1",
+                  "resource": "EXAMPLE-18", "site": SITE}
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            triage.read_source(raw, source)
+        source["resource"] = KEY
+        self.issue["fields"]["comment"] = {"startAt": 0, "maxResults": 1, "total": 1, "comments": [1]}
+        write_json(raw, self.issue)
+        with self.assertRaisesRegex(ValueError, "malformed native issue comment page"):
+            triage.read_source(raw, source)
+
+    def test_complete_empty_embedded_comments_need_no_fallback(self):
+        self.issue["fields"]["comment"] = {"startAt": 0, "maxResults": 20, "total": 0, "comments": []}
+        responses, _ = self.native_responses([self.issue])
+        argv = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+        del responses[json.dumps(argv)]
+        result, packet, destination = self.native_collect(responses)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        source = next(s for s in packet["sources"] if s["kind"] == "jira_comments")
+        self.assertEqual(triage.rows(triage.read_source(destination / source["raw_path"], source), "jira_comments"), [])
+
+    def test_failed_issue_capture_does_not_prevent_honest_comment_fallback(self):
+        responses, _ = self.native_responses([self.issue])
+        view = ["acli", "jira", "workitem", "view", KEY, "--fields", "*all", "--json"]
+        comments = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]
+        responses[json.dumps(view)].update(exit=1, stdout="")
+        responses[json.dumps(comments)]["stdout"] = json.dumps(self.embedded_comments())
+        result, packet, _ = self.native_collect(responses)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(s["kind"] == "jira_issue" for s in packet["sources"]))
+        self.assertTrue(any(s["kind"] == "jira_comments" for s in packet["sources"]))
+        self.assertTrue(any(g["source"] == KEY + ":jira_issue" for g in packet["gaps"]))
+
     def test_comment_last_page_is_retained(self):
         responses, _ = self.native_responses([self.issue])
         argv = ["acli", "jira", "workitem", "comment", "list", "--key", KEY, "--json", "--paginate"]

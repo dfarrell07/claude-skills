@@ -448,7 +448,7 @@ The stdlib helper has only read-only `collect` and offline `check`; provider wri
 remain outside the bundle. The checker binds user scope, native readers, source provenance/page proof, requests and returned reviews.
 Raw captures remain private and byte-preserved. Native rendered comments remain provisional for audited ADF requests.
 
-All 111 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
+All 118 offline tests pass on Python 3.10 and the available default Python, including collection subprocess failures, pagination,
 worktrees, ADF preservation, stale evidence, account/scope changes and actual reviewer-context guards. The existing CVE unit suite
 remains in the sequential `make unit-test` path. No live CVE tests are part of this qualification.
 A frozen-helper native read captured the assigned inventory and every active issue/comment history; it correctly returned incomplete
@@ -462,8 +462,8 @@ An unseen paired fixture then produced the needed corrections, held accurate unc
 when the host capabilities were unavailable. Failed earlier runs remain failed qualification evidence.
 
 Strict oracle filesystem isolation was not demonstrated, so no blind behavioral qualification is claimed. Claude's runtime attempt
-was blocked by its session quota; its wrapper success did not qualify the invocation. Antigravity runtime enforcement/discovery was
-not exercised. Codex discovery and the assisted degraded-capability workflow were exercised, not every host's full audited workflow.
+was initially blocked by its session quota; later scoped real-data runs are recorded below. Antigravity runtime enforcement/discovery
+was not exercised. Codex discovery and the assisted degraded-capability workflow were exercised, not every host's full audited workflow.
 Before claiming another host is qualified, run its isolated forward cases and verify actual discovery, argument handling, returned
 independent reviews or honest fallback, and the review stop. Keep private captures/oracles outside installations and source history.
 
@@ -475,3 +475,18 @@ Cross-review also prevents native PR captures from borrowing an imported Git rea
 The next review correction refreshes explicitly selected imported PRs, blocks native Jira enrichment under an unknown or mismatched
 CLI site, confines ADF patch paths to content children and clarifies that offline imports still permit local read-only Git discovery.
 These corrections do not establish additional host or blind behavioral qualification; the limits above still apply.
+
+Read-only real-data qualification captured 704 assigned issues, all 75 active issue/comment histories, 48 distinct open PRs and
+173 directly inspected native PR objects including referenced historical work. Two independent contexts reviewed the 71 general
+active issues; four restricted cases were routed separately. These are dated run counts, not scope limits.
+All 75 issue responses already contained complete native comments. Prefer those exact issue bytes with their original capture time
+and reader; use the paginated CLI fallback for partial, malformed or rendered embedded data. This removes redundant reads and the
+23 avoidable rendered-comment gaps without inventing Jira identity. The real provisional packet passed the checker with zero
+audited drafts, and both reviewers accepted two minimal description proposals. No Jira update was applied.
+
+Claude subsequently executed scoped real-data runs. The initial ten-issue result was mixed; it proposed unnecessary historical
+commentary and missed a current field discrepancy. A fresh six-issue retest recorded native plugin discovery and 17 Read calls,
+found the two useful description corrections, omitted the historical comment and kept validated independent review at zero.
+Its remaining ownership, acceptance and semantic-coverage assertions were not fully supported; do not count this as full host
+qualification. Retain the separate native returned-report/check gate and clarify the observed fallback limits in the evidence
+reference. Neither these assisted runs nor static tests establish blind isolation or Antigravity qualification.

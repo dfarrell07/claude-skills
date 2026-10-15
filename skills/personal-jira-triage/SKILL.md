@@ -51,7 +51,9 @@ current head/checks and target branch when relevant. A matching title/blob, merg
 combined status cannot stand in for delivery. Source changes, publication, installation and QE acceptance are separate claims.
 Gather domain evidence only when the original task requires it; do not rerun engineering pipelines to audit tracking.
 
-Draft only a useful missing delta or correction. Preserve native ADF, existing links, unknown nodes, marks and attributes; edit only
+Draft only a useful missing delta or correction. Check descriptions and link scope even when the open status is accurate.
+Preserve existing acceptance checklists; reporter identity or old activity alone cannot justify a closure choice.
+Preserve native ADF, existing links, unknown nodes, marks and attributes; edit only
 existing text leaves or append native content nodes; hold unsupported structural rewrites. Recognize card links before calling a PR
 field empty. Use current native metadata for exact requests when available;
 otherwise show human-readable provisional drafts. Include status/resolution explicitly, including `keep`, and remaining unfinished work.
