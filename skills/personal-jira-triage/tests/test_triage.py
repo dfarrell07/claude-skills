@@ -596,6 +596,74 @@ class PacketCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "malformed native issue comment page"):
             triage.read_source(raw, source)
 
+    def test_offline_collection_derives_complete_embedded_comments_with_original_provenance(self):
+        for index, comments in enumerate((self.embedded_comments(), {
+                "startAt": 0, "maxResults": 100, "total": 0, "comments": []})):
+            with self.subTest(comments=comments):
+                self.issue["fields"]["comment"] = comments
+                self.update_source("issue", self.issue)
+                manifest = self.run / "embedded-import.json"
+                write_json(manifest, {"schema_version": 1, "sources": self.packet["sources"][:2]})
+                original = (self.run / "raw/issue.json").read_bytes()
+                destination = self.root / ("offline-embedded-" + str(index))
+                result = self.invoke("collect", "--offline", "--issue", KEY, "--imports", manifest,
+                                     "--run-dir", destination)
+                packet = json.loads((destination / "packet.json").read_text())
+                source = next(s for s in packet["sources"] if s["kind"] == "jira_comments")
+                self.assertEqual(source["schema"], "acli-issue-comments-json-v1")
+                self.assertEqual(source["fidelity"], "native")
+                self.assertEqual(source["captured_at"], NOW)
+                self.assertEqual(source["site"], SITE)
+                self.assertEqual(source["identity_ref"], "identity")
+                self.assertEqual((destination / source["raw_path"]).read_bytes(), original)
+                self.assertEqual(triage.read_source(destination / source["raw_path"], source), comments)
+                self.assertEqual((self.run / "raw/issue.json").read_bytes(), original)
+                self.assertFalse(any(g["source"] == KEY + ":jira_comments" for g in packet["gaps"]))
+                self.assertFalse(self.log.exists(), result.stdout + result.stderr)
+
+    def test_offline_unusable_embedded_comments_remain_missing_without_client_reads(self):
+        native = self.embedded_comments()
+        rendered = copy.deepcopy(native)
+        rendered["comments"][0].update(body="Rendered report", author="Synthetic Owner")
+        malformed = copy.deepcopy(native)
+        malformed["comments"][0]["body"] = {"type": "doc", "content": [False]}
+        for index, comments in enumerate((None, {**native, "total": 2}, rendered, malformed)):
+            with self.subTest(comments=comments):
+                self.issue["fields"]["comment"] = comments
+                self.update_source("issue", self.issue)
+                manifest = self.run / "unusable-import.json"
+                write_json(manifest, {"schema_version": 1, "sources": self.packet["sources"][:2]})
+                destination = self.root / ("offline-unusable-" + str(index))
+                result = self.invoke("collect", "--offline", "--issue", KEY, "--imports", manifest,
+                                     "--run-dir", destination)
+                packet = json.loads((destination / "packet.json").read_text())
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(any(s["kind"] == "jira_comments" for s in packet["sources"]))
+                self.assertTrue(any(g["source"] == KEY + ":jira_comments" for g in packet["gaps"]))
+                self.assertFalse(self.log.exists(), result.stdout + result.stderr)
+
+    def test_offline_capture_reuse_without_native_account_keeps_identity_gap_only(self):
+        self.issue["fields"]["comment"] = self.embedded_comments()
+        self.update_source("issue", self.issue)
+        for index, kinds in enumerate(({"jira_issue"}, {"jira_issue", "jira_comments"})):
+            with self.subTest(kinds=kinds):
+                sources = [copy.deepcopy(s) for s in self.packet["sources"] if s["kind"] in kinds]
+                for source in sources:
+                    source.pop("identity_ref", None)
+                manifest = self.run / "without-identity.json"
+                write_json(manifest, {"schema_version": 1, "sources": sources})
+                destination = self.root / ("offline-no-identity-" + str(index))
+                result = self.invoke("collect", "--offline", "--issue", KEY, "--imports", manifest,
+                                     "--run-dir", destination)
+                packet = json.loads((destination / "packet.json").read_text())
+                self.assertEqual(result.returncode, 2)  # Identity/discovery remain incomplete.
+                self.assertNotIn("account_id", packet["identities"].get("jira", {}))
+                self.assertTrue(any("identity unavailable" in g["reason"] for g in packet["gaps"]))
+                self.assertFalse(any(g["source"] in {KEY + ":jira_issue", KEY + ":jira_comments"}
+                                     for g in packet["gaps"]))
+                self.assertEqual(sum(s["kind"] == "jira_comments" for s in packet["sources"]), 1)
+                self.assertFalse(self.log.exists(), result.stdout + result.stderr)
+
     def test_complete_empty_embedded_comments_need_no_fallback(self):
         self.issue["fields"]["comment"] = {"startAt": 0, "maxResults": 20, "total": 0, "comments": []}
         responses, _ = self.native_responses([self.issue])
