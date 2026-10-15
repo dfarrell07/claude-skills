@@ -512,3 +512,8 @@ reviewers found its intermediate workflow-status correction defensible; unknown 
 The guidance now distinguishes automation placeholders from factual scope and requires existing candidate evidence before suggesting
 another engineering run. A fresh native Claude retest hit its session limit after seven Read calls; it is blocked qualification, not a
 passing result. Retain the earlier failures and the host/identity limits; no full Claude, Antigravity or blind qualification is claimed.
+
+An actual portfolio audit later on October 15 found 706 assigned issues and 77 active: 73 general cases and four restricted cases
+routed separately. It inspected the 73 general descriptions/acceptance fields and 169 comment bodies; attached log bytes remained
+unread. This exposed two practical clarifications: retain media references despite empty projected text, and carry the original
+audit scope through a batch-only capture refresh. Neither changes authorization or upgrades provisional drafts to audited requests.

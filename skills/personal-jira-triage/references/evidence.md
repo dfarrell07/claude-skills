@@ -86,6 +86,7 @@ or use a navigational projection retaining every comment's ID, timestamp, author
 mention identities and structural boundaries. Retain original bytes; inspect native ADF for selected edits and whenever omitted or
 unknown nodes affect acceptance or attribution. Truncated tool output or a sample of recent comments is partial review, not deep
 triage; report it separately. Projection is a reading aid, never a replacement baseline or capture.
+Media-only comments may carry attachments despite empty projected text; retain their native references and disclose unread files.
 Without native identity, assignment remains supplied scope, not verified ownership. Repeated assignee IDs do not fill that gap.
 
 ## Connector-only imports
@@ -289,6 +290,8 @@ Refresh selected mutable decision inputs through real native reads after review.
 For CLI target refresh, run `collect --imports BASE_MANIFEST --issue KEY --run-dir NEW_PRIVATE_RUN` without `--offline`;
 this recaptures selected issue/comments while retaining unrelated imported cutoffs. For connector-only refresh, export genuinely
 fresh native captures and use `collect --offline --imports FRESH_MANIFEST --issue KEY --run-dir NEW_PRIVATE_RUN`.
+When `--issue` selects only refresh inputs, carry forward the original recorded audit scope before reusing decisions/drafts;
+the collector's new `triage_keys` focus does not replace the user's broader request or authorize changes to supporting context.
 Neither route fabricates a final receipt; supporting metadata/child/PR evidence needs its own fresh captures.
 Cover target state/comments, relevant supporting owner/child evidence, PR heads/checks/statuses and needed operation/visibility metadata.
 Reuse immutable blobs; do not refresh unrelated inventory indefinitely. Changed material inputs invalidate affected reviews.
