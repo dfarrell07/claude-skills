@@ -23,7 +23,8 @@ During online collection with imports, explicit `--issue` keys omit their import
 Explicit online `--pr` URLs likewise omit matching imported PR captures before a fresh native read; the original manifest stays unchanged.
 Unrelated complete imported captures retain their original cutoff; importing an old file does not refresh it.
 Incomplete imports may be replaced by a complete online native read; retain a named gap if recapture fails.
-Offline selection uses supplied captures and reports missing selected issue/comment sources.
+Offline selection also derives comments from complete native embedded issue captures, preserving their original provenance;
+it reports missing selected issue/comment sources without invoking authenticated clients.
 `--pr` fetches explicit PRs during native collection; offline collection reports a gap for each explicit PR lacking a complete
 matching import.
 Incomplete collection returns exit 2 while retaining named gaps.

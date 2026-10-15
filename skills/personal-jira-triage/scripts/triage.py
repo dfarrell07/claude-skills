@@ -640,8 +640,12 @@ class Collector:
                     self.packet['inventory'].append(found[key])
                 found[key].setdefault('context_roles', []).append(s['resource'])
 
-    def enrich(self, keys):
+    def enrich(self, keys, offline=False):
         site = self.packet['identities'].get('jira', {}).get('site', '')
+        if offline and not site:
+            sites = {s['site'] for s in self.packet['sources'] if s['service'] == 'jira'}
+            if len(sites) == 1:
+                site = next(iter(sites))  # Capture availability does not establish an authenticated principal.
         existing = {(s['kind'], s['resource']): s for s in self.packet['sources']
                     if s['complete'] and s['site'] == site}
         def read(key):
@@ -665,6 +669,9 @@ class Collector:
                             continue
                     except ValueError:
                         pass  # Missing/partial/malformed native fields still need the paginated reader.
+                if offline:
+                    results.append((kind, None, None, 'selected issue capture unavailable in offline imports', {}))
+                    continue
                 if self.cli_jira_site != site or not self.cli_jira_site:
                     results.append((kind, None, None, 'selected Jira site not established by current CLI authentication', {}))
                     continue
@@ -1141,16 +1148,11 @@ def main(argv=None):
                 collector.packet['inventory'].append({'key': key, 'role': 'context', 'active': True})
                 known.add(key)
         selected = explicit_keys or [i['key'] for i in collector.packet['inventory'] if i.get('active') and i.get('role') in {'assigned', 'specialist'}]
+        collector.enrich(selected, offline=args.offline)
         if not args.offline:
-            collector.enrich(selected)
             for url in args.pr:
                 collector.pr(url, args.github_host)
         else:
-            resources = {(s['kind'], s['resource']) for s in collector.packet['sources']}
-            for key in selected:
-                for kind in ['jira_issue', 'jira_comments']:
-                    if (kind, key) not in resources:
-                        collector.gap(key + ':' + kind, 'selected issue capture unavailable in offline imports')
             for url in args.pr:
                 try:
                     resource = pr_resource(url, args.github_host)
