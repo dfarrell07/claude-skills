@@ -177,6 +177,11 @@ class WorkLinksTest(unittest.TestCase):
                     validate_links(data)
                     self.assertEqual(pr['jira_links'], [])
                     self.assertEqual(issue['pr_links'], [])
+                    proof_field = 'head_ref' if field == 'indexed_head_ref' else field
+                    issue['pr_links'] = [{'url': pr['url'], 'proof': 'github_' + proof_field + '_key',
+                                          'evidence_url': pr['url'], 'sensitive': False}]
+                    with self.assertRaises(ValueError):
+                        validate_links(data)
         for text in ('VERSION-4.', 'VERSION-4. More context.', 'fix/version-4-retry',
                      'VERSION-4/followup', 'VERSION-4.followup', 'VERSION-4: update',
                      'version-4.20; VERSION-4: genuine ticket'):
