@@ -22,6 +22,7 @@ from evidence import (  # noqa: E402
     read_json, require, timestamp, valid_item, is_pr_url,
 )
 from local_sources import collect_local  # noqa: E402
+from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, complete_references, github_items, validate_links  # noqa: E402
@@ -37,10 +38,6 @@ def collect(days_text, roots, now=None):
         start = end - timedelta(days=days)
     except OverflowError as error:
         raise ValueError("Days exceed the supported date range") from error
-    require(shutil.which("git"), "git is required but not installed")
-    version = command(["git", "--version"]).strip()
-    match = re.search(r"(\d+)\.(\d+)", version)
-    require(match and tuple(map(int, match.groups())) >= (2, 37), "Git 2.37 or newer is required")
     warnings = []
 
     def warn(message):
@@ -48,7 +45,10 @@ def collect(days_text, roots, now=None):
         print(f"Warning: {message}", file=sys.stderr)
 
     host = os.environ.get("GH_HOST", "github.com").lower()
-    require(HOST.fullmatch(host), "Invalid GH_HOST")
+    github_host_valid = HOST.fullmatch(host) is not None
+    if not github_host_valid:
+        warn("Configured GitHub host is invalid; GitHub reads are unavailable.")
+        host = "github.com"
     github = {"prs": [], "issues": []}
     github_status = "unavailable"
     github_user = ""
@@ -58,7 +58,7 @@ def collect(days_text, roots, now=None):
     def api(*args):
         return decode_json(command(["gh", "api", "--hostname", host, *args], env=gh_env))
 
-    if shutil.which("gh"):
+    if github_host_valid and shutil.which("gh"):
         try:
             identity = api("user")
             github_user = identity["login"]
@@ -67,7 +67,7 @@ def collect(days_text, roots, now=None):
         except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
             warn("GitHub identity lookup failed; GitHub activity is unavailable.")
             github_user = ""
-    else:
+    elif github_host_valid:
         warn("GitHub CLI is missing; GitHub activity is unavailable.")
     if github_user:
         github_status = "ok"
@@ -149,10 +149,9 @@ def collect(days_text, roots, now=None):
             if info["status"] != "ok":
                 github_status = "partial"
 
-    local_warning_start = len(warnings)
-    local = collect_local(roots, start, end, warn, api if github_user else None,
-                          identity if github_user else {})
-    local_status = "partial" if len(warnings) > local_warning_start else "ok"
+    local, local_status, local_capability = collect_local_safely(
+        collect_local, roots, start, end, warn, api=api if github_user else None,
+        identity=identity if github_user else {})
     jira = collect_jira(start, end, warn)
     discovery = {}
     if github_user:
@@ -172,7 +171,8 @@ def collect(days_text, roots, now=None):
     return {
         "metadata": {"days": days, "since_date": start.date().isoformat(), "to_date": end.date().isoformat(),
                      "since_at": iso(start), "to_at": iso(end), **local["metadata"],
-                     "local_status": local_status, "github_discovery": discovery, "reference_expansion": expansion,
+                     "local_status": local_status, "capabilities": {"local_git": local_capability},
+                     "github_discovery": discovery, "reference_expansion": expansion,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
         "github": github, "jira": jira, "commits": local["commits"], "branches": local["branches"],
@@ -200,7 +200,8 @@ def validate(data, source=None):
                 "Date labels do not match timestamps")
     warnings = metadata.get("warnings", [])
     require(isinstance(warnings, list) and all(isinstance(w, str) and w for w in warnings), "Invalid coverage warnings")
-    for key, states in (("github_status", {"ok", "partial", "unavailable"}), ("local_status", {"ok", "partial"})):
+    for key, states in (("github_status", {"ok", "partial", "unavailable"}),
+                        ("local_status", {"ok", "partial", "unavailable"})):
         if key in metadata:
             require(metadata[key] in states and (metadata[key] == "ok" or warnings), f"Invalid {key} or missing coverage gap")
     if "repos_skipped" in metadata:
@@ -374,7 +375,165 @@ def link(item):
     return f"[{markdown(item['repo'])}#{item['number']}]({item['url']})"
 
 
-def render(data, source=None):
+def contextual_jira_links(item):
+    """Retain explicit native browse URLs without inventing a Jira identity."""
+    if not is_pr_url(item['url']):
+        return []
+    result = {}
+    for field in ('title', 'body'):
+        for match in re.finditer(r'https://[^\s<>"\[\]()]+', item.get(field, '')):
+            original = match.group().rstrip('.,;:!?`\'’”')
+            parts = urlsplit(original)
+            if (HOST.fullmatch(parts.netloc) and parts.username is None and parts.password is None
+                    and re.fullmatch(r'/browse/[A-Z][A-Z0-9_]*-[1-9][0-9]*', parts.path, re.I)):
+                try:
+                    if parts.port is not None and not 1 <= parts.port <= 65535:
+                        continue
+                except ValueError:
+                    continue
+                url = 'https://' + parts.netloc + parts.path
+                result[url] = {'url': url, 'source_url': original, 'proof': 'github_' + field + '_url',
+                               'evidence_url': item['url']}
+    return [result[url] for url in sorted(result)]
+
+
+def topic_github_items(data, topic):
+    by_url = {item['url']: item for item in reversed(github_items(data['github']))}
+    selected = {item['url']: by_url[item['url']] for item in topic.get('items', [])}
+    refs = {(item['repo'], item['hash']) for item in topic.get('commits', []) + topic.get('branches', [])}
+    for branch in data.get('branches', []):
+        if (branch['repo'], branch['hash']) in refs:
+            for pr in branch.get('prs', []):
+                selected[pr['url']] = by_url[pr['url']]
+    return list(selected.values())
+
+
+def work_urls(data, topic):
+    """Return only captured citations and their validated counterpart links."""
+    jira = {item['key']: item for item in data.get('jira', {}).get('issues', [])}
+    ticket_urls, change_urls, context_urls = set(), set(), set()
+
+    def ticket(item, include_prs):
+        ticket_urls.add(item['url'])
+        if include_prs:
+            change_urls.update(link['url'] for link in item.get('pr_links', []))
+        context_urls.update(link['url'] for link in item.get('review_links', []))
+
+    def github(item):
+        change_urls.add(item['url'])
+        ticket_urls.update(relation['url'] for relation in contextual_jira_links(item))
+        for relation in item.get('jira_links', []):
+            ticket(jira[relation['key']], False)
+
+    for item in topic_github_items(data, topic):
+        github(item)
+    for reference in topic.get('jira', []):
+        ticket(jira[reference['key']], True)
+    return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
+
+
+def fallback_topics(data, limit=12):
+    """Select a small deterministic list from event proof, never backlog roles."""
+    metadata = data['metadata']
+    start = timestamp(metadata['since_at']) if metadata.get('since_at') else None
+    end = timestamp(metadata['to_at']) if metadata.get('to_at') else None
+    items = {item['url']: item for item in reversed(github_items(data['github']))}
+    jira = {item['key']: item for item in data.get('jira', {}).get('issues', [])}
+    candidates = {}
+
+    def add(key, priority, when, topic):
+        rank = priority, -when.timestamp(), key
+        if key not in candidates or rank < candidates[key][0]:
+            candidates[key] = rank, topic
+
+    def github_topic(item, description):
+        return {'description': description, 'items': [{key: item[key] for key in ('repo', 'number', 'url')}]}
+
+    for item in data['github']['prs']:
+        if item.get('merged_at') and start is not None and start <= timestamp(item['merged_at']) <= end:
+            add(item['url'], 0, timestamp(item['merged_at']), github_topic(item, 'Merged: ' + item['title']))
+    actions = {'opened': (1, 'Opened'), 'review': (2, 'Reviewed'),
+               'review_comment': (3, 'Discussed'), 'issue_comment': (3, 'Discussed'),
+               'review_comment_edited': (3, 'Updated discussion on'),
+               'issue_comment_edited': (3, 'Updated discussion on'),
+               'cross-referenced': (4, 'Referenced'), 'closed': (4, 'Closed'),
+               'reopened': (4, 'Reopened')}
+    for event in data['github'].get('activity', []):
+        item = items[event['item_url']]
+        priority, verb = actions.get(event['action'], (4, 'Updated'))
+        add(item['url'], priority, timestamp(event['at']), github_topic(item, verb + ': ' + item['title']))
+    for event in data.get('jira', {}).get('activity', []):
+        item = jira[event['key']]
+        title = 'restricted Jira ticket' if item['sensitive'] else item['title']
+        verb = 'Commented on' if event['kind'] == 'comment_created' else 'Edited a comment on'
+        add(item['url'], 3, timestamp(event['occurred_at']),
+            {'description': verb + ': ' + title, 'items': [],
+             'jira': [{key: item[key] for key in ('key', 'url')}]})
+    identities = {item['path']: item['identities'] for item in metadata.get('repositories', [])}
+    seen_hashes = set()
+    for repo, entries in sorted(data['commits'].items()):
+        verified = [entry for entry in entries if entry.get('author_email') in identities.get(repo, [])
+                    and entry.get('committed_at') and start is not None
+                    and start <= timestamp(entry['committed_at']) <= end]
+        verified.sort(key=lambda entry: (timestamp(entry['committed_at']), entry['hash']), reverse=True)
+        entry = next((entry for entry in verified if entry['hash'] not in seen_hashes), None)
+        seen_hashes.update(entry['hash'] for entry in verified)
+        if entry:
+            topic = {'description': 'Local change in ' + Path(repo).name + ': ' + entry['message'], 'items': [],
+                     'commits': [{'repo': repo, 'hash': entry['hash']}]}
+            urls = work_urls(data, topic)
+            if not any(url in candidates for url in urls):
+                add(repo, 5, timestamp(entry['committed_at']), topic)
+    return [topic for _, topic in sorted(candidates.values(), key=lambda value: value[0])[:limit]]
+
+
+def render(data, source=None, detailed=False):
+    if detailed:
+        return render_detailed(data, source)
+    validate(data, source)
+    topics = list(data['analysis']['themes']) if 'analysis' in data else fallback_topics(data)
+    represented = {url for topic in topics for url in work_urls(data, topic)}
+    for ongoing in data.get('analysis', {}).get('in_progress', []):
+        if ongoing['url'] in represented:
+            continue
+        topic = {'description': 'Ongoing: ' + ongoing['description'], 'items': []}
+        if 'key' in ongoing:
+            topic['jira'] = [{key: ongoing[key] for key in ('key', 'url')}]
+        else:
+            topic['items'] = [{key: ongoing[key] for key in ('repo', 'number', 'url')}]
+        topics.append(topic)
+        represented.update(work_urls(data, topic))
+    lines = []
+    for topic in topics:
+        lines.append('- ' + markdown(topic['description']))
+        for url in work_urls(data, topic):
+            # Autolink brackets retain the displayed raw URL when repository
+            # paths could otherwise activate emphasis or strikethrough.
+            lines.append('  - ' + (f'<{url}>' if any(char in url for char in '_~') else url))
+    if not topics:
+        lines.append('No supported work found in the available evidence.')
+    known_jira_urls = {item['url'] for item in data.get('jira', {}).get('issues', [])}
+    contextual = set()
+    for topic in topics:
+        for item in topic_github_items(data, topic):
+            contextual.update(link['url'] for link in contextual_jira_links(item))
+    notes = []
+    if contextual - known_jira_urls:
+        notes.append('Jira state is unverified for contextual links.')
+    states = [('GitHub', data['metadata'].get('github_status')),
+              ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
+              ('local Git', data['metadata'].get('local_status'))]
+    gaps = [name + ' ' + status for name, status in states if status in {'partial', 'unavailable'}]
+    if gaps:
+        notes.append('Coverage is incomplete: ' + '; '.join(gaps) + '.')
+    elif data['metadata'].get('warnings'):
+        notes.append('Coverage is incomplete; some work may be missing.')
+    if notes:
+        lines += ['', ' '.join(notes)]
+    return '\n'.join(lines)
+
+
+def render_detailed(data, source=None):
     validate(data, source)
     m = data["metadata"]
     prs, issues = data["github"]["prs"], data["github"]["issues"]
@@ -525,6 +684,7 @@ def main():
     collector.add_argument("days", nargs="?", default="7")
     collector.add_argument("roots", nargs="*")
     renderer = modes.add_parser("render", help="Validate evidence and render Markdown")
+    renderer.add_argument("--detailed", action="store_true", help="Include the complete evidence and coverage audit")
     renderer.add_argument("capture")
     renderer.add_argument("source", nargs="?", help="Original capture; required for enriched input")
     args = parser.parse_args()
@@ -534,7 +694,8 @@ def main():
             validate(data)
             output = json.dumps(data, indent=2, ensure_ascii=True) + "\n"
         else:
-            output = render(read_json(args.capture), read_json(args.source) if args.source else None) + "\n"
+            output = render(read_json(args.capture), read_json(args.source) if args.source else None,
+                            detailed=args.detailed) + "\n"
     except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

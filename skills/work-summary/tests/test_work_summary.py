@@ -115,6 +115,9 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         acli.chmod(0o755)
 
     def run_script(self, script, *args, check=True):
+        # These existing assertions inspect the optional complete audit report.
+        if script == RENDER and '--detailed' not in args:
+            args = ('--detailed', *args)
         return subprocess.run(
             ["bash", str(script), *map(str, args)],
             cwd=self.home, env=self.env, text=True, capture_output=True, check=check,
