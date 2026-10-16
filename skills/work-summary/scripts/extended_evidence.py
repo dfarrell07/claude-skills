@@ -125,27 +125,31 @@ def historical_head_hashes(record, known, host='github.com'):
         require(source.get('__typename') == 'HeadRefForcePushedEvent'
                 and isinstance(source.get('id'), str) and bool(source['id'])
                 and isinstance(source.get('pullRequest'), dict)
-                and source['pullRequest'].get('url') == item['url'], 'Invalid native force-push identity')
+                and isinstance(source['pullRequest'].get('url'), str)
+                and source['pullRequest']['url'].casefold() == item['url'].casefold(),
+                'Invalid native force-push identity')
         timestamp(source.get('createdAt'))
         heads = []
         for field in ('beforeCommit', 'afterCommit'):
             value = source.get(field)
-            require(value is None or isinstance(value, dict)
-                    and isinstance(value.get('oid'), str) and HASH.fullmatch(value['oid']),
+            require(field in source and (value is None or isinstance(value, dict)
+                    and isinstance(value.get('oid'), str) and HASH.fullmatch(value['oid'])),
                     'Invalid native force-push head')
             if value is not None:
                 heads.append(value['oid'])
     else:
         require(record.get('kind') == 'rest_force_push' and source.get('event') == 'head_ref_force_pushed'
                 and integer(source.get('id'), 1), 'Invalid native REST force-push identity')
-        api_base = 'https://api.github.com' if host == 'github.com' else f'https://{host}/api/v3'
-        require(source.get('url') == f"{api_base}/repos/{item['repo']}/issues/events/{source['id']}"
+        api_base = 'https://api.github.com' if host.casefold() == 'github.com' else f'https://{host}/api/v3'
+        require(isinstance(source.get('url'), str)
+                and source['url'].casefold() == f"{api_base}/repos/{item['repo']}/issues/events/{source['id']}".casefold()
                 and isinstance(source.get('node_id'), str) and bool(source['node_id'])
                 and record.get('source_path') == f"repos/{item['repo']}/issues/{item['number']}/timeline",
                 'Native REST force-push route mismatch')
         timestamp(source.get('created_at'))
         head = source.get('commit_id')
-        require(head is None or isinstance(head, str) and HASH.fullmatch(head), 'Invalid native REST head')
+        require('commit_id' in source and (head is None or isinstance(head, str) and HASH.fullmatch(head)),
+                'Invalid native REST head')
         heads = [head] if head is not None else []
     return set(heads)
 

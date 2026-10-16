@@ -74,6 +74,13 @@ class ConciseReportTest(unittest.TestCase):
                                  **self.reference(item), 'state': item['state'], 'proof': 'historical_head_event',
                                  'head_event_id': 'native-force-push'}]}]
         ws.validate(data)
+        event['source']['pullRequest']['url'] = item['url'].upper()
+        event['source']['afterCommit'] = None
+        ws.validate(data)
+        del event['source']['afterCommit']
+        with self.assertRaises(ValueError):
+            ws.validate(data)
+        event['source']['afterCommit'] = {'oid': 'c' * 40}
         for field, value in [('id', 'other-event'), ('beforeCommit', {'oid': 'd' * 40}),
                              ('pullRequest', {'url': 'https://github.com/org/repo/pull/999'}),
                              ('beforeCommit', {'oid': 'invalid'})]:
@@ -88,6 +95,10 @@ class ConciseReportTest(unittest.TestCase):
             'created_at': '2025-01-01T00:00:00Z'})
         data['branches'][0]['prs'][0]['head_event_id'] = 42
         ws.validate(data)
+        del event['source']['commit_id']
+        with self.assertRaises(ValueError):
+            ws.validate(data)
+        event['source']['commit_id'] = head
         for field, value in [('url', 'https://api.github.com/repos/foreign/project/issues/events/42'),
                              ('url', f"https://api.github.com/repos/{item['repo']}/issues/events/999"),
                              ('node_id', '')]:
