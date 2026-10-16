@@ -164,7 +164,7 @@ def collect(days_text, roots, now=None):
         ledger.discover(github, jira["linked_prs"])
         ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
         discovery = ledger.coverage
-        if any(info["status"] != "ok" for info in discovery.values()):
+        if any(info["status"] == "partial" for info in discovery.values()):
             github_status = "partial"
     public_cache = {}
     def read_public(url):
@@ -185,7 +185,7 @@ def collect(days_text, roots, now=None):
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
                                    since=start, read=read_public), host, read_history=read_history)
     if github_user:
-        if any(info["status"] != "ok" for info in ledger.coverage.values()):
+        if any(info["status"] == "partial" for info in ledger.coverage.values()):
             github_status = "partial"
     associate_work(jira, github)
     return {

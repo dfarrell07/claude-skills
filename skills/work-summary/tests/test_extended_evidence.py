@@ -69,6 +69,28 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
             'https://github.com/another/source/issues/7')
         self.validate(data, evidence)
 
+    def test_local_repository_scope_is_not_a_failed_github_read(self):
+        data, evidence = self.capture()
+        data['metadata'].update(github_status='ok', repositories=[{'path': '/work/local'}],
+            github_discovery={'unrouted:/work/local': {'status': 'unsupported',
+                'scope': 'github_global_without_repository', 'reason': 'No configured GitHub repository',
+                'pages': 0, 'count': 0}})
+        data['branches'] = [{'pr_status': 'unsupported', 'association_scope': 'github_global_without_repository',
+            'prs': [], 'association_lookups': [{'scope': 'github_global', 'status': 'ok'}]}]
+        self.validate(data, evidence)
+        for mutation in ('failed_lookup', 'missing_lookup', 'routed_branch', 'unsupported_api_failure'):
+            broken = copy.deepcopy(data)
+            if mutation == 'failed_lookup':
+                broken['branches'][0]['association_lookups'][0]['status'] = 'partial'
+            elif mutation == 'missing_lookup':
+                broken['branches'][0]['association_lookups'] = []
+            elif mutation == 'routed_branch':
+                broken['branches'][0]['association_scope'] = 'configured_repository'
+            else:
+                broken['metadata']['github_discovery']['activity:org/repo#1'] = (
+                    broken['metadata']['github_discovery'].pop('unrouted:/work/local'))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.validate(broken, evidence)
     def test_cross_reference_source_rejects_forged_identity_and_routes(self):
         baseline, evidence = self.capture()
         invalid = [('id', None), ('id', True), ('id', 0), ('number', 0), ('number', True)]

@@ -482,9 +482,15 @@ def validate_github(data, evidence, start, end):
             kind = event['action'].removesuffix('_edited')
             validate_editor_comment(event, comments_seen.get((event['item_url'], kind, event['id'])))
     for key, info in metadata.get('github_discovery', {}).items():
-        require(isinstance(key, str) and isinstance(info, dict) and info.get('status') in {'ok', 'partial'}
+        require(isinstance(key, str) and isinstance(info, dict) and info.get('status') in {'ok', 'partial', 'unsupported'}
                 and integer(info.get('pages')) and integer(info.get('count')), 'Invalid GitHub discovery coverage')
-        if info['status'] != 'ok':
+        if info['status'] == 'unsupported':
+            require(key.startswith('unrouted:') and info.get('scope') == 'github_global_without_repository'
+                    and info['pages'] == info['count'] == 0
+                    and isinstance(info.get('reason'), str) and bool(info['reason'].strip())
+                    and any(row.get('path') == key.removeprefix('unrouted:')
+                            for row in metadata.get('repositories', [])), 'Invalid unsupported GitHub repository scope')
+        if info['status'] == 'partial':
             require(metadata.get('github_status') == 'partial' and metadata.get('warnings'), 'Missing discovery gap')
     for branch in data.get('branches', []):
         prs = branch.get('prs', [])
@@ -511,6 +517,12 @@ def validate_github(data, evidence, start, end):
             lookups = branch.get('association_lookups', [])
             require(bool(lookups) and all(info.get('status') == 'ok' for info in lookups) and not prs,
                     'No-match branch needs completed lookups')
+        if branch['pr_status'] == 'unsupported':
+            lookups = branch.get('association_lookups', [])
+            require(branch.get('association_scope') == 'github_global_without_repository'
+                    and bool(lookups) and all(info.get('status') == 'ok' for info in lookups)
+                    and any(info.get('scope') == 'github_global' for info in lookups)
+                    and not prs, 'Unsupported branch needs completed global lookups without repository scope')
     # Indexed snapshots remain citations, but use the primary observed state when available.
     for url, item in indexed.items():
         evidence.setdefault(url, item)

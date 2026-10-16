@@ -711,9 +711,9 @@ def collect_jira(start, end, warn):
 
 
 def add_referenced_jira(result, keys, start, end, warn):
-    """Read explicit GitHub-mentioned issue keys without rerunning inventories.
+    """Read captured issue-key candidates without rerunning inventories.
 
-    Mutates and returns the capture. Invalid/inaccessible keys are coverage gaps,
+    Mutates and returns the capture. Unresolved or inaccessible candidates are coverage gaps,
     never invented tickets. Existing completed detail reads are reused.
     """
     metadata = result["metadata"]
@@ -732,7 +732,7 @@ def add_referenced_jira(result, keys, start, end, warn):
             requested.add(key)
         else:
             coverage["status"] = "partial"
-            gap("One GitHub-mentioned Jira key is invalid; no issue was invented.")
+            gap("One captured issue-key candidate has invalid syntax; no issue was invented.")
     requested = sorted(requested)
     for key in requested:
         if key not in coverage["requested_keys"]:
@@ -741,7 +741,7 @@ def add_referenced_jira(result, keys, start, end, warn):
         return result
     if metadata["status"] == "unavailable":
         coverage["status"] = "partial"
-        gap("GitHub-mentioned Jira tickets could not be read because Jira is unavailable.")
+        gap("Captured issue-key candidates could not be checked because Jira is unavailable.")
         return result
     try:
         site, user = _auth_context(command(["acli", "jira", "auth", "status"], stdin=""))
@@ -800,7 +800,7 @@ def add_referenced_jira(result, keys, start, end, warn):
         except ERRORS as error:
             failures[key] = _failure(error)
             coverage["status"] = "partial"
-            gap("One GitHub-mentioned Jira key is inaccessible or invalid; no issue was invented.")
+            gap("One captured issue-key candidate could not be resolved; its native failure was retained.")
     metadata["coverage"]["details"]["requested_count"] += len(selected)
     _detail_items(result, selected, start, end, warn, preloaded)
     metadata["issue_count"] = len(result["issues"])
