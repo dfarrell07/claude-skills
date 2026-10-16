@@ -140,7 +140,9 @@ class ReportingWindowCliTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='work-summary-window.')
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # macOS exposes temporary directories through /var -> /private/var;
+        # collector repository identities deliberately use canonical paths.
+        self.root = Path(temporary.name).resolve()
         self.home = self.root / 'home'
         self.home.mkdir()
         self.bin = self.root / 'bin'
@@ -230,6 +232,28 @@ print(json.dumps(value))
                 self.assertEqual(result.stdout, '')
                 self.assertNotIn('Traceback', result.stderr)
                 self.assertFalse((self.root / 'gh.log').exists())
+
+    def test_explicit_symlink_roots_preserve_canonical_repository_identity(self):
+        repo = self.home / 'repo'
+        repo.mkdir()
+        self.git(repo, 'init', '-q')
+        self.git(repo, 'config', 'user.name', 'Test User')
+        self.git(repo, 'config', 'user.email', 'me@example.test')
+        self.git(repo, 'commit', '--allow-empty', '-qm', 'Quarter accomplishment',
+                 dates={'GIT_AUTHOR_DATE': '2026-02-01T00:00:00Z',
+                        'GIT_COMMITTER_DATE': '2026-02-01T00:00:00Z'})
+        alias = self.root / 'home-alias'
+        alias.symlink_to(self.home, target_is_directory=True)
+        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
+                                  '--root', str(alias / 'repo'), '--root', str(repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        validate(data)
+        self.assertEqual(data['metadata']['repos_searched'], 1)
+        self.assertEqual(data['metadata']['repos_with_commits'], 1)
+        self.assertEqual(set(data['commits']), {str(repo.resolve())})
+        self.assertEqual([row['message'] for row in data['commits'][str(repo.resolve())]],
+                         ['Quarter accomplishment'])
 
     def test_cli_default_and_positional_rolling_roots_still_work(self):
         for args in [(), ('007', str(self.home))]:
