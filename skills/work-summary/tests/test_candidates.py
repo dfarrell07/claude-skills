@@ -1,7 +1,9 @@
 """The analysis digest lists personal window work compactly and selectably."""
 
+import os
 from pathlib import Path
 import sys
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -49,6 +51,20 @@ def capture():
 
 
 class CandidatesTest(unittest.TestCase):
+    def setUp(self):
+        # Digest dates follow the machine's timezone; pin it for stable output.
+        previous = os.environ.get('TZ')
+        os.environ['TZ'] = 'UTC'
+        time.tzset()
+
+        def restore():
+            if previous is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = previous
+            time.tzset()
+        self.addCleanup(restore)
+
     def test_groups_work_and_keeps_notifications_out_of_the_work_list(self):
         digest = candidates(capture())
         own, others = digest.split("## GitHub: reviews and discussion on others' work")
@@ -61,8 +77,9 @@ class CandidatesTest(unittest.TestCase):
 
     def test_copies_with_the_same_commits_are_listed_once(self):
         digest = candidates(capture())
-        self.assertIn('## Local commits you authored, by repository (1)', digest)
-        self.assertIn('same commits also in 1 other checkout(s): ', digest)
+        self.assertIn('## Local commits you authored (1 repositories, 2 commits)', digest)
+        self.assertIn('- /work/repo (remote org/repo)', digest)
+        self.assertIn('same commits also in 1 other checkout(s): /scratch/repo-copy', digest)
         self.assertIn('    - ' + 'a' * 40 + ' Fix the parser\n    - ' + 'b' * 40 + ' Add tests', digest)
 
     def test_jira_updates_without_comments_and_pushed_prs_are_not_lost(self):
@@ -78,6 +95,25 @@ class CandidatesTest(unittest.TestCase):
         self.assertIn('[Done] https://jira.example.test/browse/NET-5 "Closed bug"', digest)
         self.assertIn('## Open authored PRs updated in the window without recorded events (1)', digest)
         self.assertIn('https://github.com/org/repo/pull/9 "Change 9" updated 10-12', digest)
+
+    def test_rebased_commits_and_local_dates_are_marked(self):
+        data = capture()
+        data['commits']['/work/repo'][0]['authored_at'] = '2026-03-02T10:00:00Z'
+        digest = candidates(data)
+        self.assertIn('Fix the parser [authored 2026-03-02; rebased or cherry-picked]', digest)
+        os.environ['TZ'] = 'America/New_York'
+        time.tzset()
+        digest = candidates(data)
+        self.assertIn('# Work candidates 2026-10-08T20:00:00-04:00 to 2026-10-15T20:00:00-04:00', digest)
+        self.assertIn('[merged 10-11]', digest)
+
+    def test_unsearched_github_is_not_reported_as_empty(self):
+        data = capture()
+        data['metadata']['github_status'] = 'unavailable'
+        data['github'].update(prs=[], context_prs=[], activity=[])
+        digest = candidates(data)
+        self.assertNotIn('- none', digest.split('## Jira')[0])
+        self.assertIn('- GitHub unavailable; not searched', digest)
 
     def test_untrusted_titles_stay_on_one_line(self):
         data = capture()
