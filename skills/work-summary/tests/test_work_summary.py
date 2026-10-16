@@ -264,6 +264,12 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         report = subprocess.run(["bash", str(RENDER), "--analysis", str(analysis), str(output)],
                                 env=self.env, text=True, capture_output=True, check=True).stdout
         self.assertTrue(report.startswith(f"- Fixed the checks.\n  - {pr['url']}\n"))
+        digest = subprocess.run(["bash", str(RENDER), "--candidates", str(output)],
+                                env=self.env, text=True, capture_output=True, check=True).stdout
+        self.assertIn(f"[merged ", digest)
+        self.assertIn(pr["url"], digest)
+        self.assertIn("## Coverage", digest)
+        self.assertLess(len(digest), 4000)
         analysis.write_text(json.dumps({"themes": [{"name": "CI", "description": "Fixed the checks.",
             "items": [], "links": ["https://github.com/org/project/pull/999"]}], "in_progress": []}))
         failed = subprocess.run(["bash", str(RENDER), "--analysis", str(analysis), str(output)],

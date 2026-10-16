@@ -1170,6 +1170,8 @@ def main():
     renderer = modes.add_parser("render", help="Validate evidence and render Markdown")
     renderer.add_argument("--detailed", action="store_true", help="Include the complete evidence and coverage audit")
     renderer.add_argument("--analysis", help="Analysis JSON to apply to the unchanged capture")
+    renderer.add_argument("--candidates", action="store_true",
+                          help="List cite-ready personal window evidence for writing an analysis")
     renderer.add_argument("capture")
     renderer.add_argument("source", nargs="?", help="Original capture; required for enriched input")
     args = parser.parse_args()
@@ -1192,6 +1194,13 @@ def main():
             if args.output:
                 write_atomic(args.output, output)
                 return 0
+        elif args.candidates:
+            from candidates import candidates
+            data = read_json(args.capture)
+            require(args.source is None and not args.analysis and not args.detailed and "analysis" not in data,
+                    "--candidates takes only the original capture")
+            validate(data)
+            output = candidates(data)
         elif args.analysis:
             require(args.source is None, "--analysis takes only the original capture")
             analysis = read_json(args.analysis)
