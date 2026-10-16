@@ -11,7 +11,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from github_sources import Github  # noqa: E402
+from github_sources import Github, PR_FIELDS, graphql_item, rest_item  # noqa: E402
 
 START = datetime(2026, 10, 9, tzinfo=timezone.utc)
 END = datetime(2026, 10, 16, tzinfo=timezone.utc)
@@ -73,6 +73,23 @@ class GithubSourcesTest(unittest.TestCase):
         client = Github(api, 'github.com', 'me', START, END, warnings.append)
         client.calls, client.warnings = calls, warnings
         return client
+
+    def test_native_bodies_are_preserved_exactly_for_cross_source_proof(self):
+        body = 'Implements TEST-123.\n\nNative reference: https://jira.example.test/browse/TEST-123\n**Details** ~ remain unchanged. '
+        for normalize, row, extra in [(rest_item, rest(), ('prs', 'github.com')),
+                                      (graphql_item, gql(), ('github.com',))]:
+            with self.subTest(source=normalize.__name__):
+                row['body'] = body
+                self.assertEqual(normalize(row, *extra)['body'], body)
+                row['body'] = None
+                self.assertEqual(normalize(row, *extra)['body'], '')
+                del row['body']
+                self.assertEqual(normalize(row, *extra)['body'], '')
+                for invalid in (False, 0, [], {}):
+                    row['body'] = invalid
+                    with self.assertRaises(ValueError):
+                        normalize(row, *extra)
+        self.assertIn('body', PR_FIELDS.split())
 
     def test_search_preserves_successful_pages_when_next_request_fails(self):
         def api(args):

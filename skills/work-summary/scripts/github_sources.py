@@ -13,11 +13,13 @@ MAX_LIST_PAGES = 100
 BATCH_SIZE = 20
 
 
-PR_FIELDS = '''url title number state createdAt updatedAt closedAt mergedAt isDraft headRefOid headRefName
+PR_FIELDS = '''url title body number state createdAt updatedAt closedAt mergedAt isDraft headRefOid headRefName
 repository { nameWithOwner } headRepository { nameWithOwner } mergeCommit { oid } baseRefName'''
 
 
 def rest_item(row, kind, host):
+    body = row.get('body')
+    require(body is None or isinstance(body, str), 'Invalid GitHub body')
     url = row['html_url']
     parts = urlsplit(url).path.strip('/').split('/')
     require(len(parts) == 4, 'Malformed GitHub item URL')
@@ -25,7 +27,8 @@ def rest_item(row, kind, host):
     require(is_pr == (kind == 'prs'), 'Wrong GitHub item kind')
     merged = row['pull_request']['merged_at'] if is_pr else None
     item = {'repo': '/'.join(parts[:2]), 'number': row['number'], 'title': row['title'],
-            'state': 'merged' if merged else row['state'], 'url': url, 'created_at': row['created_at'],
+            'state': 'merged' if merged else row['state'], 'url': url, 'body': '' if body is None else body,
+            'created_at': row['created_at'],
             'updated_at': row['updated_at'], 'closed_at': row['closed_at'], 'merged_at': merged,
             'draft': row.get('draft', False), 'author_login': (row.get('user') or {}).get('login')}
     valid_item(item, kind, host)
@@ -35,8 +38,11 @@ def rest_item(row, kind, host):
 
 
 def graphql_item(row, host):
+    body = row.get('body')
+    require(body is None or isinstance(body, str), 'Invalid GitHub body')
     item = {'repo': row['repository']['nameWithOwner'], 'number': row['number'], 'title': row['title'],
-            'state': row['state'].lower(), 'url': row['url'], 'created_at': row['createdAt'],
+            'state': row['state'].lower(), 'url': row['url'], 'body': '' if body is None else body,
+            'created_at': row['createdAt'],
             'updated_at': row['updatedAt'], 'closed_at': row['closedAt'], 'merged_at': row['mergedAt'],
             'draft': row['isDraft'], 'head_sha': row['headRefOid'], 'head_ref': row['headRefName'],
             'head_repo': (row.get('headRepository') or {}).get('nameWithOwner'),
