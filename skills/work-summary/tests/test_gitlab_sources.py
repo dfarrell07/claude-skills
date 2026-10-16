@@ -87,7 +87,8 @@ class GitLabSourcesTest(unittest.TestCase):
         result = data['metadata']['gitlab_discovery']
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][1], ('ls-remote', '--refs', '--upload-pack=git-upload-pack', '--', 'origin',
+        self.assertEqual(self.calls[0][1], ("ls-remote", "--refs", "--upload-pack=git-upload-pack", "--",
+                                           "ssh://git@gitlab.example.test/group/sub/project.git",
                                            'refs/merge-requests/*/head', 'refs/merge-requests/*/merge'))
         self.assertEqual(before, self.git('for-each-ref'))
         self.assertEqual([len(row['merge_requests']) for row in data['branches']], [1, 1])
@@ -119,20 +120,21 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertNotEqual(blocked.returncode, 0)
         self.assertFalse(marker.exists())
 
-    def test_repository_transport_config_skips_network_read(self):
+    def test_repository_config_cannot_take_part_in_the_network_read(self):
         marker = self.root / 'helper-ran'
-        for key, value in (('credential.helper', f'!touch {marker}'), ('http.proxy', 'http://127.0.0.1:9'),
-                           ('url.https://elsewhere.test/.insteadOf', 'https://gitlab.example.test/'),
-                           ('remote.origin.proxy', 'http://127.0.0.1:9')):
-            with self.subTest(key=key):
-                self.git('config', key, value)
-                self.calls.clear()
-                data = self.collect()
-                result = data['metadata']['gitlab_discovery']
-                self.assertEqual(self.calls, [])
-                self.assertEqual(result['failures'][0]['reason'], 'repo_local_transport_config')
-                self.assertEqual(result['status'], 'partial')
-                self.git('config', '--unset-all', key)
+        self.git('config', 'credential.helper', f'!touch {marker}')
+        self.git('config', 'http.proxy', 'http://127.0.0.1:9')
+        data = self.collect()
+        (path, args, kwargs), = self.calls
+        self.assertNotEqual(path, str(self.repo))
+        self.assertFalse(Path(path).exists())
+        self.assertEqual(args[4], 'ssh://git@gitlab.example.test/group/sub/project.git')
+        self.assertEqual(kwargs['env']['GIT_CEILING_DIRECTORIES'], os.path.dirname(path))
+        self.assertEqual(data['metadata']['gitlab_discovery']['status'], 'ok')
+        neutral = Path(tempfile.mkdtemp(dir=self.root))
+        config = gl.native_git(str(neutral), 'config', '--get', 'credential.helper',
+                               env={'GIT_CEILING_DIRECTORIES': str(neutral.parent)})
+        self.assertEqual(config.stdout, b'')
         self.assertFalse(marker.exists())
 
     def test_users_global_ssh_command_is_kept_with_batch_options(self):
@@ -227,9 +229,13 @@ class GitLabSourcesTest(unittest.TestCase):
         repos.append({'path': str(other), 'remotes': copy.deepcopy(repos[0]['remotes'])})
         branches.append({'repo': str(other), 'hash': SHA, 'object_type': 'commit', 'pr_status': 'partial'})
 
+        attempts = []
+
         def native(path, *args, **kwargs):
             if args[0] == 'ls-remote':
-                return subprocess.CompletedProcess(args, 128 if path == str(self.repo) else 0, HEAD.encode(), b'')
+                attempts.append(path)
+                # A transient failure on the first read is retried through the next checkout.
+                return subprocess.CompletedProcess(args, 128 if len(attempts) == 1 else 0, HEAD.encode(), b'')
             return self.native(path, *args, **kwargs)
 
         with patch.object(gl, 'native_git', side_effect=native):

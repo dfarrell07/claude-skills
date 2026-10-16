@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from urllib.parse import urlsplit
 
 from evidence import GIT_ENV, HOST, integer, require
@@ -80,27 +81,6 @@ def source_key(host, repo, local_repo, remote):
     return host + ':' + repo + ':' + suffix
 
 
-# Repository-local settings that can run commands or redirect credentials during a
-# network read. Archives and copied checkouts carry .git/config, so skip such remotes.
-TRANSPORT_CONFIG = (r'^(credential|http|url|include|includeif|protocol|ssh)\.'
-                    r'|^core\.(askpass|sshcommand|gitproxy)$|^remote\..*\.(proxy|vcs|uploadpack|receivepack)$')
-
-
-def repo_transport_config(repo):
-    """Return repository-scoped transport settings; any failure counts as present."""
-    result = native_git(repo, 'config', '--show-scope', '--name-only', '--get-regexp', TRANSPORT_CONFIG, timeout=15)
-    if result.returncode == 1:
-        return []
-    if result.returncode != 0:
-        return ['unreadable']
-    names = []
-    for line in result.stdout.decode('utf-8', errors='replace').splitlines():
-        scope, _, name = line.partition('\t')
-        if scope in {'local', 'worktree'}:
-            names.append(name)
-    return names
-
-
 @functools.lru_cache(maxsize=1)
 def user_ssh_command():
     """The user's own global/system SSH command, such as one selecting a work key."""
@@ -125,10 +105,10 @@ def git_env():
             'GIT_SSH_VARIANT': 'ssh'}
 
 
-def native_git(repo, *args, timeout=90):
+def native_git(repo, *args, timeout=90, env=None):
     return subprocess.run(['git', '--no-pager', '--no-optional-locks', '-c', 'credential.interactive=false',
                            '-C', repo, *args],
-                          env=git_env(), capture_output=True, timeout=timeout, check=False)
+                          env={**git_env(), **(env or {})}, capture_output=True, timeout=timeout, check=False)
 
 
 def collect_gitlab_refs(branches, repositories, warn):
@@ -171,7 +151,6 @@ def collect_gitlab_refs(branches, repositories, warn):
                 other = dict(alternative)
                 result['failures'].append({**failure, 'host': other['host'], 'repo': other['repo'],
                                            'reason': 'additional_url_not_addressable_by_remote_name'})
-            require(not repo_transport_config(path), 'repo_local_transport_config')
             pair = route['host'], route['repo']
             requested.add(pair)
             if pair in complete:
@@ -183,8 +162,13 @@ def collect_gitlab_refs(branches, repositories, warn):
                      'returncode': None, 'native_output': '', 'errors': [], 'refs': []}
             result['queries'].append(query)
             try:
-                native = native_git(path, 'ls-remote', '--refs', '--upload-pack=git-upload-pack', '--', name,
-                                    'refs/merge-requests/*/head', 'refs/merge-requests/*/merge')
+                # Read the verified URL from an empty directory: no repository-local config
+                # (credential helpers, proxies, URL rewrites, SSH commands) can take part.
+                with tempfile.TemporaryDirectory(prefix='work-summary-ls-remote.') as neutral:
+                    # A temporary directory inside some checkout must not adopt that repository.
+                    native = native_git(neutral, 'ls-remote', '--refs', '--upload-pack=git-upload-pack', '--',
+                                        urls[0], 'refs/merge-requests/*/head', 'refs/merge-requests/*/merge',
+                                        env={'GIT_CEILING_DIRECTORIES': os.path.dirname(neutral)})
                 output, code = native.stdout, native.returncode
             except subprocess.TimeoutExpired as error:
                 output, code = error.stdout or b'', None
