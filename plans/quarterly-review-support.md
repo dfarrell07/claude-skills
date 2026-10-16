@@ -214,3 +214,13 @@ historical heads, or fail collection. Branch matches must bind their head and st
 observation. These findings added focused regressions and another review cycle. Actual-change inspection
 also narrowed a PR-description overclaim in the private writing material; descriptions alone do not prove
 implementation, runtime compatibility, or deployment.
+
+The longer native run also exposed wasted ticket reads from truncated numeric
+identifiers, such as Go advisory IDs, and recursive expansion through unrelated
+third-party references. Numeric continuations now remain part of their original
+identifier rather than becoming Jira candidates; explicit Jira URLs and genuine
+lowercase ticket branches remain discoverable. Reference expansion needs to
+distinguish independent work roots, direct ticket/review counterparts, and
+terminal context. Dedupe alone does not bound a graph of distinct references.
+This finding starts a further qualification cycle; earlier clean reviews do not
+establish that the longer live capture or its expansion scope is fully qualified.
