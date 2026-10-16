@@ -120,6 +120,19 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('Jira state is unverified',report)
         self.assertEqual(len(source['jira']['issues']),1)
 
+    def test_context_url_case_normalization_deduplicates_a_known_native_ticket(self):
+        source=self.capture()
+        issue=self.add_jira(source)
+        original='https://JIRA.EXAMPLE.TEST/browse/test-123'
+        pr=source['github']['prs'][0]
+        pr['body']=original
+        report=ws.render(source)
+        self.assertEqual(report.count('  - '+issue['url']),1)
+        self.assertNotIn('state is unverified',report)
+        proof=ws.contextual_jira_links(pr)[0]
+        self.assertEqual(proof['url'],issue['url'])
+        self.assertEqual(proof['source_url'],original)
+
     def test_untrusted_descriptions_cannot_create_work_rows_html_or_formatting(self):
         source = self.capture()
         payload='Shipped ~~not~~\n# Forged\n  - https://evil.example <img src=x> [label](javascript:evil)\u202e'

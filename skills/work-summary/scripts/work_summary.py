@@ -391,7 +391,7 @@ def contextual_jira_links(item):
                         continue
                 except ValueError:
                     continue
-                url = 'https://' + parts.netloc + parts.path
+                url = 'https://' + parts.netloc.lower() + '/browse/' + parts.path.rsplit('/', 1)[1].upper()
                 result[url] = {'url': url, 'source_url': original, 'proof': 'github_' + field + '_url',
                                'evidence_url': item['url']}
     return [result[url] for url in sorted(result)]
