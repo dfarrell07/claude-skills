@@ -31,6 +31,58 @@ DETAIL_FIELDS = ("summary,status,assignee,reporter,description,comment,labels,"
 ERRORS = (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError)
 
 
+def _failure(error):
+    """Keep private native failure evidence without inventing an HTTP status."""
+    result = {"type": type(error).__name__, "message": str(error)}
+    if isinstance(error, subprocess.CalledProcessError):
+        result["returncode"] = error.returncode
+        result["stderr"] = error.stderr if isinstance(error.stderr, str) else ""
+        result["stdout"] = error.stdout if isinstance(error.stdout, str) else ""
+    elif isinstance(error, subprocess.TimeoutExpired):
+        result["timeout"] = error.timeout
+    return result
+
+
+def _changelog_coverage(result, warn):
+    """Inspect actual native history, rather than declare it absent unconditionally."""
+    captured, missing, incomplete = [], [], []
+    for item in result["issues"]:
+        history = item.get("detail", {}).get("changelog")
+        if history is None:
+            missing.append(item["key"])
+            continue
+        try:
+            require(isinstance(history, dict) and isinstance(history.get("histories"), list)
+                    and integer(history.get("startAt")) and integer(history.get("total")), "Invalid native changelog")
+            ids = [row.get("id") for row in history["histories"] if isinstance(row, dict)]
+            require(len(ids) == len(history["histories"]) and all(isinstance(ident, str) and ident for ident in ids)
+                    and len(set(ids)) == len(ids) and history["startAt"] == 0
+                    and len(ids) == history["total"], "Incomplete native changelog")
+            for row in history["histories"]:
+                timestamp(row.get("created"))
+                require(isinstance(row.get("author"), dict)
+                        and isinstance(row["author"].get("accountId"), str) and row["author"]["accountId"].strip()
+                        and isinstance(row.get("items"), list) and all(isinstance(change, dict)
+                        and isinstance(change.get("field"), str) for change in row["items"]),
+                        "Changelog lacks native field/actor evidence")
+            captured.append(item["key"])
+        except ERRORS:
+            incomplete.append(item["key"])
+    coverage = {"status": "partial" if incomplete or missing and captured else "unavailable" if missing else "ok",
+                "captured_keys": sorted(captured), "unexpanded_keys": sorted(missing),
+                "incomplete_keys": sorted(incomplete),
+                "scope": "Actual top-level native detail.changelog objects; no inferred field events",
+                "required_read": "GET /rest/api/3/issue/{issueIdOrKey}/changelog with complete pagination"}
+    result["metadata"]["coverage"]["changelog"] = coverage
+    if missing or incomplete:
+        message = ("Native Jira detail responses omit or truncate changelogs; complete field history requires "
+                   "an authenticated changelog REST reader. Deleted comments cannot be reconstructed from present comments.")
+        result["metadata"]["status"] = "partial"
+        if message not in result["metadata"]["warnings"]:
+            result["metadata"]["warnings"].append(message)
+            warn("Jira: " + message)
+
+
 def _source_strings(value, sensitive=False):
     if isinstance(value, str):
         yield value, sensitive
@@ -178,9 +230,11 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                         sensitive=bool(fields["security"]) or any(
                             "security" in label.casefold() or label.upper().startswith("CVE-") for label in fields["labels"]),
                         sensitivity_verified=True, detail_status="ok", detail=detail)
+            item.pop("detail_error", None)
             metadata["coverage"]["details"]["returned_count"] += 1
-        except ERRORS:
+        except ERRORS as error:
             item["detail_status"] = "failed"
+            item["detail_error"] = _failure(error)
             metadata["coverage"]["details"]["status"] = "partial"
             gap("One selected Jira detail is inaccessible or malformed; its inventory lead was retained.")
             continue
@@ -221,7 +275,21 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
         except ERRORS:
             gap("One Jira comment capture is missing or incompletely paginated; available native comments were retained.")
         native_fidelity = True
+        native_gaps = []
         for comment in comments.values():
+            missing_fields = []
+            if not (isinstance(comment.get("author"), dict)
+                    and isinstance(comment["author"].get("accountId"), str)
+                    and comment["author"]["accountId"].strip()):
+                missing_fields.append("author.accountId")
+            for field in ("created", "updated"):
+                if not comment.get(field):
+                    missing_fields.append(field)
+            if missing_fields:
+                native_fidelity = False
+                native_gaps.append({"comment_id": comment["id"], "missing_fields": missing_fields,
+                                    "required_read": "/rest/api/3/issue/" + item["key"] + "/comment/"
+                                    + quote(comment["id"], safe="")})
             try:
                 require(isinstance(comment.get("author"), dict)
                         and isinstance(comment["author"].get("accountId"), str)
@@ -250,6 +318,8 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                 native_fidelity = False
         item["comment_coverage"] = {"complete": complete, "native_fidelity": native_fidelity,
                                     "captured_count": len(comments), "total": native.get("total") if isinstance(native, dict) else None}
+        if native_gaps:
+            item["comment_native_gaps"] = native_gaps
         if not native_fidelity:
             gap("One Jira comment stream lacks native actor identities or timestamps; those comments cannot prove exact-window activity.")
         sources = [("description", item["url"], fields.get("description"), item["sensitive"]),
@@ -406,9 +476,6 @@ def collect_jira(start, end, warn):
         queries.append((role, clause + " ORDER BY key"))
     for role, query in queries:
         search(role, query)
-    metadata["coverage"]["changelog"] = {"status": "unavailable", "scope": "CLI exposes no native changelog reader"}
-    gap("Native Jira changelog is unavailable through this CLI; field changes and deleted comments have no exact event proof.")
-
     selected = list(issues.values())
     selected.sort(key=lambda item: ("updated_by" not in item["roles"], "recent" not in item["roles"], item["key"]))
     metadata["coverage"]["details"] = {"requested_count": len(selected), "returned_count": 0,
@@ -417,6 +484,7 @@ def collect_jira(start, end, warn):
     metadata["inventory_count"] = len(assigned_rows)
     metadata["issue_count"] = len(issues)
     result["issues"] = sorted(issues.values(), key=lambda item: item["key"])
+    _changelog_coverage(result, warn)
     result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result
 
@@ -436,6 +504,7 @@ def add_referenced_jira(result, keys, start, end, warn):
 
     coverage = metadata["coverage"].setdefault("referenced_by_github", {
         "status": "ok", "requested_keys": [], "returned_keys": []})
+    failures = coverage.setdefault("failures", {})
     requested = set()
     for key in ([keys] if isinstance(keys, str) else keys):
         if isinstance(key, str) and KEY.fullmatch(key):
@@ -483,12 +552,15 @@ def add_referenced_jira(result, keys, start, end, warn):
                 selected.append(item)
             if key not in coverage["returned_keys"]:
                 coverage["returned_keys"].append(key)
-        except ERRORS:
+            failures.pop(key, None)
+        except ERRORS as error:
+            failures[key] = _failure(error)
             coverage["status"] = "partial"
             gap("One GitHub-mentioned Jira key is inaccessible or invalid; no issue was invented.")
     metadata["coverage"]["details"]["requested_count"] += len(selected)
     _detail_items(result, selected, start, end, warn, preloaded)
     metadata["issue_count"] = len(result["issues"])
     result["issues"].sort(key=lambda item: item["key"])
+    _changelog_coverage(result, warn)
     result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result

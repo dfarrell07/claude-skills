@@ -75,6 +75,7 @@ with log.open("a") as stream:
 def emit(value):
     if isinstance(value, dict) and "_exit" in value:
         sys.stdout.write(value.get("_stdout", ""))
+        sys.stderr.write(value.get("_stderr", ""))
         sys.exit(value["_exit"])
     print(json.dumps(value))
 if args == ["jira", "auth", "status"]:
@@ -672,6 +673,61 @@ else:
         jira.add_referenced_jira(result, ["MENTIONED-2"], START, END, self.warnings.append)
         self.assertEqual(self.calls()[before:], [["jira", "auth", "status"]])
         self.assertEqual(len(result["activity"]), 2)
+
+    def test_referenced_failure_retains_native_diagnostic_and_successful_retry_clears_it(self):
+        result = self.collect()
+        message = "Issue does not exist or you do not have permission to see it."
+        self.data["details"]["RESTRICTED-2"] = {"_exit": 1, "_stderr": message}
+        self.fixture.write_text(json.dumps(self.data))
+        jira.add_referenced_jira(result, ["RESTRICTED-2"], START, END, self.warnings.append)
+        coverage = result["metadata"]["coverage"]["referenced_by_github"]
+        failure = coverage["failures"]["RESTRICTED-2"]
+        self.assertEqual(failure["returncode"], 1)
+        self.assertEqual(failure["stderr"], message)
+        self.assertNotIn("http_status", failure)
+        self.assertNotIn("RESTRICTED-2", coverage["returned_keys"])
+        self.assertEqual(len(result["issues"]), 1)
+        self.data["details"]["RESTRICTED-2"] = detail(issue("RESTRICTED-2"))
+        self.fixture.write_text(json.dumps(self.data))
+        jira.add_referenced_jira(result, ["RESTRICTED-2"], START, END, self.warnings.append)
+        self.assertNotIn("RESTRICTED-2", coverage["failures"])
+        self.assertIn("RESTRICTED-2", coverage["returned_keys"])
+
+    def test_native_complete_changelog_is_retained_instead_of_unconditionally_unavailable(self):
+        history = {"startAt": 0, "total": 1, "histories": [{"id": "h1", "author": ME,
+            "created": "2026-01-12T12:00:00Z", "items": [{"field": "status", "toString": "Active"}]}]}
+        self.data["details"]["TEST-1"]["changelog"] = history
+        result = self.collect()
+        self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "ok")
+        self.assertEqual(result["metadata"]["coverage"]["changelog"]["captured_keys"], ["TEST-1"])
+        self.assertEqual(result["issues"][0]["detail"]["changelog"], history)
+        self.assertEqual(result["metadata"]["status"], "ok")
+
+    def test_projected_comment_gaps_name_exact_native_rest_recovery_targets(self):
+        projected = {"id": "opaque/id", "author": "Display name", "body": "Native context"}
+        self.data["details"]["TEST-1"] = detail(issue(), [projected])
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual(item["comment_native_gaps"], [{"comment_id": "opaque/id",
+            "missing_fields": ["author.accountId", "created", "updated"],
+            "required_read": "/rest/api/3/issue/TEST-1/comment/opaque%2Fid"}])
+        self.assertEqual(result["activity"], [])
+        self.assertFalse(item["comment_coverage"]["native_fidelity"])
+
+    def test_native_changelog_requires_complete_pagination_and_actor_time_fidelity(self):
+        native = {"startAt": 0, "total": 1, "histories": [{"id": "h1", "author": ME,
+            "created": "2026-01-12T12:00:00Z", "items": [{"field": "status"}]}]}
+        for bad in ({**native, "startAt": 1}, {**native, "total": 2},
+                    {**native, "histories": [{"id": "h1"}]}):
+            with self.subTest(history=bad):
+                result = {"metadata": {"status": "ok", "coverage": {}, "warnings": []},
+                          "issues": [{"key": "TEST-1", "detail": {"changelog": bad}}]}
+                warnings = []
+                jira._changelog_coverage(result, warnings.append)
+                self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "partial")
+                self.assertEqual(result["metadata"]["coverage"]["changelog"]["incomplete_keys"], ["TEST-1"])
+                self.assertEqual(result["issues"][0]["detail"]["changelog"], bad)
+                self.assertTrue(warnings)
 
     def test_referenced_key_failure_and_account_switch_are_named_gaps(self):
         result = self.collect()
