@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HASH, HOST, LIMIT, PAGE_SIZE, command, decode_json, integer, iso,
+    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
     read_json, require, timestamp, valid_item, is_pr_url,
 )
 from local_sources import collect_local, private_ref_pointers  # noqa: E402
@@ -50,6 +50,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         warn("Configured GitHub host is invalid; GitHub reads are unavailable.")
         host = "github.com"
     github = {"prs": [], "issues": []}
+    initial_context = {'prs': [], 'issues': []}
     github_status = "unavailable"
     github_user = ""
     searches = {}
@@ -131,9 +132,12 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                             require(key not in seen, "Duplicate search item")
                             seen.add(key)
                             if explicit and not start <= timestamp(item["updated_at"]) <= end:
-                                require(query_start <= timestamp(item["updated_at"]) <= query_end,
-                                        "Item outside native query window")
+                                # The native search index and current REST payload
+                                # can disagree about updated_at. Preserve the valid
+                                # artifact as context, and qualify its own events.
                                 info['outside_window_count'] = info.get('outside_window_count', 0) + 1
+                                info.setdefault('outside_window_items', []).append(item)
+                                initial_context[kind].append(item)
                                 continue
                             require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
                             github[kind].append(item)
@@ -160,8 +164,10 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                             seen.add(identity_key)
                             if start <= timestamp(item['updated_at']) <= end:
                                 github[kind].append(item)
-                            elif explicit and query_start <= timestamp(item['updated_at']) <= query_end:
+                            elif explicit:
                                 info['outside_window_count'] = info.get('outside_window_count', 0) + 1
+                                info.setdefault('outside_window_items', []).append(item)
+                                initial_context[kind].append(item)
                             else:
                                 info['status'] = 'partial'
                                 warn(f'GitHub {kind} partition recovery returned an out-of-window item; it was skipped.')
@@ -204,6 +210,19 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     if github_user:
         ledger = Github(api, host, github_user, start, end, warn)
         ledger.discover(github, jira["linked_prs"])
+        known = {item['url']: item for item in github_items(github)}
+        retained_context = []
+        for kind, items in initial_context.items():
+            for item in items:
+                if item['url'] not in known:
+                    item = {**item, 'roles': [], 'observed_at': iso(datetime.now(UTC))}
+                    github['context_' + kind].append(item)
+                    known[item['url']] = item
+                    retained_context.append(item)
+                if 'initial_dated_search_context' not in known[item['url']].setdefault('roles', []):
+                    known[item['url']]['roles'].append('initial_dated_search_context')
+        if retained_context:
+            ledger._inspect_activity(github, retained_context)
         ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
         discovery = ledger.coverage
         if any(info["status"] == "partial" for info in discovery.values()):
@@ -408,6 +427,18 @@ def validate(data, source=None):
             outside = info.get('outside_window_count', 0)
             require(integer(outside) and (not outside or metadata.get('window_kind') == 'explicit'),
                     "Invalid native-query boundary count")
+            if 'outside_window_items' in info:
+                context = info['outside_window_items']
+                require(isinstance(context, list) and len(context) == outside,
+                        'Native-query context count disagrees with evidence')
+                context_urls = set()
+                for item in context:
+                    valid_item(item, kind, host)
+                    require(item['url'] not in context_urls and item['url'] in evidence
+                            and item['url'] not in {row['url'] for row in github[kind]}
+                            and not start <= timestamp(item['updated_at']) <= end,
+                            'Invalid native-query context item')
+                    context_urls.add(item['url'])
             if info["status"] == "ok":
                 require(total == len(github[kind]) + outside and not info["incomplete_results"],
                         "Incomplete search marked complete")

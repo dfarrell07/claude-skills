@@ -8,7 +8,8 @@ from evidence import UTC, integer, iso, require, timestamp
 
 MICROSECOND = timedelta(microseconds=1)
 DAY_MICROSECONDS = 86_400_000_000
-RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[Zz]|[+-]\d{2}:\d{2})\Z")
+RFC3339 = re.compile(
+    r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)\Z")
 
 
 def endpoint(value):

@@ -67,6 +67,10 @@ class ReportingWindowTest(unittest.TestCase):
             {'since': '2026-01-01T00:00:00.0000001Z', 'until': '2026-04-01T00:00:00Z'},
             {'since': '2026-02-30T00:00:00Z', 'until': '2026-04-01T00:00:00Z'},
             {'since': '2026-01-01T00:00:00+25:00', 'until': '2026-04-01T00:00:00Z'},
+            {'since': '2026-01-01T00:00:00+00:60', 'until': '2026-04-01T00:00:00Z'},
+            {'since': '2026-01-01T00:00:00+01:99', 'until': '2026-04-01T00:00:00Z'},
+            {'since': '2026-01-01T00:00:00-04:99', 'until': '2026-04-01T00:00:00Z'},
+            {'since': '2026-01-01T00:00:00Z', 'until': '2026-04-01T00:00:00+00:60'},
         ]
         with patch('work_summary.command') as command, patch('work_summary.shutil.which') as capability:
             for kwargs in cases:
@@ -293,6 +297,51 @@ print(json.dumps(value))
         self.assertEqual(partial['metadata']['github_status'], 'partial')
         self.assertEqual([row['number'] for row in partial['github']['prs']], [1])
         self.assertTrue(any('partition recovery' in warning for warning in partial['metadata']['warnings']))
+
+    def test_native_search_date_disagreement_retains_context_and_only_credits_exact_events(self):
+        rows = [
+            {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
+             'title': 'Future merge', 'state': 'closed', 'created_at': '2026-03-30T12:00:00Z',
+             'updated_at': '2026-05-01T20:48:13Z', 'closed_at': '2026-04-02T00:00:00Z',
+             'pull_request': {'merged_at': '2026-04-02T00:00:00Z'}, 'user': {'login': 'test-user'}},
+            {'html_url': 'https://github.com/org/repo/pull/2', 'number': 2,
+             'title': 'Old context without quarter activity', 'state': 'open', 'created_at': '1999-01-01T00:00:00Z',
+             'updated_at': '2000-01-01T00:00:00Z', 'closed_at': None,
+             'pull_request': {'merged_at': None}, 'user': {'login': 'test-user'}},
+        ]
+        self.env['GH_ROWS'] = json.dumps(rows)
+        for recover in (False, True):
+            with self.subTest(partition_recovery=recover):
+                if recover:
+                    self.env['GH_RECOVERY'] = '1'
+                result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
+                                          '--root', str(self.home))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                validate(data)
+                self.assertEqual(data['metadata']['github_status'], 'ok')
+                info = data['metadata']['github_searches']['prs']
+                self.assertEqual((info['total_count'], info['returned_count'], info['outside_window_count']), (2, 0, 2))
+                self.assertEqual([(row['number'], row['updated_at']) for row in info['outside_window_items']],
+                                 [(row['number'], row['updated_at']) for row in rows])
+                self.assertEqual({row['number'] for row in data['github']['context_prs']}, {1, 2})
+                self.assertTrue(all('initial_dated_search_context' in row['roles']
+                                    for row in data['github']['context_prs']))
+                self.assertEqual([(event['action'], event['at']) for event in data['github']['activity']],
+                                 [('opened', '2026-03-30T12:00:00Z')])
+                report = render(data)
+                self.assertIn('Opened: Future merge', report)
+                self.assertNotIn('Merged:', report)
+                self.assertNotIn('Old context without quarter activity', report)
+                self.assertFalse(any('GitHub' in warning for warning in data['metadata']['warnings']))
+                bad = copy.deepcopy(data)
+                bad['metadata']['github_searches']['prs']['outside_window_items'][0]['updated_at'] = '2026-03-31T23:59:59Z'
+                with self.assertRaises(ValueError):
+                    validate(bad)
+                bad = copy.deepcopy(data)
+                bad['metadata']['github_searches']['prs']['outside_window_items'].pop()
+                with self.assertRaises(ValueError):
+                    validate(bad)
 
 
 if __name__ == '__main__':
