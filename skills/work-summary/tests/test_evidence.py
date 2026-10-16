@@ -54,6 +54,11 @@ class NetworkCommandTest(unittest.TestCase):
         with patch.object(evidence, 'sleep', waits.append):
             self.assertEqual(evidence.command([gh, 'api', 'search/issues']), 'ok\n')
         self.assertEqual(waits, [evidence.RATE_LIMIT_WAITS[0]])
+        body = self.tool('echo \'{"data": {"body": "Handle API rate limit exceeded"}}\'; '
+                         'echo "GraphQL: Could not resolve to a Commit" >&2; exit 1\n')
+        with patch.object(evidence, 'sleep', waits.append), self.assertRaises(subprocess.CalledProcessError):
+            evidence.command([body, 'api', 'graphql'])
+        self.assertEqual(len(waits), 1)
         failing = self.tool('echo "HTTP 404: Not Found" >&2; exit 1\n')
         with patch.object(evidence, 'sleep', waits.append), self.assertRaises(subprocess.CalledProcessError):
             evidence.command([failing, 'api', 'repos/x/y'])

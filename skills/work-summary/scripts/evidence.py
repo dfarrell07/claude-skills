@@ -71,11 +71,12 @@ def read_json(filename):
     return decode_json(Path(filename).read_text(encoding="utf-8"))
 
 
-NETWORK_TOOLS = {"gh", "acli"}
+NETWORK_TOOLS = {"gh", "acli", "acli-inventory"}
 # Consecutive timeouts after which a provider is treated as unreachable for the rest of
 # the run. Without this, a stalled network turns hundreds of reads into hours of waiting.
 BREAKER_LIMIT = 3
-RATE_LIMIT = re.compile(r"rate limit|abuse detection|HTTP 429", re.I)
+# Matched against stderr only: stdout can hold PR bodies or ticket text about rate limits.
+RATE_LIMIT = re.compile(r"HTTP 429|API rate limit exceeded|secondary rate limit|abuse detection", re.I)
 RATE_LIMIT_WAITS = (30, 60)
 sleep = time.sleep
 _state = {"started": time.monotonic(), "timeouts": {}, "calls": {}}
@@ -108,6 +109,10 @@ def _count_call(tool):
 
 def command(args, timeout=120, env=None, stdin=None):
     tool = os.path.basename(args[0]) if args else ""
+    if tool == "acli" and "--paginate" in args:
+        # Whole-inventory searches are legitimately slow; give them room and their
+        # own breaker so they cannot block the short detail reads that hold the week.
+        tool, timeout = "acli-inventory", max(timeout, 300)
     if tool not in NETWORK_TOOLS:
         return subprocess.run(args, capture_output=True, check=True, timeout=timeout,
                               env=env, encoding="utf-8", input=stdin).stdout
@@ -128,7 +133,7 @@ def command(args, timeout=120, env=None, stdin=None):
         except subprocess.CalledProcessError as error:
             with _lock:
                 _state["timeouts"][tool] = 0
-            limited = RATE_LIMIT.search(f"{error.stderr or ''}\n{error.stdout or ''}")
+            limited = RATE_LIMIT.search(error.stderr or '')
             if not limited or attempt == len(RATE_LIMIT_WAITS):
                 raise
             progress(f"{tool}: rate limited; retrying in {RATE_LIMIT_WAITS[attempt]}s")
