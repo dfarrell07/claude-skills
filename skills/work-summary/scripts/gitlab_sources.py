@@ -268,7 +268,9 @@ def validate_gitlab(data):
         seen = set()
         require(isinstance(branch.get('merge_requests', []), list), 'Invalid native MR associations')
         for match in branch.get('merge_requests', []):
-            require(isinstance(match, dict), 'Invalid native MR association')
+            require(isinstance(match, dict) and set(match) == {
+                'host', 'repo', 'number', 'url', 'hash', 'ref', 'proof', 'source_key'},
+                'Native Git MR refs prove only the advertised head association')
             query = queries.get(match.get('source_key'))
             require(query is not None and branch['object_type'] == 'commit', 'MR lacks a native GitLab query')
             number = match.get('number')
@@ -279,8 +281,6 @@ def validate_gitlab(data):
                     and match.get('url') == f"https://{query['host']}/{query['repo']}/-/merge_requests/{number}"
                     and {'hash': branch['hash'], 'ref': match['ref'], 'number': number, 'kind': 'head'} in query['refs'],
                     'MR link differs from advertised native head')
-            require(not any(field in match for field in ('state', 'actor', 'authored_at', 'created_at', 'updated_at')),
-                    'Native Git MR refs do not prove state, actor, or time')
             identity = match['url'], match['hash']
             require(identity not in seen, 'Duplicate MR branch association')
             seen.add(identity)

@@ -233,6 +233,12 @@ class GitLabSourcesTest(unittest.TestCase):
                 bad['branches'][0]['merge_requests'][0][field] = value
                 with self.assertRaises(ValueError):
                     gl.validate_gitlab(bad)
+        for field in ('merged_at', 'closed_at', 'author_login', 'merged_by', 'actor', 'created_at', 'updated_at'):
+            with self.subTest(unsupported_claim=field):
+                bad = copy.deepcopy(data)
+                bad['branches'][0]['merge_requests'][0][field] = 'invented'
+                with self.assertRaises(ValueError):
+                    gl.validate_gitlab(bad)
         for field, value in [('native_output', MERGE), ('local_repo', '/unknown'), ('remote', 'unknown'),
                              ('refs', []), ('returncode', 1), ('status', 'partial')]:
             with self.subTest(query_field=field):
