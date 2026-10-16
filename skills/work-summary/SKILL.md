@@ -150,7 +150,13 @@ Follow the filtered connection's cursors to completion: its reported total may
 describe the unfiltered timeline and must not be treated as a filtered event count.
 When a historical after-commit object is unavailable, read the native paginated
 REST timeline: its force-push event can retain the hash. Keep any still-unknown
-before head distinct from the recovered after head.
+before head distinct from the recovered after head. If commit objects remain
+opaque, try the public native PR timeline, including its hidden-event pagination.
+Accept full hash pairs only from native event containers bound to the same REST
+event ID, time and after hash, with matching native compare and commit URLs.
+Retain the pages and replayable proof; PR prose and abbreviated hashes cannot
+prove a former head. A complete alternate read resolves that projection gap;
+other failed pages or unavailable records remain separate limits.
 
 Jira uses the authenticated tenant/account. Retain all-status assigned,
 reported, created, watched and formerly assigned inventories plus recent
@@ -187,7 +193,11 @@ Lowercase path/branch tokens are discovery leads; an existing same-key ticket
 does not corroborate a relation. Confirm pairs through explicit native URLs,
 conventional uppercase ticket references, or native Jira references to the PR.
 Review the surrounding meaning before listing a pair. Foreign-site Jira URLs
-do not identify a same-key ticket on the active site. Verify GitHub
+do not identify a same-key ticket on the active site. Keep failed lexical leads
+separate from explicit Jira URLs and native issue references: a token such as
+`AES-256` plus an ambiguous native error does not establish a missing ticket.
+Preserve every attempted key and failure without excluding unknown projects.
+Verify GitHub
 repository transfers using independent native reads with equal repository IDs;
 keep historical source URLs beside canonical relations.
 Include native issue/review comments and top-level review bodies in reference
