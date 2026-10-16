@@ -385,9 +385,10 @@ def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
     inventory = {row.get('path'): row for row in metadata.get('repositories', []) if isinstance(row, dict)}
-    unrouted = {path for path, row in inventory.items() if not any(
-        isinstance(remote, dict) and remote.get('kind') == 'github' and remote.get('host', host) == host
-        for remote in row.get('remotes', []))}
+    routes = {path: {remote.get('repo') for remote in row.get('remotes', [])
+                    if isinstance(remote, dict) and remote.get('kind') == 'github'
+                    and remote.get('host', host) == host} for path, row in inventory.items()}
+    unrouted = {path for path, repositories in routes.items() if not repositories}
     repository_aliases(github, host)
     for kind in ('prs', 'issues'):
         for item in github.get('context_' + kind, []):
@@ -577,9 +578,11 @@ def validate_github(data, evidence, start, end):
         if branch['pr_status'] == 'related_only':
             lookups, related = branch.get('association_lookups', []), branch.get('related_prs', [])
             require(branch.get('repo') in inventory and branch['repo'] not in unrouted
-                    and bool(lookups) and all(info.get('status') == 'ok' for info in lookups)
+                    and bool(lookups) and all(isinstance(info, dict) and info.get('status') == 'ok' for info in lookups)
                     and isinstance(related, list) and bool(related) and not prs,
                     'Related-only branch needs completed repository lookups and native candidates')
+            require(routes[branch['repo']] <= {info.get('repo') for info in lookups},
+                    'Related-only branch lacks completed configured repository scopes')
             names = {ref.removeprefix('refs/heads/') for ref in branch.get('refs', [])
                      if ref.startswith('refs/heads/')}
             names.update(ref.removeprefix('refs/remotes/').split('/', 1)[1]

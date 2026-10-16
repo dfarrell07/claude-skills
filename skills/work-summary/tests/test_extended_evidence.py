@@ -30,7 +30,8 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
                                       'proof': 'head_name_only'}],
             'association_lookups': [{'repo': 'org/project', 'status': 'ok'}]}]
         self.validate(data, evidence)
-        for mutation in ('no_candidate', 'wrong_name', 'failed_sha', 'failed_history', 'wrong_state', 'unrouted'):
+        for mutation in ('no_candidate', 'wrong_name', 'failed_sha', 'failed_history', 'wrong_state', 'unrouted',
+                         'global_only', 'wrong_repository', 'missing_second_repository'):
             broken = copy.deepcopy(data)
             if mutation == 'no_candidate':
                 broken['branches'][0]['related_prs'] = []
@@ -43,8 +44,15 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
                 broken['metadata']['github_discovery']['head_history:' + url]['status'] = 'partial'
             elif mutation == 'wrong_state':
                 broken['branches'][0]['related_prs'][0]['state'] = 'merged'
-            else:
+            elif mutation == 'unrouted':
                 broken['metadata']['repositories'][0]['remotes'] = []
+            elif mutation == 'global_only':
+                broken['branches'][0]['association_lookups'] = [{'scope': 'github_global', 'status': 'ok'}]
+            elif mutation == 'wrong_repository':
+                broken['branches'][0]['association_lookups'][0]['repo'] = 'org/unrelated'
+            else:
+                broken['metadata']['repositories'][0]['remotes'].append(
+                    {'kind': 'github', 'host': 'github.com', 'repo': 'org/second'})
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.validate(broken, evidence)
 
