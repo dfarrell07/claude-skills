@@ -1,8 +1,10 @@
 """Local-source regressions using disposable repositories and no network."""
 
 from datetime import datetime, timedelta, timezone
+import copy
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +59,87 @@ class LocalSourcesTest(unittest.TestCase):
     def capture(self, root):
         end = datetime.now(timezone.utc).replace(microsecond=0)
         return local_sources.collect_local([str(root)], end - timedelta(days=7), end, lambda message: None)
+
+    def private_fixture(self):
+        repo = self.repo(self.root / 'repository')
+        initial = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'commit', '--allow-empty', '-qm', 'Private saved work')
+        saved = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'reset', '--hard', initial)
+        tree = self.root / 'linked'
+        self.git(repo, 'worktree', 'add', '--detach', str(tree), initial)
+        self.git(tree, 'update-ref', 'refs/worktree/backup', saved)
+        return repo, tree, saved
+
+    def test_private_worktree_ref_adds_weekly_and_historical_evidence_without_mutation(self):
+        repo, tree, saved = self.private_fixture()
+        before = self.git(tree, 'for-each-ref')
+        data = self.capture(repo)
+        entry = data['metadata']['repositories'][0]
+        pointer = 'worktree-ref:' + str(tree) + ':refs/worktree/backup'
+        self.assertIn(saved, [row['hash'] for row in data['commits'][str(repo)]])
+        self.assertIn(pointer, next(row for row in data['branches'] if row['hash'] == saved)['refs'])
+        self.assertEqual(local_sources.private_ref_pointers(entry)[pointer], saved)
+        end = datetime.now(timezone.utc) + timedelta(days=30)
+        old = local_sources.collect_local([str(repo)], end - timedelta(days=7), end, lambda message: None)
+        self.assertNotIn(str(repo), old['commits'])
+        self.assertIn(pointer, next(row for row in old['branches'] if row['hash'] == saved)['refs'])
+        self.assertEqual(before, self.git(tree, 'for-each-ref'))
+
+    def test_private_refs_same_name_different_worktrees_and_stale_admin(self):
+        repo, tree, saved = self.private_fixture()
+        second = self.root / 'other'
+        self.git(repo, 'worktree', 'add', '--detach', str(second), 'main')
+        self.git(second, 'commit', '--allow-empty', '-qm', 'Other private work')
+        other = self.git(second, 'rev-parse', 'HEAD')
+        self.git(second, 'update-ref', 'refs/worktree/backup', other)
+        shutil.rmtree(tree)
+        data = self.capture(repo)
+        entry = data['metadata']['repositories'][0]
+        pointers = local_sources.private_ref_pointers(entry)
+        self.assertEqual(pointers['worktree-ref:' + str(tree) + ':refs/worktree/backup'], saved)
+        self.assertEqual(pointers['worktree-ref:' + str(second) + ':refs/worktree/backup'], other)
+        self.assertFalse(tree.exists())
+
+    def test_private_ref_proof_rejects_forged_rows_route_and_common_binding(self):
+        repo, tree, _ = self.private_fixture()
+        entry = self.capture(repo)['metadata']['repositories'][0]
+        for field, value in (('common_dir', '/foreign'), ('command_path', str(repo)),
+                             ('native_output', ''), ('refs', [])):
+            forged = copy.deepcopy(entry)
+            proof = next(row for row in forged['worktrees'] if row['path'] == str(tree))['private_refs']
+            proof[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                local_sources.private_ref_pointers(forged)
+
+    def test_private_ref_malformed_native_tail_retains_healthy_positive(self):
+        repo, tree, saved = self.private_fixture()
+        original = local_sources.git
+
+        def malformed(path, *args, **kwargs):
+            raw = original(path, *args, **kwargs)
+            if str(path) == str(tree) and 'for-each-ref' in args:
+                raw += 'malformed tail\n'
+            return raw
+
+        with patch.object(local_sources, 'git', side_effect=malformed):
+            entry = self.capture(repo)['metadata']['repositories'][0]
+        proof = next(row for row in entry['worktrees'] if row['path'] == str(tree))['private_refs']
+        self.assertEqual(proof['status'], 'partial')
+        self.assertEqual(len(proof['parse_errors']), 1)
+        self.assertIn(saved, local_sources.private_ref_pointers(entry).values())
+
+    def test_private_ref_foreign_admin_cannot_add_foreign_objects(self):
+        repo, tree, saved = self.private_fixture()
+        foreign = self.repo(self.root / 'foreign')
+        shutil.rmtree(tree)
+        admin = repo / '.git' / 'worktrees' / 'linked'
+        (admin / 'commondir').write_text(str(foreign / '.git') + '\n')
+        entry = self.capture(repo)['metadata']['repositories'][0]
+        proof = next(row for row in entry['worktrees'] if row['path'] == str(tree))['private_refs']
+        self.assertEqual(proof['status'], 'partial')
+        self.assertEqual(proof['refs'], [])
+        self.assertNotIn(saved, local_sources.private_ref_pointers(entry).values())
 
     def test_symlink_cannot_bypass_state_directory_exclusions(self):
         home = self.root / 'home'
