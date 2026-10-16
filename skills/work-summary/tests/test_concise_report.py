@@ -154,6 +154,12 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn(r'\~\~not\~\~',report)
         self.assertNotIn('  - https://evil.example',report)
 
+    def test_sentence_periods_and_versions_remain_plain_in_the_work_list(self):
+        source=self.capture()
+        description='Updated Kubernetes 1.37.1. Release 0.23.4 remains pending.'
+        enriched=self.enrich(source,(description,))
+        self.assertEqual(ws.render(enriched,source).splitlines()[0],'- '+description)
+
     def test_forged_citations_and_source_tampering_still_fail_before_output(self):
         source=self.capture()
         enriched=self.enrich(source)
@@ -471,6 +477,11 @@ class ConciseReportTest(unittest.TestCase):
         self.assertEqual(contents,[(3,'Main result'),(5,'Substantive detail'),
             (7,pr['url']),(7,'Further detail'),(9,pr['url'])])
         self.assertEqual(enriched,original)
+        enriched['analysis']['themes'][0]['description']='1. Main result.'
+        numbered=MarkdownIt().parse(ws.render(enriched,source))
+        self.assertNotIn('ordered_list_open',[token.type for token in numbered])
+        self.assertEqual(sum(token.type=='bullet_list_open' for token in numbered),
+                         sum(token.type=='bullet_list_open' for token in tokens))
         group=enriched['analysis']['themes'][0]
         group['links']=[pr['url']]
         with self.assertRaises(ValueError):

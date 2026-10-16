@@ -378,7 +378,9 @@ def markdown(text):
     text = "".join(" " if unicodedata.category(char) in {"Cc", "Cf", "Cs"} else char for char in str(text))
     text = " ".join(text.split())
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return re.sub(r"([\\`*_{}\[\]()#+.!|~])", r"\\\1", text)
+    text = re.sub(r"([\\`*_{}\[\]()#+!|~])", r"\\\1", text)
+    # Only a leading ordered-list marker makes a period structural here.
+    return re.sub(r"^([0-9]{1,9})\.(?=\s)", r"\1\\.", text)
 
 
 def link(item):
