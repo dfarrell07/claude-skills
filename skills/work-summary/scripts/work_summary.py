@@ -289,14 +289,27 @@ def validate(data, source=None):
                 if heads:
                     require(isinstance(recovery.get('reflog_output'), str),
                             'Missing native worktree reflog output')
-                    native_heads = set(recovery['reflog_output'].splitlines())
+                    native_lines = recovery['reflog_output'].splitlines()
+                    native_heads = {head for head in native_lines if HASH.fullmatch(head)}
+                    require(len(native_heads) == len(set(native_lines))
+                            or recovery.get('status') == 'partial' and 'reflog_output' in recovery.get('errors', []),
+                            'Unqualified malformed native worktree reflog output')
                     if 'reflog_file' in recovery:
                         require(isinstance(recovery['reflog_file'], str), 'Invalid native worktree reflog file')
-                        for line in recovery['reflog_file'].splitlines():
-                            fields = line.split()
-                            require(len(fields) >= 2 and all(HASH.fullmatch(head) for head in fields[:2]),
-                                    'Invalid native worktree reflog row')
+                        errors = recovery.get('reflog_parse_errors', [])
+                        require(isinstance(errors, list) and all(isinstance(error, dict)
+                                and integer(error.get('line'), 1) and isinstance(error.get('reason'), str)
+                                and error['reason'] for error in errors), 'Invalid worktree reflog parse errors')
+                        invalid_lines = []
+                        for index, line in enumerate(recovery['reflog_file'].splitlines(), 1):
+                            fields = line.split(' ', 2)
+                            if len(fields) < 3 or not all(HASH.fullmatch(head) for head in fields[:2]):
+                                invalid_lines.append(index)
+                                continue
                             native_heads.update(head for head in fields[:2] if set(head) != {'0'})
+                        require(invalid_lines == sorted(error['line'] for error in errors)
+                                and (not invalid_lines or recovery.get('status') == 'partial'),
+                                'Unqualified malformed native worktree reflog rows')
                     require(set(heads) == native_heads,
                             'Worktree reflog heads lack native output')
                 for head in heads:

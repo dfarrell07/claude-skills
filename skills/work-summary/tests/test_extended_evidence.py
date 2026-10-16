@@ -140,7 +140,7 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
         self.validate(baseline, copy.deepcopy(evidence))
         mutations = [('databaseId', 43), ('databaseId', True), ('id', ''),
                      ('url', event['item_url'] + '#issuecomment-43'),
-                     ('editor', {'login': 'another-editor'}), ('author', None),
+                     ('editor', {'login': 'another-editor'}), ('author', {'login': ''}),
                      ('createdAt', '2026-01-11T00:00:00Z'),
                      ('lastEditedAt', '2026-01-10T12:00:01Z'),
                      ('updatedAt', '2026-01-10T11:59:59Z')]
@@ -150,6 +150,9 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
                 data['github']['activity'][0]['editor_evidence'][field] = value
                 with self.assertRaises(ValueError):
                     self.validate(data, copy.deepcopy(evidence))
+        deleted_author = copy.deepcopy(baseline)
+        deleted_author['github']['activity'][0]['editor_evidence']['author'] = None
+        self.validate(deleted_author, copy.deepcopy(evidence))
         baseline['github']['activity'][0]['action'] = 'closed'
         with self.assertRaises(ValueError):
             self.validate(baseline, copy.deepcopy(evidence))

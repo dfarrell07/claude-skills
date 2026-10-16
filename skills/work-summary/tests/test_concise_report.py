@@ -59,6 +59,14 @@ class ConciseReportTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ws.validate(data)
         recovery['reflog_file'] = '0' * 40 + ' ' + head + ' Native actor\n'
+        recovery['reflog_file'] += 'malformed native tail\n'
+        recovery.update(status='partial', reflog_parse_errors=[{'line': 2, 'reason': 'invalid record'}])
+        ws.validate(data)  # Readable native positives survive a separately qualified malformed tail.
+        recovery['reflog_output'] = 'native failure diagnostic\n'
+        with self.assertRaises(ValueError):
+            ws.validate(data)
+        recovery['errors'] = ['reflog_output']
+        ws.validate(data)
         data['branches'][0]['hash'] = 'd' * 40
         with self.assertRaises(ValueError):
             ws.validate(data)

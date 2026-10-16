@@ -76,9 +76,11 @@ def validate_editor_evidence(event):
     require(isinstance(proof.get('id'), str) and bool(proof['id'])
             and integer(proof.get('databaseId'), 1) and proof['databaseId'] == event['id']
             and proof.get('url') == event['url'], 'GitHub editor comment mismatch')
-    for role in ('author', 'editor'):
-        require(isinstance(proof.get(role), dict) and isinstance(proof[role].get('login'), str)
-                and bool(proof[role]['login']), 'Missing native GitHub comment identity')
+    require('author' in proof and (proof['author'] is None or isinstance(proof['author'], dict)
+            and isinstance(proof['author'].get('login'), str) and bool(proof['author']['login'])),
+            'Missing native GitHub comment author observation')
+    require(isinstance(proof.get('editor'), dict) and isinstance(proof['editor'].get('login'), str)
+            and bool(proof['editor']['login']), 'Missing native GitHub comment editor')
     require(proof['editor']['login'].casefold() == event['actor'].casefold(),
             'GitHub comment editor mismatch')
     created = timestamp(proof.get('createdAt'))
@@ -160,7 +162,8 @@ def validate_github(data, evidence, start, end):
             require(original is not None and all(pr.get(key) == original[key] for key in ('repo', 'number', 'url'))
                     and pr.get('state') in {'open', 'closed', 'merged'},
                     'Branch PR absent from index')
-            require(pr.get('proof') in {'exact_head_or_merge_sha', 'any_author_sha_search', 'commit_association'},
+            require(pr.get('proof') in {'exact_head_or_merge_sha', 'any_author_sha_search',
+                                       'global_any_author_sha_search', 'commit_association'},
                     'Invalid branch PR proof')
             if pr['proof'] == 'exact_head_or_merge_sha':
                 require(branch['hash'] in (original.get('head_sha'), original.get('merge_sha')), 'Branch SHA mismatch')
