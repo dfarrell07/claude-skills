@@ -9,7 +9,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urljoin, urlsplit
 from urllib.request import build_opener, HTTPRedirectHandler, HTTPSHandler, Request
 
-from evidence import HASH, HOST, integer, require, timestamp
+from evidence import HASH, HOST, REPO, integer, require, timestamp
+from extended_evidence import same_github_api_repo_url, same_github_item_url
 
 MAX_PAGES = 100
 MAX_BYTES = 20 * 1024 * 1024
@@ -21,23 +22,43 @@ BLOCKED_TAGS = {'script', 'style', 'template', 'code', 'pre', 'textarea', 'xmp',
 
 def safe_url(url, item):
     parts, target = urlsplit(url), urlsplit(item['url'])
-    require(parts.scheme == target.scheme == 'https' and parts.netloc == target.netloc
+    require(parts.scheme == target.scheme == 'https' and parts.netloc.casefold() == target.netloc.casefold()
             and HOST.fullmatch(parts.netloc) and not parts.fragment
             and not any(char in url for char in '\r\n\x00'), 'Foreign timeline URL')
     if parts.port is not None:
         require(1 <= parts.port <= 65535, 'Invalid timeline authority')
     require(target.path == f"/{item['repo']}/pull/{item['number']}" and not target.query,
             'Invalid native timeline item')
-    if parts.path == target.path:
+    base = parts._replace(query='').geturl()
+    if same_github_item_url(base, item['url']):
         require(not parts.query, 'Unexpected timeline page query')
     else:
-        require(parts.path == target.path + '/timeline_more_items', 'Foreign timeline pagination route')
+        require(parts.path.endswith('/timeline_more_items')
+                and same_github_item_url(parts._replace(path=parts.path.removesuffix('/timeline_more_items'),
+                                                       query='').geturl(), item['url']),
+                'Foreign timeline pagination route')
         query = parse_qs(parts.query, keep_blank_values=True)
         require(query and set(query) <= {'after_cursor', 'before_cursor'}
                 and all(len(values) == 1 and values[0] and len(values[0]) <= 4096
                         and not any(ord(char) < 32 for char in values[0]) for values in query.values()),
                 'Invalid timeline pagination cursor')
     return url
+
+
+def _same_page_url(left, right):
+    """Only repository casing may differ in a native originating-page URL."""
+    if (not isinstance(left, str) or not isinstance(right, str)
+            or any(ord(char) < 32 or ord(char) == 127 for char in left + right)):
+        return False
+    try:
+        first, second = urlsplit(left), urlsplit(right)
+    except ValueError:
+        return False
+    suffix = '/timeline_more_items'
+    if first.path.endswith(suffix) != second.path.endswith(suffix):
+        return False
+    return same_github_item_url(first._replace(path=first.path.removesuffix(suffix)).geturl(),
+                                second._replace(path=second.path.removesuffix(suffix)).geturl())
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -96,22 +117,24 @@ class Timeline(HTMLParser):
         if self.current is not None and not blocked:
             if tag == 'a':
                 href = attrs.get('href', '')
-                commit = re.fullmatch('/' + re.escape(self.item['repo']) + r'/commit/([0-9a-f]{40})', href)
-                if commit:
-                    self.current['commits'].append(commit[1])
+                commit = re.fullmatch(r'/([^/]+/[^/]+)/commit/([0-9a-f]{40})', href)
+                if (commit and REPO.fullmatch(commit[1])
+                        and commit[1].casefold() == self.item['repo'].casefold()):
+                    self.current['commits'].append(commit[2])
                 if attrs.get('data-hydro-click'):
                     try:
                         hydro = json.loads(attrs['data-hydro-click'])
-                        pair = re.fullmatch('/' + re.escape(self.item['repo'])
-                                            + r'/compare/([0-9a-f]{40})\.\.([0-9a-f]{40})', href)
+                        pair = re.fullmatch(r'/([^/]+/[^/]+)/compare/([0-9a-f]{40})\.\.([0-9a-f]{40})', href)
                         payload = hydro['payload']
                         if (hydro['event_type'] == 'force_push_timeline_diff.click' and pair
+                                and REPO.fullmatch(pair[1])
+                                and pair[1].casefold() == self.item['repo'].casefold()
                                 and payload.get('event_id') == self.current['id']
                                 and integer(payload.get('event_id'), 1)
-                                and payload.get('originating_url') == self.page_url
+                                and _same_page_url(payload.get('originating_url'), self.page_url)
                                 and integer(payload.get('repository_id'), 1)
                                 and integer(payload.get('pull_request_id'), 1)):
-                            self.current['compares'].append((pair[1], pair[2], href, hydro))
+                            self.current['compares'].append((pair[2], pair[3], href, hydro))
                     except (ValueError, KeyError, TypeError, AttributeError):
                         pass
             if tag == 'relative-time' and any(node['tag'] == 'a' and node['attrs'].get('href')
@@ -168,10 +191,10 @@ def parse_page(item, page, *, include_errors=False):
 def _replay(item, rest_events, target_ids, pages):
     native = {}
     host = urlsplit(item['url']).netloc
-    api_root = 'https://api.github.com' if host == 'github.com' else 'https://' + host + '/api/v3'
+    api_root = 'https://api.github.com' if host.casefold() == 'github.com' else 'https://' + host + '/api/v3'
     for event in rest_events:
         require(integer(event.get('id'), 1) and event.get('event') == 'head_ref_force_pushed'
-                and event.get('url') == api_root + f"/repos/{item['repo']}/issues/events/{event['id']}",
+                and same_github_api_repo_url(event.get('url'), api_root + f"/repos/{item['repo']}/issues/events/{event['id']}"),
                 'Invalid native force-push target identity')
         timestamp(event.get('created_at'))
         native[event['id']] = event

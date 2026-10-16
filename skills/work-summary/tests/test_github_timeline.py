@@ -48,6 +48,24 @@ class NativeTimelineTest(unittest.TestCase):
     def collect(self, body, native=None):
         return collect_timeline(ITEM, native or [rest_event()], [42], lambda url: page(body, url))
 
+    def test_native_repository_case_variants_preserve_rest_and_paged_html_head_proof(self):
+        item = {**ITEM, 'repo': 'ORG/REPO', 'url': ITEM['url'].replace('/org/repo/', '/ORG/REPO/')}
+        following = ITEM['url'] + '/timeline_more_items?after_cursor=next'
+        bodies = {item['url']: paginate(event_html(), following),
+                  following: event_html(identity=43, page_url=following)}
+        result = collect_timeline(item, [rest_event(), rest_event(43)], [42, 43],
+                                  lambda url: page(bodies[url], url))
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual([event['id'] for event in result['events']], [42, 43])
+        self.assertEqual(result['events'][0]['compare_path'], '/org/repo/compare/' + 'a' * 40 + '..' + 'b' * 40)
+        self.assertEqual(result['pages'][0]['body'], bodies[item['url']])
+        validate_timeline(result, item, [rest_event(), rest_event(43)], [42, 43])
+        for url in [following.replace('/org/repo/', '/wrong/repo/'),
+                    following.replace('/pull/', '/PULL/'),
+                    following.replace('/timeline_more_items', '/TIMELINE_more_items')]:
+            with self.assertRaises(ValueError):
+                safe_url(url, item)
+
     def test_native_full_pairs_bind_rest_identity_and_validate_without_losing_pages(self):
         result = self.collect(event_html())
         self.assertEqual(result['status'], 'ok')

@@ -185,7 +185,7 @@ only after they have actually completed.
 
 Qualification completed for the implementation:
 
-- The 465-test work-summary suite passes in CI on Linux and macOS with Python 3.10 and 3.13.
+- The work-summary regression suite passes in CI on Linux and macOS with Python 3.10 and 3.13.
   Native Git symlink-root tests corrected an actual macOS fixture-path failure without changing the collector.
 - Five consecutive independent expert reviews found no actionable findings after fixes for malformed timezone
   offsets, native search index/payload date disagreement, and missing retained-context evidence.
@@ -206,3 +206,11 @@ uses selective links, and offers short openings the user can rewrite. Per-source
 times, private provenance and further native collection details stay with the private qualification artifacts.
 These tests do not establish a universal inventory or correctness of future generated prose; each run still
 needs the evidence and editorial checks in the workflow.
+
+Further adversarial checks found snapshot and identity gaps beyond the initial qualification. Distinct
+PR/issue descriptions must survive repeated searches and repository redirects so their Jira references
+remain discoverable. Repository capitalization must not duplicate contributions, discard comments or
+historical heads, or fail collection. Branch matches must bind their head and state to the same native
+observation. These findings added focused regressions and another review cycle. Actual-change inspection
+also narrowed a PR-description overclaim in the private writing material; descriptions alone do not prove
+implementation, runtime compatibility, or deployment.

@@ -24,8 +24,9 @@ def repository_aliases(github, host):
         for field, repo in (('requested', requested), ('canonical', canonical)):
             proof = record.get(field)
             require(isinstance(proof, dict) and proof.get('path') == 'repos/' + repo
-                    and integer(proof.get('id'), 1) and proof.get('full_name') == canonical
-                    and proof.get('html_url') == f'https://{host}/{canonical}',
+                    and integer(proof.get('id'), 1) and isinstance(proof.get('full_name'), str)
+                    and proof['full_name'].casefold() == canonical.casefold()
+                    and proof.get('html_url') == f"https://{host}/{proof['full_name']}",
                     'Invalid native GitHub repository alias proof')
             proofs.append(proof)
         require(proofs[0]['id'] == proofs[1]['id'], 'GitHub repository alias ID mismatch')
@@ -238,7 +239,8 @@ def comment_history_state(record, start, end, login, latest_proof=None):
 
 def same_github_item_url(left, right):
     """GitHub owner/repo casing is equivalent; native route/fragment stay exact."""
-    if not isinstance(left, str) or not isinstance(right, str):
+    if (not isinstance(left, str) or not isinstance(right, str)
+            or any(ord(char) < 32 or ord(char) == 127 for char in left + right)):
         return False
     try:
         first, second = urlsplit(left), urlsplit(right)
@@ -252,6 +254,33 @@ def same_github_item_url(left, right):
             and REPO.fullmatch('/'.join(a[1:3])) is not None
             and [part.casefold() for part in a[1:3]] == [part.casefold() for part in b[1:3]]
             and a[3:] == b[3:] and a[3] in {'pull', 'issues'}
+            and first.query == second.query and first.fragment == second.fragment)
+
+
+def same_github_api_repo_url(left, right):
+    """Bind an API repository route while retaining exact event/path identity."""
+    if (not isinstance(left, str) or not isinstance(right, str)
+            or any(ord(char) < 32 or ord(char) == 127 for char in left + right)):
+        return False
+    try:
+        first, second = urlsplit(left), urlsplit(right)
+    except ValueError:
+        return False
+    a, b = first.path.split('/'), second.path.split('/')
+    if b[:2] == ['', 'repos']:
+        position = 2
+    elif b[:4] == ['', 'api', 'v3', 'repos']:
+        position = 4
+    else:
+        return False
+    return (first.scheme == second.scheme == 'https'
+            and HOST.fullmatch(first.netloc) is not None
+            and first.netloc.casefold() == second.netloc.casefold()
+            and len(a) == len(b) and len(a) > position + 2
+            and a[:position] == b[:position] and a[position + 2:] == b[position + 2:]
+            and REPO.fullmatch('/'.join(a[position:position + 2])) is not None
+            and [part.casefold() for part in a[position:position + 2]]
+            == [part.casefold() for part in b[position:position + 2]]
             and first.query == second.query and first.fragment == second.fragment)
 
 
@@ -283,7 +312,7 @@ def validate_review_context(source, item, host='github.com'):
         timestamp(source['updated_at'])
     if 'pull_request_url' in source:
         api = 'https://api.github.com' if host.casefold() == 'github.com' else f'https://{host}/api/v3'
-        require(source['pull_request_url'] == f"{api}/repos/{item['repo']}/pulls/{item['number']}",
+        require(same_github_api_repo_url(source['pull_request_url'], f"{api}/repos/{item['repo']}/pulls/{item['number']}"),
                 'Native review API route mismatch')
 
 
@@ -331,7 +360,7 @@ def historical_head_hashes(record, known, host='github.com', html_events=None):
                 and isinstance(source.get('id'), str) and bool(source['id'])
                 and isinstance(source.get('pullRequest'), dict)
                 and isinstance(source['pullRequest'].get('url'), str)
-                and source['pullRequest']['url'].casefold() == item['url'].casefold(),
+                and same_github_item_url(source['pullRequest']['url'], item['url']),
                 'Invalid native force-push identity')
         timestamp(source.get('createdAt'))
         heads = []
@@ -346,8 +375,7 @@ def historical_head_hashes(record, known, host='github.com', html_events=None):
         require(record.get('kind') == 'rest_force_push' and source.get('event') == 'head_ref_force_pushed'
                 and integer(source.get('id'), 1), 'Invalid native REST force-push identity')
         api_base = 'https://api.github.com' if host.casefold() == 'github.com' else f'https://{host}/api/v3'
-        require(isinstance(source.get('url'), str)
-                and source['url'].casefold() == f"{api_base}/repos/{item['repo']}/issues/events/{source['id']}".casefold()
+        require(same_github_api_repo_url(source.get('url'), f"{api_base}/repos/{item['repo']}/issues/events/{source['id']}")
                 and isinstance(source.get('node_id'), str) and bool(source['node_id'])
                 and record.get('source_path') == f"repos/{item['repo']}/issues/{item['number']}/timeline",
                 'Native REST force-push route mismatch')
@@ -436,24 +464,25 @@ def validate_github(data, evidence, start, end):
         fingerprint = json.dumps(item, sort_keys=True)
         require(fingerprint not in observed_payloads, 'Duplicate native context observation')
         observed_payloads.add(fingerprint)
-    indexed = {}
+    indexed, indexed_identities = {}, set()
     for item in github.get('pr_index', []):
         valid_item(item, 'prs', host)
-        require(item['url'] not in indexed, 'Duplicate indexed PR')
+        require(item['url'].casefold() not in indexed_identities, 'Duplicate indexed PR')
+        indexed_identities.add(item['url'].casefold())
         for field in ('head_sha', 'merge_sha'):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid indexed PR snapshot')
         indexed[item['url']] = item
     observations = github.get('pr_index_observations', [])
     require(isinstance(observations, list), 'Invalid native PR index observations')
-    indexed_observations = {url: [item] for url, item in indexed.items()}
+    indexed_observations = {url.casefold(): [item] for url, item in indexed.items()}
     for item in observations:
         valid_item(item, 'prs', host)
-        require(item['url'] in indexed, 'Native PR observation absent from index')
+        require(item['url'].casefold() in indexed_observations, 'Native PR observation absent from index')
         for field in ('head_sha', 'merge_sha'):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid native PR observation snapshot')
-        indexed_observations[item['url']].append(item)
+        indexed_observations[item['url'].casefold()].append(item)
     head_events = github.get('head_events', [])
     require(isinstance(head_events, list), 'Invalid native head history')
     known = {**indexed, **evidence}
@@ -584,20 +613,25 @@ def validate_github(data, evidence, start, end):
     for branch in data.get('branches', []):
         prs = branch.get('prs', [])
         require(isinstance(prs, list), 'Invalid branch PR associations')
+        branch_identities = set()
         for pr in prs:
-            original = indexed.get(pr.get('url'))
-            require(original is not None and all(pr.get(key) == original[key] for key in ('repo', 'number', 'url'))
-                    and pr.get('state') in {'open', 'closed', 'merged'},
-                    'Branch PR absent from index')
+            require(isinstance(pr, dict) and isinstance(pr.get('url'), str), 'Invalid branch PR identity')
+            identity = pr['url'].casefold()
+            require(identity not in branch_identities, 'Duplicate branch PR identity')
+            branch_identities.add(identity)
+            rows = indexed_observations.get(identity, [])
+            observed = [row for row in rows
+                        if all(pr.get(key) == row[key] for key in ('repo', 'number', 'url', 'state'))]
+            require(bool(observed), 'Branch PR absent from a matching native index observation')
             require(pr.get('proof') in {'exact_head_or_merge_sha', 'any_author_sha_search',
                                        'global_any_author_sha_search', 'commit_association',
                                        'historical_head_event'},
                     'Invalid branch PR proof')
             if pr['proof'] == 'exact_head_or_merge_sha':
                 require(any(branch['hash'] in (row.get('head_sha'), row.get('merge_sha'))
-                            for row in indexed_observations[pr['url']]), 'Branch SHA mismatch')
+                            for row in observed), 'Branch SHA mismatch')
             if pr['proof'] == 'historical_head_event':
-                require(any(record['item_url'] == pr['url'] and branch['hash'] in hashes
+                require(any(same_github_item_url(record['item_url'], pr['url']) and branch['hash'] in hashes
                             and ('head_event_id' not in pr or pr['head_event_id'] == record['source']['id'])
                             for record, hashes in historical_heads), 'Historical branch head lacks native event proof')
         if branch['pr_status'] == 'matched':
@@ -628,9 +662,9 @@ def validate_github(data, evidence, start, end):
                          and '/' in ref.removeprefix('refs/remotes/'))
             for candidate in related:
                 require(isinstance(candidate, dict) and candidate.get('proof') == 'head_name_only'
-                        and any(row.get('head_ref') in names and all(candidate.get(field) == row.get(field)
+                        and isinstance(candidate.get('url'), str) and any(row.get('head_ref') in names and all(candidate.get(field) == row.get(field)
                                 for field in ('repo', 'number', 'url', 'state'))
-                                for row in indexed_observations.get(candidate.get('url'), [])),
+                                for row in indexed_observations.get(candidate.get('url', '').casefold(), [])),
                         'Related-only candidate lacks a captured native matching branch name')
                 require(all(metadata.get('github_discovery', {}).get(prefix + candidate['url'], {}).get('status', 'ok') == 'ok'
                             for prefix in ('head_history:', 'rest_head_history:', 'html_head_history:')),

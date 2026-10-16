@@ -160,7 +160,8 @@ class GithubSourcesTest(unittest.TestCase):
                     if endpoint.endswith('/reviews'):
                         return [{'id': 44, 'user': {'login': 'me'}, 'body': 'REVIEW-8', 'state': 'APPROVED',
                                  'submitted_at': '2026-10-11T00:00:00Z',
-                                 'html_url': lower + '#pullrequestreview-44'}]
+                                 'html_url': lower + '#pullrequestreview-44',
+                                 'pull_request_url': f'https://api.github.com/repos/org/repo/pulls/{number}'}]
                     if endpoint.endswith('/pulls/1/comments'):
                         return [comments['review_comment']]
                     return []
@@ -179,7 +180,7 @@ class GithubSourcesTest(unittest.TestCase):
                 self.assertEqual(client.warnings, [])
                 for bad in [lower.replace('/org/repo/', '/org/wrong/') + '#issuecomment-42',
                             lower[:-1] + '9#issuecomment-42', lower + '#issuecomment-43',
-                            lower + '#ISSUECOMMENT-42', lower.replace('/' + route + '/', '/' + route.upper() + '/')
+                            lower + '#ISSUECOMMENT-42', lower.replace('/org/', '/or\ng/') + '#issuecomment-42', lower.replace('/' + route + '/', '/' + route.upper() + '/')
                             + '#issuecomment-42', lower + '?x=1#issuecomment-42']:
                     altered = copy.deepcopy(github)
                     altered['reference_comments'][0]['url'] = bad
@@ -187,6 +188,122 @@ class GithubSourcesTest(unittest.TestCase):
                         validate_github({'metadata': {'github_host': 'github.com', 'github_user': 'me'},
                                          'github': altered}, {}, START, END)
                 self.assertFalse(same_github_item_url(lower + '#ISSUECOMMENT-42', lower + '#issuecomment-42'))
+
+    def test_index_case_drift_preserves_native_head_state_pairs_and_one_identity(self):
+        from extended_evidence import validate_github
+        for same_head in (False, True):
+            with self.subTest(same_head=same_head):
+                first = gql(repo='ORG/REPO', sha=SHA, head='unrelated')
+                second_sha = SHA if same_head else 'b' * 40
+                later = gql(repo='org/repo', sha=second_sha, state='CLOSED', head='unrelated')
+                def api(args):
+                    if any(arg.startswith('q=is:pr repo:') for arg in args):
+                        after = 'after=next' in args
+                        return {'data': {'search': connection([later] if after else [first], total=2,
+                                                              more=not after, cursor=None if after else 'next')}}
+                    return snapshot_data(args)
+                client = self.client(api)
+                github = {'prs': [], 'issues': [], 'activity': []}
+                branches = [branch()] if same_head else [branch(), branch(sha=second_sha)]
+                client.associate_branches(branches, [repository()], github)
+                self.assertEqual(len(github['pr_index']), 1)
+                self.assertEqual(len(github['pr_index_observations']), 1)
+                self.assertEqual(github['pr_index'][0]['url'], first['url'])
+                self.assertEqual(github['pr_index_observations'][0]['url'], later['url'])
+                self.assertTrue(all(len(row['prs']) == 1 for row in branches))
+                self.assertEqual(branches[0]['prs'][0]['state'], 'open')
+                if not same_head:
+                    self.assertEqual(branches[1]['prs'][0]['state'], 'closed')
+                self.assertEqual(client.coverage['pr_index:org/repo']['status'], 'partial')
+                data = {'metadata': {'github_host': 'github.com', 'github_user': 'me',
+                    'github_status': 'partial', 'warnings': ['Native paging drift'],
+                    'github_discovery': client.coverage}, 'github': github, 'branches': branches}
+                validate_github(data, {}, START, END)
+                duplicate = copy.deepcopy(data)
+                duplicate['github']['pr_index'].append(duplicate['github']['pr_index_observations'][0])
+                with self.assertRaisesRegex(ValueError, 'Duplicate indexed'):
+                    validate_github(duplicate, {}, START, END)
+                duplicate = copy.deepcopy(data)
+                duplicate['branches'][0]['prs'].append(copy.deepcopy(duplicate['branches'][0]['prs'][0]))
+                with self.assertRaisesRegex(ValueError, 'Duplicate branch'):
+                    validate_github(duplicate, {}, START, END)
+                if not same_head:
+                    forged = copy.deepcopy(data)
+                    forged['branches'][0]['prs'][0].update(repo='org/repo', url=later['url'], state='closed')
+                    with self.assertRaises(ValueError):
+                        validate_github(forged, {}, START, END)
+
+    def test_snapshot_case_drift_retains_alternate_and_partial_one_branch_edge(self):
+        first = gql(repo='ORG/REPO')
+        later = gql(repo='org/repo', state='CLOSED')
+        def api(args):
+            result = snapshot_data(args)
+            result['data']['s0'] = connection([later] if 'after:' in query_text(args) else [first],
+                total=2, more='after:' not in query_text(args), cursor='next')
+            return result
+        client, branches, github = self.associate(api)
+        self.assertEqual(len(github['pr_index']), 1)
+        self.assertEqual(len(github['pr_index_observations']), 1)
+        self.assertEqual(len(branches[0]['prs']), 1)
+        self.assertEqual(branches[0]['prs'][0]['state'], 'open')
+        self.assertEqual(client.coverage['snapshot:org/repo:' + SHA]['status'], 'partial')
+
+    def test_case_variant_historical_head_urls_preserve_exact_native_event_proof(self):
+        from extended_evidence import historical_head_hashes, same_github_api_repo_url
+        item = graphql_item(gql(repo='ORG/REPO'), 'github.com')
+        event = {'id': 42, 'node_id': 'native-rest-42', 'event': 'head_ref_force_pushed',
+                 'created_at': '2025-01-01T00:00:00Z', 'commit_id': SHA,
+                 'url': 'https://api.github.com/repos/org/repo/issues/events/42'}
+        client = self.client(lambda args: [])
+        github = {}
+        self.assertTrue(client._retain_head_event(github, item, event, 'rest_force_push',
+                                                 'test', 'repos/ORG/REPO/issues/1/timeline'))
+        record = github['head_events'][0]
+        self.assertEqual(record['source'], event)
+        self.assertEqual(historical_head_hashes(record, {item['url']: item}), {SHA})
+        for bad in [event['url'].replace('/org/repo/', '/other/repo/'), event['url'][:-2] + '43',
+                    event['url'].replace('/issues/events/', '/ISSUES/events/'),
+                    event['url'] + '#42', event['url'] + '?page=1']:
+            altered = copy.deepcopy(record)
+            altered['source']['url'] = bad
+            with self.assertRaises(ValueError):
+                historical_head_hashes(altered, {item['url']: item})
+        graph = self.head_node()
+        graph['pullRequest']['url'] = item['url'].lower()
+        self.assertTrue(client._retain_head_event(github, item, graph, 'graphql_force_push', 'test'))
+        self.assertEqual(historical_head_hashes(github['head_events'][1], {item['url']: item}), {SHA, 'b' * 40})
+        self.assertTrue(same_github_api_repo_url(
+            'https://ghe.example.test/api/v3/repos/org/repo/issues/events/42',
+            'https://ghe.example.test/api/v3/repos/ORG/REPO/issues/events/42'))
+        self.assertFalse(same_github_api_repo_url(
+            'https://ghe.example.test/api/v3/repos/org/wrong/issues/events/42',
+            'https://ghe.example.test/api/v3/repos/ORG/REPO/issues/events/42'))
+
+    def test_alias_metadata_case_drift_keeps_ids_and_same_row_html_name_binding(self):
+        from extended_evidence import repository_aliases
+        from work_links import referenced_keys
+        current = rest_item({**rest(), 'body': 'PROJ-123'}, 'prs', 'github.com')
+        def api(args):
+            if args[2] == 'repos/old/repo/issues/1':
+                return {**rest(), 'body': 'TASK-124'}
+            if args[2] in {'repos/old/repo', 'repos/org/repo'}:
+                return {'id': 7, 'full_name': 'Org/Repo', 'html_url': 'https://github.com/Org/Repo'}
+            self.fail('No repeated activity reads: ' + args[2])
+        client = self.client(api)
+        github = {'prs': [current], 'issues': []}
+        client.add_linked_prs(github, ['https://github.com/old/repo/pull/1'])
+        self.assertEqual(set(referenced_keys(github)), {'PROJ-123', 'TASK-124'})
+        alias = github['repository_aliases'][0]
+        self.assertEqual(alias['requested']['full_name'], 'Org/Repo')
+        self.assertEqual(alias['canonical']['html_url'], 'https://github.com/Org/Repo')
+        self.assertEqual(repository_aliases(github, 'github.com'), {('github.com', 'old/repo'): 'org/repo'})
+        for mutation in ('id', 'full_name', 'html_url'):
+            altered = copy.deepcopy(github)
+            altered['repository_aliases'][0]['canonical'][mutation] = {
+                'id': 8, 'full_name': 'other/repo', 'html_url': 'https://github.com/other/repo'}[mutation]
+            with self.assertRaises(ValueError):
+                repository_aliases(altered, 'github.com')
+        self.assertEqual(client.warnings, [])
 
     def test_redirect_repair_matches_later_canonical_index_head_observation(self):
         first = gql(repo='new/repo', sha='b' * 40, head='unrelated')

@@ -9,7 +9,7 @@ import subprocess
 from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
-from extended_evidence import comment_history_state, comment_node_bound, same_github_item_url, validate_review_context
+from extended_evidence import comment_history_state, comment_node_bound, same_github_api_repo_url, same_github_item_url, validate_review_context
 from github_timeline import collect_timeline
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
@@ -414,8 +414,9 @@ class Github:
                 require(isinstance(row, dict), 'Invalid native repository metadata')
                 self._repository_metadata[cache_key] = {field: row[field] for field in ('id', 'full_name', 'html_url')}
             native = self._repository_metadata[cache_key]
-            require(integer(native['id'], 1) and native['full_name'] == canonical
-                    and native['html_url'] == f'https://{self.host}/{canonical}',
+            require(integer(native['id'], 1) and isinstance(native['full_name'], str)
+                    and native['full_name'].casefold() == canonical.casefold()
+                    and native['html_url'] == f"https://{self.host}/{native['full_name']}",
                     'Repository redirect identity disagrees')
             records.append({'path': 'repos/' + repo, **native})
         require(records[0]['id'] == records[1]['id'], 'Repository redirect IDs disagree')
@@ -566,7 +567,8 @@ class Github:
                 expected_path = f"repos/{item['repo']}/issues/{item['number']}/timeline"
                 api_root = 'https://api.github.com' if self.host == 'github.com' else f'https://{self.host}/api/v3'
                 require(source_path == expected_path and isinstance(source.get('node_id'), str) and source['node_id']
-                        and source.get('url') == api_root + f"/repos/{item['repo']}/issues/events/{identity}",
+                        and same_github_api_repo_url(source.get('url'),
+                            api_root + f"/repos/{item['repo']}/issues/events/{identity}"),
                         'REST head event route or native ID disagrees')
                 timestamp(source.get('created_at'))
                 sha = source.get('commit_id')
@@ -583,7 +585,7 @@ class Github:
                 require(kind == 'graphql_force_push' and source.get('__typename') == 'HeadRefForcePushedEvent'
                         and isinstance(identity, str) and identity, 'Invalid typed head event identity')
                 timestamp(source.get('createdAt'))
-                require((source.get('pullRequest') or {}).get('url', '').casefold() == item['url'].casefold(),
+                require(same_github_item_url((source.get('pullRequest') or {}).get('url'), item['url']),
                         'Head event belongs to another PR')
                 for field in ('beforeCommit', 'afterCommit'):
                     require(field in source and (source[field] is None or isinstance(source[field], dict)
@@ -642,7 +644,7 @@ class Github:
                            or not error['path'] or error['path'][0] == alias for error in errors):
                         self.problem(key, 'history returned GraphQL errors; retaining readable events')
                     pr = result['data'][alias]['pullRequest']
-                    require(pr['url'].casefold() == item['url'].casefold() and pr['number'] == item['number']
+                    require(same_github_item_url(pr['url'], item['url']) and pr['number'] == item['number']
                             and pr['repository']['nameWithOwner'].casefold() == item['repo'].casefold(),
                             'Historical PR route mismatch')
                     connection = pr['timelineItems']
@@ -754,12 +756,12 @@ class Github:
         for branch in branches:
             if branch['object_type'] == 'commit':
                 by_sha.setdefault(branch['hash'], []).append(branch)
-        indexed = {item['url']: item for item in github.get('pr_index', [])}
+        indexed = {item['url'].casefold(): item for item in github.get('pr_index', [])}
         for record in github.get('head_events', []):
             matched = self._head_shas(record) & by_sha.keys()
             if not matched:
                 continue
-            item = indexed.get(record['item_url'])
+            item = indexed.get(record['item_url'].casefold())
             if item is None:
                 key = 'head_history_metadata:' + record['item_url']
                 try:
@@ -769,16 +771,16 @@ class Github:
                     result = self.graphql('graphql', '-f', 'query=' + query)
                     require(not result.get('errors'), 'Historical PR metadata failed')
                     item = graphql_item(result['data']['repository']['pullRequest'], self.host)
-                    require(item['url'].casefold() == record['item_url'].casefold(), 'Historical metadata route mismatch')
+                    require(same_github_item_url(item['url'], record['item_url']), 'Historical metadata route mismatch')
                     github.setdefault('pr_index', []).append(item)
-                    indexed[item['url']] = item
+                    indexed[item['url'].casefold()] = item
                     self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1}
                 except ERRORS:
                     self.problem(key, 'native PR metadata unavailable; historical positive remains contextual')
                     continue
             for sha in matched:
                 for branch in by_sha[sha]:
-                    if not any(pr['url'] == item['url'] for pr in branch.setdefault('prs', [])):
+                    if not any(pr['url'].casefold() == item['url'].casefold() for pr in branch.setdefault('prs', [])):
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                             'state': item['state'], 'proof': 'historical_head_event', 'head_event_id': record['source']['id']})
                     branch['pr_status'] = 'matched'
@@ -792,8 +794,10 @@ class Github:
         candidates.update(record['item_url'] for record in github.get('head_events', [])
                           if self._head_shas(record) & local_shas)
         self.associate_head_events(branches, github)
-        indexed = {item['url']: item for item in github.get('pr_index', [])}
-        items = [indexed[url] for url in sorted(candidates) if url in indexed and url not in self._history_read]
+        indexed = {item['url'].casefold(): item for item in github.get('pr_index', [])}
+        read_identities = {url.casefold() for url in self._history_read}
+        items = [indexed[url] for url in sorted({url.casefold() for url in candidates})
+                 if url in indexed and url not in read_identities]
         for offset in range(0, len(items), 15):
             self._head_history_batch(github, items[offset:offset + 15])
         self.associate_head_events(branches, github)
@@ -922,10 +926,10 @@ class Github:
                 for row in search['nodes']:
                     try:
                         item = graphql_item(row, self.host)
-                        if item['url'] in seen and item not in rows and item not in observations:
+                        if item['url'].casefold() in seen and item not in rows and item not in observations:
                             observations.append(item)
-                        require(item['url'] not in seen, 'Duplicate indexed PR')
-                        seen.add(item['url'])
+                        require(item['url'].casefold() not in seen, 'Duplicate indexed PR')
+                        seen.add(item['url'].casefold())
                         rows.append(item)
                     except ERRORS:
                         self.problem(key, 'invalid or duplicate indexed PR skipped')
@@ -1062,16 +1066,16 @@ class Github:
                     for row in connection['nodes']:
                         try:
                             item = graphql_item(row, self.host)
-                            if item['url'] in state['seen'] and item not in states[key]['observations']:
+                            if item['url'].casefold() in state['seen'] and item not in states[key]['observations']:
                                 states[key]['observations'].append(item)
-                            require(item['url'] not in state['seen'], 'Duplicate snapshot PR')
-                            state['seen'].add(item['url'])
+                            require(item['url'].casefold() not in state['seen'], 'Duplicate snapshot PR')
+                            state['seen'].add(item['url'].casefold())
                             if context_only:
                                 if item not in states[key]['observations']:
                                     states[key]['observations'].append(item)
                                 continue
                             proof = ('global_any_author_sha_search' if global_search else 'any_author_sha_search') if method == 'search' else 'commit_association'
-                            previous = states[key]['matches'].setdefault(item['url'], (item, proof))[0]
+                            previous = states[key]['matches'].setdefault(item['url'].casefold(), (item, proof))[0]
                             if item != previous and item not in states[key]['observations']:
                                 states[key]['observations'].append(item)
                         except ERRORS:
@@ -1157,7 +1161,7 @@ class Github:
         unrouted = []
 
         def retain_index(item):
-            original = all_indexed.setdefault(item['url'], item)
+            original = all_indexed.setdefault(item['url'].casefold(), item)
             if item != original:
                 fingerprint = json.dumps(item, sort_keys=True)
                 if fingerprint not in seen_observations:
@@ -1281,7 +1285,7 @@ class Github:
                              if ref.startswith('refs/remotes/') and '/' in ref[len('refs/remotes/'):])
                 for item in indices[canonical] + self._index_observations.get(canonical, []):
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
-                        if any(pr['url'] == item['url'] for pr in branch['prs']):
+                        if any(pr['url'].casefold() == item['url'].casefold() for pr in branch['prs']):
                             # An earlier SHA-search observation already proves the
                             # relation; do not upgrade it using a later head value.
                             continue
@@ -1304,7 +1308,7 @@ class Github:
                 branch['association_methods'].append('global_any_author_sha_search')
             for item, proof in state['matches'].values():
                 retain_index(item)
-                if not any(pr['url'] == item['url'] for pr in branch.setdefault('prs', [])):
+                if not any(pr['url'].casefold() == item['url'].casefold() for pr in branch.setdefault('prs', [])):
                     branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                           'state': item['state'], 'proof': proof})
             for item in state['observations']:
@@ -1312,8 +1316,11 @@ class Github:
         for branch in branches:
             if 'association_lookups' in branch:
                 branch['pr_status'] = branch_association_status(branch)
-                branch['prs'] = list({item['url']: item for item in branch['prs']}.values())
-                branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
+                for bucket in ('prs', 'related_prs'):
+                    first_by_identity = {}
+                    for item in branch[bucket]:
+                        first_by_identity.setdefault(item['url'].casefold(), item)
+                    branch[bucket] = list(first_by_identity.values())
         for repo in indices:
             for item in self._index_observations.get(repo, []):
                 retain_index(item)
