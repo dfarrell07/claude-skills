@@ -61,6 +61,9 @@ class Github:
         self.start, self.end, self.warn = start, end, warn
         self.coverage = {}
         self.cache = {}
+        self._linked_attempts = set()
+        self._activity_items = set()
+        self._activity_seen = set()
 
     def graphql(self, *args):
         # gh exits nonzero for GraphQL errors even when stdout retains successful
@@ -175,14 +178,30 @@ class Github:
                 if key not in original['roles']:
                     original['roles'].append(key)
                 original.setdefault('author_login', item.get('author_login'))
-        linked_seen = set()
-        for url in linked_prs:
+        for item in self.add_linked_prs(github, linked_prs):
+            all_items[item['url']] = item
+        self._inspect_activity(github, all_items.values())
+        return all_items
+
+    def add_linked_prs(self, github, urls):
+        """Fetch only new Jira-linked PRs, preserving captured context and events.
+
+        Existing native items gain a role without rereading their endpoints.
+        New items receive actor inspection once; failures remain visible in this
+        instance's coverage and are not silently retried by another frontier.
+        """
+        for key in ('context_prs', 'context_issues', 'activity'):
+            github.setdefault(key, [])
+        all_items = {item['url']: item for kind in ('prs', 'issues', 'context_prs', 'context_issues')
+                     for item in github.get(kind, [])}
+        new_items = []
+        for url in urls:
             key = 'jira_links'
             try:
                 require(isinstance(url, str), 'Invalid linked PR URL')
-                if url in linked_seen:
+                if url in self._linked_attempts:
                     continue
-                linked_seen.add(url)
+                self._linked_attempts.add(url)
                 parts = urlsplit(url).path.strip('/').split('/')
                 require(len(parts) == 4 and parts[2] == 'pull' and parts[3].isascii()
                         and parts[3].isdigit() and int(parts[3]) > 0, 'Invalid linked PR URL')
@@ -197,14 +216,22 @@ class Github:
                     item['roles'], item['observed_at'] = [], iso(datetime.now(UTC))
                     github['context_prs'].append(item)
                     all_items[url] = item
+                    new_items.append(item)
                     self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1}
                 original = all_items[url]
                 if 'jira_link' not in original.setdefault('roles', []):
                     original['roles'].append('jira_link')
             except ERRORS:
                 self.problem(key, 'linked PR unavailable or invalid; omitted link is a coverage gap')
-        seen = set()
-        for item in all_items.values():
+        self._inspect_activity(github, new_items)
+        return new_items
+
+    def _inspect_activity(self, github, items):
+        seen = self._activity_seen
+        for item in items:
+            if item['url'] in self._activity_items:
+                continue
+            self._activity_items.add(item['url'])
             if (item.get('author_login') or '').casefold() == self.login.casefold() and item.get('created_at'):
                 try:
                     created = timestamp(item['created_at'])
@@ -259,7 +286,6 @@ class Github:
                                                        **({'review_state': event.get('state')} if category == 'review' else {})})
                     except (ValueError, TypeError, KeyError, AttributeError):
                         self.problem(key, 'an invalid actor event was skipped')
-        return all_items
 
     def authored_index(self, repo):
         """Cache all states, retaining valid pages when the index is incomplete."""

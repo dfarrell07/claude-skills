@@ -123,6 +123,7 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(len(client.search('query', 'roles', 'prs')), 1000)
         self.assertEqual(len(client.calls), 10)
         self.assertEqual(client.coverage['roles']['status'], 'partial')
+        self.assertTrue(any('1,000-result limit' in warning for warning in client.warnings))
 
     def test_search_oversized_page_is_not_marked_complete(self):
         client = self.client(lambda args: {'total_count': 101, 'incomplete_results': False,
@@ -248,6 +249,87 @@ class GithubSourcesTest(unittest.TestCase):
         data = {'prs': [], 'issues': []}
         client.discover(data, ['https://github.com/org/repo/pull/1'])
         self.assertEqual([(x['action'], x['at']) for x in data['activity']], [('opened', '2026-10-12T00:00:00Z')])
+
+    def test_incremental_links_preserve_existing_data_and_inspect_only_new_urls(self):
+        def api(args):
+            endpoint = args[2]
+            if endpoint == 'repos/org/repo/issues/3':
+                return rest(3)
+            if endpoint == 'repos/org/repo/issues/3/comments':
+                return [{'id': 31, 'user': {'login': 'me'}, 'created_at': '2026-10-12T00:00:00Z',
+                         'updated_at': '2026-10-12T00:00:00Z', 'body': 'Native follow-up',
+                         'html_url': 'https://github.com/org/repo/pull/3#issuecomment-31'}]
+            return []
+        client = self.client(api)
+        old = rest_item(rest(1), 'prs', 'github.com')
+        context = rest_item(rest(2), 'prs', 'github.com')
+        context['roles'] = ['open_authored_prs']
+        old_event = {'item_url': old['url'], 'action': 'review', 'at': '2026-10-11T00:00:00Z'}
+        data = {'prs': [old], 'issues': [], 'context_prs': [context], 'context_issues': [],
+                'activity': [old_event], 'pr_index': [{'url': old['url'], 'body': 'Indexed observation'}]}
+        urls = [old['url'], context['url'], 'https://github.com/org/repo/pull/3',
+                'https://github.com/org/repo/pull/3']
+        new_items = client.add_linked_prs(data, urls)
+        self.assertEqual([x['number'] for x in new_items], [3])
+        self.assertEqual(data['prs'], [old])
+        self.assertEqual([x['number'] for x in data['context_prs']], [2, 3])
+        self.assertEqual(data['context_prs'][0]['roles'], ['open_authored_prs', 'jira_link'])
+        self.assertIs(data['activity'][0], old_event)
+        self.assertEqual(len(data['activity']), 2)
+        self.assertEqual(data['activity'][1]['body'], 'Native follow-up')
+        self.assertEqual(data['pr_index'][0]['body'], 'Indexed observation')
+        self.assertEqual(len(client.calls), 5)
+        self.assertTrue(all('org/repo/issues/3' in args[2] or 'org/repo/pulls/3' in args[2]
+                            for args in client.calls))
+        client.add_linked_prs(data, urls)
+        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(data['activity']), 2)
+
+    def test_incremental_link_failure_keeps_positive_and_does_not_repeat_attempt(self):
+        def api(args):
+            if args[2] == 'repos/org/repo/issues/2':
+                raise subprocess.CalledProcessError(404, 'gh')
+            if args[2] == 'repos/org/repo/issues/1':
+                return rest(1)
+            return []
+        client = self.client(api)
+        data = {'prs': [], 'issues': [], 'activity': [{'existing': True}]}
+        urls = ['https://github.com/org/repo/pull/1', 'https://github.com/org/repo/pull/2']
+        client.add_linked_prs(data, urls)
+        self.assertEqual([x['number'] for x in data['context_prs']], [1])
+        self.assertEqual(data['activity'], [{'existing': True}])
+        self.assertEqual(client.coverage['jira_link:org/repo#2']['status'], 'partial')
+        before = len(client.calls)
+        client.add_linked_prs(data, urls)
+        self.assertEqual(len(client.calls), before)
+        self.assertTrue(client.warnings)
+
+    def test_discover_seed_actor_endpoints_are_not_read_twice(self):
+        def api(args):
+            if 'search/issues' in args:
+                return {'total_count': 0, 'incomplete_results': False, 'items': []}
+            if args[2] == 'repos/org/repo/issues/1':
+                return rest(1)
+            return []
+        client = self.client(api)
+        data = {'prs': [], 'issues': []}
+        result = client.discover(data, ['https://github.com/org/repo/pull/1'])
+        self.assertEqual(len(result), 1)
+        endpoints = [args[2] for args in client.calls if 'search/issues' not in args]
+        self.assertEqual(len(endpoints), 5)
+        self.assertEqual(len(set(endpoints)), 5)
+        searches_before = sum('search/issues' in args for args in client.calls)
+        client.add_linked_prs(data, ['https://github.com/org/repo/pull/1'])
+        self.assertEqual(sum('search/issues' in args for args in client.calls), searches_before)
+        self.assertEqual(len(client.calls), 15)
+
+    def test_incremental_bad_host_warns_without_mutating_old_capture(self):
+        client = self.client(lambda args: self.fail('No API request expected'))
+        data = {'prs': [], 'issues': [], 'context_prs': [], 'context_issues': [], 'activity': [{'old': True}]}
+        original = copy.deepcopy(data)
+        self.assertEqual(client.add_linked_prs(data, ['https://evil.test/org/repo/pull/1']), [])
+        self.assertEqual(data, original)
+        self.assertEqual(client.coverage['jira_links']['status'], 'partial')
 
     def test_authored_index_retains_valid_rows_and_count_drift(self):
         def api(args):
