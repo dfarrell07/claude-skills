@@ -1010,10 +1010,10 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(branches[0]['association_lookups'][0]['global_search']['status'], 'partial')
         self.assertEqual(client.coverage['global_snapshot:' + SHA]['count'], 1)
 
-    def test_native_edit_window_uses_safe_updated_envelope_and_same_second_edits(self):
+    def test_native_edit_window_uses_safe_updated_envelope_and_skips_unedited_comments(self):
         for created, updated, edited, expected_creation in [
                 ('2026-10-01T00:00:00Z', '2026-10-16T00:00:01Z', '2026-10-16T00:00:00Z', False),
-                ('2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', True)]:
+                ('2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', None, True)]:
             with self.subTest(created=created, updated=updated):
                 item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}
                 event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': 'me'},
@@ -1029,9 +1029,23 @@ class GithubSourcesTest(unittest.TestCase):
                 data = {'activity': []}
                 client._inspect_activity(data, [item])
                 actions = [x['action'] for x in data['activity']]
-                self.assertEqual(actions, (['issue_comment'] if expected_creation else []) + ['issue_comment_edited'])
-                self.assertEqual(data['activity'][-1]['at'], edited)
+                if edited is None:
+                    # An unchanged updated_at needs no edit-history request.
+                    self.assertEqual(actions, ['issue_comment'])
+                    self.assertFalse(any(call[0] == 'graphql' for call in client.calls))
+                else:
+                    self.assertEqual(actions, (['issue_comment'] if expected_creation else []) + ['issue_comment_edited'])
+                    self.assertEqual(data['activity'][-1]['at'], edited)
                 self.assertEqual(client.warnings, [])
+
+    def test_items_untouched_since_before_window_need_no_activity_reads(self):
+        stale = {'repo': 'org/repo', 'number': 2, 'url': 'https://github.com/org/repo/issues/2',
+                 'updated_at': '2025-01-01T00:00:00Z'}
+        client = self.client(lambda args: [])
+        data = {'activity': []}
+        client._inspect_activity(data, [stale])
+        self.assertEqual(client.calls, [])
+        self.assertEqual(client.coverage['activity_skipped_inactive']['count'], 1)
 
     def test_matching_native_null_author_does_not_hide_verified_own_edit(self):
         item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}

@@ -815,6 +815,15 @@ class Github:
             if item['url'].casefold() in self._activity_items:
                 continue
             self._activity_items.add(item['url'].casefold())
+            try:
+                # New comments, reviews and timeline events all advance updated_at, so an
+                # item last updated before the window has no in-window activity to read.
+                inactive = timestamp(item['updated_at']) < self.start
+            except ERRORS:
+                inactive = False
+            if inactive:
+                self.coverage.setdefault('activity_skipped_inactive', {'status': 'ok', 'pages': 0, 'count': 0})['count'] += 1
+                continue
             if (item.get('author_login') or '').casefold() == self.login.casefold() and item.get('created_at'):
                 try:
                     created = timestamp(item['created_at'])
@@ -851,8 +860,10 @@ class Github:
                             edited = event.get('updated_at')
                             # updated_at can differ from lastEditedAt and can move
                             # after this window. Same-second edits are possible too.
+                            # An unchanged updated_at means the comment was never edited.
                             if (edited and event.get('created_at') and timestamp(event['created_at']) <= self.end
-                                    and timestamp(edited) >= self.start):
+                                    and timestamp(edited) >= self.start
+                                    and timestamp(edited) != timestamp(event['created_at'])):
                                 proof = self._comment_edit(event, category, key, github, item)
                                 if proof is not None:
                                     dates.append(('updated_at', category + '_edited', proof['editor']['login'], proof))
