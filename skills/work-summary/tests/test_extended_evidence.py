@@ -126,6 +126,34 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.validate(data, copy.deepcopy(evidence))
 
+    def test_recovered_comment_editor_is_bound_to_native_identity_and_edit_time(self):
+        baseline, evidence = self.capture()
+        event = baseline['github']['activity'][0]
+        event.pop('source')
+        event.update(action='issue_comment_edited', id=42,
+                     url=event['item_url'] + '#issuecomment-42')
+        event['editor_evidence'] = {
+            'id': 'native-node', 'databaseId': 42, 'url': event['url'],
+            'author': {'login': 'another-author'}, 'editor': {'login': 'person'},
+            'createdAt': '2026-01-01T00:00:00Z',
+            'lastEditedAt': event['at'], 'updatedAt': '2026-01-10T12:00:01Z'}
+        self.validate(baseline, copy.deepcopy(evidence))
+        mutations = [('databaseId', 43), ('databaseId', True), ('id', ''),
+                     ('url', event['item_url'] + '#issuecomment-43'),
+                     ('editor', {'login': 'another-editor'}), ('author', None),
+                     ('createdAt', '2026-01-11T00:00:00Z'),
+                     ('lastEditedAt', '2026-01-10T12:00:01Z'),
+                     ('updatedAt', '2026-01-10T11:59:59Z')]
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                data = copy.deepcopy(baseline)
+                data['github']['activity'][0]['editor_evidence'][field] = value
+                with self.assertRaises(ValueError):
+                    self.validate(data, copy.deepcopy(evidence))
+        baseline['github']['activity'][0]['action'] = 'closed'
+        with self.assertRaises(ValueError):
+            self.validate(baseline, copy.deepcopy(evidence))
+
 
 if __name__ == '__main__':
     unittest.main()

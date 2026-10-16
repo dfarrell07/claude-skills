@@ -66,6 +66,28 @@ def validate_activity_identity(event, item, host):
             'Invalid GitHub cross-reference URL')
 
 
+def validate_editor_evidence(event):
+    """Bind a recovered native edit to the comment, editor and exact edit time."""
+    if 'editor_evidence' not in event:
+        return
+    proof = event['editor_evidence']
+    require(event['action'] in {'issue_comment_edited', 'review_comment_edited'}
+            and isinstance(proof, dict), 'Unexpected GitHub editor evidence')
+    require(isinstance(proof.get('id'), str) and bool(proof['id'])
+            and integer(proof.get('databaseId'), 1) and proof['databaseId'] == event['id']
+            and proof.get('url') == event['url'], 'GitHub editor comment mismatch')
+    for role in ('author', 'editor'):
+        require(isinstance(proof.get(role), dict) and isinstance(proof[role].get('login'), str)
+                and bool(proof[role]['login']), 'Missing native GitHub comment identity')
+    require(proof['editor']['login'].casefold() == event['actor'].casefold(),
+            'GitHub comment editor mismatch')
+    created = timestamp(proof.get('createdAt'))
+    edited = timestamp(proof.get('lastEditedAt'))
+    updated = timestamp(proof.get('updatedAt'))
+    require(created <= edited <= updated and edited == timestamp(event['at']),
+            'GitHub native edit time mismatch')
+
+
 def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
@@ -101,6 +123,7 @@ def validate_github(data, evidence, start, end):
         require(event['url'] == item['url'] or re.fullmatch(r'[A-Za-z0-9_-]+', urlsplit(event['url']).fragment),
                 'Invalid activity fragment')
         validate_activity_identity(event, item, host)
+        validate_editor_evidence(event)
     for key, info in metadata.get('github_discovery', {}).items():
         require(isinstance(key, str) and isinstance(info, dict) and info.get('status') in {'ok', 'partial'}
                 and integer(info.get('pages')) and integer(info.get('count')), 'Invalid GitHub discovery coverage')
