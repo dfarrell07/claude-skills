@@ -305,14 +305,18 @@ class Github:
             result = self.graphql('graphql', '-f', 'query=' + query, '-f', 'id=' + node_id)
             require(isinstance(result, dict) and not result.get('errors'), 'Comment edit query failed')
             node = result['data']['node']
+            native_author = node.get('author') if isinstance(node, dict) else None
+            rest_author = event.get('user')
+            author_bound = native_author is None and rest_author is None
+            if isinstance(native_author, dict) and isinstance(rest_author, dict):
+                native_id, rest_id = native_author.get('id'), rest_author.get('node_id')
+                author_bound = (native_id == rest_id if native_id and rest_id else
+                                isinstance(native_author.get('login'), str) and bool(native_author['login'])
+                                and native_author['login'].casefold() == rest_author.get('login', '').casefold())
             require(isinstance(node, dict) and node.get('id') == node_id
                     and integer(node.get('databaseId'), 1) and node['databaseId'] == event.get('id')
                     and node.get('url') == event.get('html_url')
-                    and isinstance(node.get('author'), dict)
-                    and isinstance(node['author'].get('login'), str) and node['author']['login']
-                    and (node['author']['id'] == event['user']['node_id']
-                         if node['author'].get('id') and (event.get('user') or {}).get('node_id')
-                         else node['author']['login'].casefold() == (event.get('user') or {}).get('login', '').casefold())
+                    and 'author' in node and author_bound
                     and timestamp(node['createdAt']) == timestamp(event['created_at'])
                     and timestamp(node['updatedAt']) == timestamp(event['updated_at']),
                     'Comment edit identity or observation changed')
@@ -392,9 +396,12 @@ class Github:
                             continue
                         verb = event.get('event', category)
                         dates = [('submitted_at' if category == 'review' else 'created_at', verb, actor, None)] if is_author else []
-                        if category in {'issue_comment', 'review_comment'} and event.get('updated_at') != event.get('created_at'):
+                        if category in {'issue_comment', 'review_comment'}:
                             edited = event.get('updated_at')
-                            if edited and self.start <= timestamp(edited) <= self.end:
+                            # updated_at can differ from lastEditedAt and can move
+                            # after this window. Same-second edits are possible too.
+                            if (edited and event.get('created_at') and timestamp(event['created_at']) <= self.end
+                                    and timestamp(edited) >= self.start):
                                 editor = (event.get('editor') or {}).get('login', '')
                                 if editor.casefold() == self.login.casefold():
                                     dates.append(('updated_at', category + '_edited', editor, None))
