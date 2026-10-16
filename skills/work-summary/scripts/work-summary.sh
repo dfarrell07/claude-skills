@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' 'Work-summary needs Python 3.10+ for shell collection. Use available GitHub/Jira connectors or supplied evidence to build a source-linked work list; note that local Git was not searched.' >&2
+    printf '%s\n' 'Work-summary needs Python 3.10+ for shell collection. Use direct read-only Git commands, available connectors, or supplied evidence to build a source-linked work list; this script did not search local Git.' >&2
     exit 127
 fi
 if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then

@@ -1,14 +1,16 @@
+# Collect through available connectors
+
 Missing tools, expired authentication, or one provider's rate limit must not stop
 collection from other available sources. Record which sources and operations
 were actually available, then produce the report supported by that evidence.
 
-| Available access | Useful evidence | Coverage to leave unresolved |
+| Available access | Useful evidence | Leave unresolved |
 | --- | --- | --- |
-| Local Git only | Verified author identities, commits, named refs, backup heads, and cached default-branch containment | GitHub/Jira activity and remote PR associations |
-| GitHub access only | Accessible PRs/issues, role context, native actor events, and supported commit-to-PR associations | Jira participation and local-only refs/backups |
-| Jira access only | Accessible tickets, role context, native comments, and explicit review links | Unread PR state/activity and local Git work |
-| Connectors or APIs without a shell | The native records each available capability can actually return | Missing pagination, identities, event timestamps, private data, or local refs |
-| No readable source | Explicitly identified user-provided evidence | Any unobserved activity or claims of complete coverage |
+| Local Git only | Verified commits, refs, backup heads and cached containment. | Remote activity and PR associations. |
+| GitHub only | Native PRs/issues, actor events and supported associations. | Jira participation and local backups. |
+| Jira only | Native tickets, comments and explicit review links. | Unread PR state/activity and local work. |
+| Connector/API, no shell | Native records actually exposed. | Missing identities, paging, dates, access or refs. |
+| No readable source | Identified user-provided evidence. | Unobserved work and complete-coverage claims. |
 
 Discover the tools exposed in the current host before choosing a connector. Do
 not assume a connector, tool name, shell, filesystem, or local checkout exists on
@@ -25,8 +27,8 @@ URLs, state, authors, creation/update/merge times, and available title/body/ref
 text. Authored, assigned, requested-review, and involvement matches provide
 context; verified actor identities and exact-window event times establish
 activity. An updated item alone does not establish the person's activity.
-If PR reads are unavailable, keep explicit Jira URLs as contextual references
-and list them as unread. Do not count an unavailable reader as a native attempt.
+If Jira reads are unavailable, retain explicit Jira URLs as unverified context.
+If GitHub reads are unavailable, retain Jira-provided PR URLs as unread context. Do not count an unavailable reader as a native attempt.
 
 Follow the provider's native pagination and retain completeness evidence.
 [GitHub REST pagination](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api)

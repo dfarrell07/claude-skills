@@ -155,8 +155,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
     for root in dict.fromkeys(scan_roots):
         try:
             if not root.is_dir():
-                if roots:
-                    warn(f'Requested scan root is missing or not a directory: {root}')
+                scope = 'Requested' if roots else 'Default'
+                warn(f'{scope} scan root is missing or not a directory: {root}')
                 continue
             root = root.resolve()
         except (OSError, RuntimeError):

@@ -85,7 +85,7 @@ class CapabilitiesTest(unittest.TestCase):
                    'GIT_TERMINAL_PROMPT': '0', 'GIT_ALLOW_PROTOCOL': '', 'GIT_NO_LAZY_FETCH': '1'}
             for key in ('HOME', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE',
                         'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-                        'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT'):
+                        'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT'):
                 env.pop(key, None)
 
             def git(*args):
@@ -130,6 +130,15 @@ class CapabilitiesTest(unittest.TestCase):
                 self.assertEqual(local['metadata']['scan_roots'], [str(repo)])
                 self.assertEqual([row['hash'] for row in local['commits'][str(repo)]], [sha])
                 self.assertTrue(any('Home directory could not be resolved' in warning for warning in warnings))
+            with patch.dict(os.environ, env, clear=True), patch.dict(evidence.GIT_ENV, env, clear=True), \
+                    patch.object(local_sources.Path, 'home', return_value=root / 'missing-home'), \
+                    patch.object(local_sources.Path, 'cwd', return_value=repo):
+                warnings = []
+                local, status, _ = capabilities.collect_local_safely(
+                    local_sources.collect_local, [], end - timedelta(days=7), end, warnings.append)
+            self.assertEqual(status, 'partial', warnings)
+            self.assertEqual([row['hash'] for row in local['commits'][str(repo)]], [sha])
+            self.assertTrue(any('Default scan root is missing' in warning for warning in warnings))
 
     def test_shell_entrypoints_missing_or_unusable_python_have_actionable_empty_stdout(self):
         with tempfile.TemporaryDirectory(prefix='work-summary-launcher.') as directory:

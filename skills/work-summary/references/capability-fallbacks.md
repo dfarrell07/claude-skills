@@ -7,13 +7,19 @@ a prerequisite to producing the summary. Use already authorized read access.
 
 | Available access | Collect | State the limit |
 | --- | --- | --- |
-| Python 3.10+, Git 2.37+, authenticated CLIs | Run the collector on the requested roots and window. | Retain each source's recorded gaps. |
-| Git and Python, no remote CLI or authentication | Use local commits, refs and worktree evidence. | GitHub/Jira were unavailable; PR state and branch delivery remain unverified. |
-| Python and authenticated remote CLIs, no usable Git | Collect GitHub/Jira independently. | Local repositories and backup branches were not searched. |
-| GitHub or Jira connector, without a shell | Read native accessible items and discussions through that connector. | Name the accessible sources and the local/remote sources not searched. |
-| Browser access only | Read accessible native pages and visible pagination; preserve source links and dates. | Browser visibility/pagination limits prevent an exhaustive inventory. |
-| Supplied links, pasted notes or a saved capture only | Summarize the supplied evidence with its original links and dates. | This is a summary of supplied evidence, not a fresh account or repository search. |
-| No readable evidence | Say that the session has no accessible work evidence, then ask for a few links, notes or an available source. | Do not manufacture an empty activity history or invented work bullets. |
+| Python, Git, authenticated CLIs | Run the collector. | Retain each source's gaps. |
+| Git and Python only | Local commits, refs and worktrees. | Remote activity and PR state are unverified. |
+| Git and shell, no supported Python | Read known repos with native Git. | Name inspected repos/refs and identity/date limits. |
+| Python and remote CLIs, no usable Git | Collect remote sources independently. | Local repos and backups were not searched. |
+| Connector, no shell | Read native accessible records. | Name sources and operations not searched. |
+| Browser only | Read native pages and visible pagination. | Visibility and paging may limit the inventory. |
+| Supplied links, notes or saved capture | Summarize their original evidence. | This is not a fresh account search. |
+| No readable evidence | State the lack of accessible evidence. | Do not invent work or an empty activity history. |
+
+The script requires Python 3.10+ and Git 2.37+ for local collection. Direct Git
+reads need no Python: use supported read-only commands, filter native timestamps,
+and verify author identities. Do not claim that the Python collector or renderer
+ran. Preserve which repositories and refs were inspected.
 
 Mobile or cloud sessions may have connectors but no local filesystem, Bash,
 Python or Git. In that case do not offer shell commands as the execution path,
@@ -41,9 +47,10 @@ then substantive investigation/review work, then ongoing work with its current
 observed state. Ranking should use supported significance and completion, not
 raw commit counts. Combine duplicate commits, PRs and tickets into one work item,
 showing both links when native evidence establishes their relation. Local-only
-bullets can cite repository path and full commit hash when no verified web link
-exists. Keep older backup work outside weekly accomplishments unless exact-window
-evidence supports that framing. A missing PR match never proves unpublished work.
+bullets can identify the repository briefly when no verified web link exists;
+retain full paths and hashes in private evidence or optional details. Keep older
+backup work outside weekly accomplishments unless exact-window evidence supports
+that framing. A missing PR match never proves unpublished work.
 
 Begin or end with a short source note, for example: "Based on accessible Jira
 and GitHub records for the last 7 days; local Git and backup branches were not
