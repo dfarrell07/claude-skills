@@ -2,7 +2,7 @@
 """Collect read-only work evidence and render validated, source-linked reports."""
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
+    HASH, HOST, LIMIT, PAGE_SIZE, command, decode_json, integer, iso,
     read_json, require, timestamp, valid_item, is_pr_url,
 )
 from local_sources import collect_local, private_ref_pointers  # noqa: E402
@@ -31,17 +31,13 @@ from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
 from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events, validate_public_history  # noqa: E402
 from provider_references import complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
+from reporting_window import resolve_window, search_bounds, validate_window  # noqa: E402
 
 
-def collect(days_text, roots, now=None):
-    require(re.fullmatch(r"[0-9]+", days_text) is not None and int(days_text) > 0,
-            "Days must be a positive integer")
-    days = int(days_text)
-    end = (now or datetime.now(UTC)).replace(microsecond=0)
-    try:
-        start = end - timedelta(days=days)
-    except OverflowError as error:
-        raise ValueError("Days exceed the supported date range") from error
+def collect(days_text, roots, now=None, *, since=None, until=None):
+    start, end, window = resolve_window(days_text, now, since=since, until=until)
+    explicit = window.get('window_kind') == 'explicit'
+    query_start, query_end = search_bounds(start, end) if explicit else (start, end)
     warnings = []
 
     def warn(message):
@@ -60,6 +56,11 @@ def collect(days_text, roots, now=None):
     gh_env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_PAGER": "cat"}
 
     def api(*args):
+        if explicit:
+            # Discovery may include items updated after the reporting period;
+            # only widen its lower search bound, keeping native event filters exact.
+            args = tuple(arg.replace('updated:>=' + iso(start), 'updated:>=' + iso(query_start))
+                         if isinstance(arg, str) and arg.startswith('q=') else arg for arg in args)
         return decode_json(command(["gh", "api", "--hostname", host, *args], env=gh_env))
 
     if github_host_valid and shutil.which("gh"):
@@ -83,7 +84,7 @@ def collect(days_text, roots, now=None):
             for page in range(1, LIMIT // PAGE_SIZE + 1):
                 try:
                     response = api("--method", "GET", "search/issues", "-f",
-                                   f"q=is:{qualifier} author:{github_user} updated:{iso(start)}..{iso(end)}",
+                                   f"q=is:{qualifier} author:{github_user} updated:{iso(query_start)}..{iso(query_end)}",
                                    "-f", "sort=updated", "-f", "order=desc", "-F", f"per_page={PAGE_SIZE}",
                                    "-F", f"page={page}")
                     require(isinstance(response, dict) and integer(response.get("total_count"))
@@ -97,13 +98,11 @@ def collect(days_text, roots, now=None):
                     elif first_total != total:
                         info["status"] = "partial"
                         warn(f"GitHub {kind} changed while paging; coverage may be incomplete.")
-                    if response["incomplete_results"]:
+                    recover = page == 1 and (response['incomplete_results'] or total > LIMIT)
+                    if response["incomplete_results"] and not recover:
                         info["incomplete_results"] = True
                         info["status"] = "partial"
                         warn(f"GitHub {kind} search reported incomplete results.")
-                    if total > LIMIT and page == 1:
-                        info["status"] = "partial"
-                        warn(f"GitHub {kind} exceeds the {LIMIT}-result cap; coverage is incomplete.")
                     rows = response["items"]
                     require(len(rows) <= PAGE_SIZE, "Oversized search page")
                     invalid_rows = 0
@@ -128,16 +127,52 @@ def collect(days_text, roots, now=None):
                                     "author_login": (row.get("user") or {}).get("login")}
                             require(isinstance(item["body"], str), "Invalid GitHub body")
                             valid_item(item, kind, host)
-                            require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
                             key = (item["repo"], item["number"])
                             require(key not in seen, "Duplicate search item")
                             seen.add(key)
+                            if explicit and not start <= timestamp(item["updated_at"]) <= end:
+                                require(query_start <= timestamp(item["updated_at"]) <= query_end,
+                                        "Item outside native query window")
+                                info['outside_window_count'] = info.get('outside_window_count', 0) + 1
+                                continue
+                            require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
                             github[kind].append(item)
                         except (ValueError, KeyError, TypeError, AttributeError):
                             info["status"] = "partial"
                             invalid_rows += 1
                     if invalid_rows:
                         warn(f"GitHub {kind} page {page} contained {invalid_rows} invalid, duplicate, or out-of-window items; they were skipped.")
+                    if recover:
+                        recovery_warnings = []
+                        recovery = Github(api, host, github_user, start, end, recovery_warnings.append)
+                        key = 'initial_' + kind
+                        recovered = recovery.search(
+                            f'is:{qualifier} author:{github_user} updated:{iso(query_start)}..{iso(query_end)}', key, kind)
+                        native = recovery.coverage[key]
+                        info['partition_recovery'] = native
+                        info['pages'] += native['pages']
+                        info['initial_incomplete_results'] = response['incomplete_results']
+                        info['incomplete_results'] = native['status'] != 'ok' and native['incomplete_results']
+                        for item in recovered:
+                            identity_key = (item['repo'], item['number'])
+                            if identity_key in seen:
+                                continue
+                            seen.add(identity_key)
+                            if start <= timestamp(item['updated_at']) <= end:
+                                github[kind].append(item)
+                            elif explicit and query_start <= timestamp(item['updated_at']) <= query_end:
+                                info['outside_window_count'] = info.get('outside_window_count', 0) + 1
+                            else:
+                                info['status'] = 'partial'
+                                warn(f'GitHub {kind} partition recovery returned an out-of-window item; it was skipped.')
+                        if native['status'] != 'ok' or native.get('total_count') != total:
+                            info['status'] = 'partial'
+                            for message in recovery_warnings:
+                                warn(message)
+                            if total > LIMIT:
+                                warn(f'GitHub {kind} exceeds the {LIMIT}-result cap; partition recovery was incomplete.')
+                            warn(f'GitHub {kind} partition recovery was incomplete or its count changed; retained readable items.')
+                        break
                     expected = min(PAGE_SIZE, max(0, min(total, LIMIT) - (page - 1) * PAGE_SIZE))
                     if len(rows) < expected:
                         info["status"] = "partial"
@@ -156,6 +191,13 @@ def collect(days_text, roots, now=None):
     local, local_status, local_capability = collect_local_safely(
         collect_local, roots, start, end, warn, api=api if github_user else None,
         identity=identity if github_user else {})
+    if explicit:
+        # Git timestamps have whole-second precision and its lower-bound parser
+        # truncates fractions. Reconcile that harmless overfetch before validation.
+        local['commits'] = {repo: selected for repo, rows in local['commits'].items()
+                            if (selected := [row for row in rows
+                                             if start <= timestamp(row['committed_at']) <= end])}
+        local['metadata']['repos_with_commits'] = len(local['commits'])
     gitlab_discovery = collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn)
     jira = collect_jira(start, end, warn)
     discovery = {}
@@ -189,8 +231,7 @@ def collect(days_text, roots, now=None):
             github_status = "partial"
     associate_work(jira, github)
     return {
-        "metadata": {"days": days, "since_date": start.date().isoformat(), "to_date": end.date().isoformat(),
-                     "since_at": iso(start), "to_at": iso(end), **local["metadata"],
+        "metadata": {**window, **local["metadata"],
                      "local_status": local_status, "capabilities": {"local_git": local_capability},
                      "github_discovery": discovery, "reference_expansion": expansion,
                      "gitlab_discovery": gitlab_discovery,
@@ -215,11 +256,7 @@ def validate(data, source=None):
     require(metadata["since_date"] <= metadata["to_date"], "Reversed date window")
     start = timestamp(metadata["since_at"]) if "since_at" in metadata else None
     end = timestamp(metadata["to_at"]) if "to_at" in metadata else None
-    if start or end:
-        require(start is not None and end is not None and end - start == timedelta(days=metadata["days"]),
-                "Invalid rolling date window")
-        require(start.date().isoformat() == metadata["since_date"] and end.date().isoformat() == metadata["to_date"],
-                "Date labels do not match timestamps")
+    validate_window(metadata, start, end)
     warnings = metadata.get("warnings", [])
     require(isinstance(warnings, list) and all(isinstance(w, str) and w for w in warnings), "Invalid coverage warnings")
     for key, states in (("github_status", {"ok", "partial", "unavailable"}),
@@ -368,8 +405,12 @@ def validate(data, source=None):
                     "GitHub search count disagrees with evidence")
             total = info.get("total_count")
             require(total is None or integer(total), "Invalid GitHub total count")
+            outside = info.get('outside_window_count', 0)
+            require(integer(outside) and (not outside or metadata.get('window_kind') == 'explicit'),
+                    "Invalid native-query boundary count")
             if info["status"] == "ok":
-                require(total == len(github[kind]) and not info["incomplete_results"], "Incomplete search marked complete")
+                require(total == len(github[kind]) + outside and not info["incomplete_results"],
+                        "Incomplete search marked complete")
             else:
                 require(metadata.get("github_status") == "partial" and warnings, "Partial search needs a coverage gap")
     if "analysis" not in data:
@@ -808,14 +849,20 @@ def render_detailed(data, source=None):
             links.append(f"[GitLab MR !{number}]({entry['url']}) ({state})")
         return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
 
-    lines = [f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})", "",
+    title = (f"# Work Summary: Reporting Period ({m['since_date']} to {m['to_date']})"
+             if m.get('window_kind') == 'explicit'
+             else f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})")
+    lines = [title, "",
              "GitHub scope: recently updated authored items, older open work, role context, and verified personal events.",
              "Updates and review requests alone do not establish personal work during this period.",
              "Private report: linked Jira context may include restricted tickets; restricted titles are hidden.",
              "Comment edits require native editor proof; missing editor data and deleted events remain outside verified activity.",
              "Local scope: configured or account-verified author emails across recorded refs and registered worktrees.", ""]
     if "since_at" in m:
-        lines += [f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.", ""]
+        label = (f"Window (UTC, start inclusive, end exclusive): {m['since_at']} to {m['until_exclusive']}."
+                 if m.get('window_kind') == 'explicit'
+                 else f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.")
+        lines += [label, ""]
     if m.get("warnings"):
         lines += [f"Coverage is incomplete: {len(m['warnings'])} recorded warnings. "
                   "Full coverage details follow the work log.", ""]
@@ -1016,8 +1063,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
     collector = modes.add_parser("collect", help="Read local Git and authored GitHub work")
-    collector.add_argument("days", nargs="?", default="7")
+    collector.add_argument("days", nargs="?")
     collector.add_argument("roots", nargs="*")
+    collector.add_argument("--since", help="Inclusive RFC3339 reporting start; requires --until")
+    collector.add_argument("--until", help="Exclusive RFC3339 reporting end; requires --since")
+    collector.add_argument("--root", action="append", default=[], dest="explicit_roots",
+                           help="Repository scan root (repeatable; use with explicit dates)")
     renderer = modes.add_parser("render", help="Validate evidence and render Markdown")
     renderer.add_argument("--detailed", action="store_true", help="Include the complete evidence and coverage audit")
     renderer.add_argument("capture")
@@ -1025,7 +1076,11 @@ def main():
     args = parser.parse_args()
     try:
         if args.mode == "collect":
-            data = collect(args.days, args.roots)
+            explicit = args.since is not None or args.until is not None
+            require(not explicit or not args.roots, "Use repeatable --root with --since/--until")
+            require(explicit or not args.explicit_roots, "--root requires --since and --until; rolling roots are positional")
+            data = collect(args.days, args.explicit_roots if explicit else args.roots,
+                           since=args.since, until=args.until)
             validate(data)
             output = json.dumps(data, indent=2, ensure_ascii=True) + "\n"
         else:

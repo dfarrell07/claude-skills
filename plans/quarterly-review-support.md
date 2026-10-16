@@ -1,10 +1,11 @@
 # Plan for quarterly review support
 
-Status: initial planning, October 16, 2026. No quarterly mode is implemented by this document.
+Status: implementation and qualification in progress, October 16, 2026.
 
-Extend the evidence gathering behind weekly 1:1 briefings to help prepare quarterly review answers.
-The result should sound like the user's own concise review: a few meaningful accomplishments,
-how they were achieved, and thoughtful answers to the current review questions. This plan is a place
+Extend the evidence gathering behind weekly 1:1 briefings to help the user see and remember the great
+work they have done, especially major efforts, and provide a starting point for their own quarterly report.
+Lead with a useful accomplishment briefing, then optional concise answer starters grounded in the examples.
+Missing reflection or review-form questions must not block discovery or the work briefing. This plan is a place
 to collect requirements and decisions before implementation.
 
 ## Reference documents inspected
@@ -34,9 +35,10 @@ they do not independently verify a new result, adoption count, time saving, or p
 
 ## Intended experience
 
-Start from the review's actual questions and the period being reviewed. Gather relevant work and supplied
-context, propose a small set of evidence-backed themes, resolve important missing personal input, and draft
-answers in question order. The user should be able to paste the answers into the review form with little editing.
+Start from the period being reviewed and any supplied examples or questions. Gather relevant work and context,
+propose evidence-backed themes that bring major efforts back to mind, and provide material the user can shape
+into their own report. If requested, draft answer starters in question order. Ask for missing personal input
+when it matters to that requested step, rather than making a complete self-assessment a prerequisite.
 
 - Keep answers direct, personal, and concise; use first person where natural.
 - Rank accomplishments by supported impact, responsibility, and relevance rather than activity counts.
@@ -49,10 +51,10 @@ answers in question order. The user should be able to paste the answers into the
 - Keep personal reflection, feedback, aspirations, and manager requests grounded in supplied input.
   Ask focused questions for missing material rather than inferring feelings or promotion readiness from commits.
 
-The quarterly answer format can differ from the weekly format. Weekly briefings retain their ranked work
-bullets with selective raw Jira and PR/MR links. For quarterly reviews, the working proposal is concise
-question-and-answer text plus a separate private evidence view. Whether final answers include selected
-links should follow the user's destination and preference, rather than automatically inserting every ticket.
+The quarterly briefing retains selective raw Jira and PR/MR links to help the user recognize the work.
+Optional answer starters can omit links, matching the concise examples, with provenance in a private companion.
+The user's requested destination and preference govern link placement; collecting every artifact does not
+require displaying every ticket.
 
 ## Periods and continuity
 
@@ -63,8 +65,7 @@ Use supplied dates or a verified calendar; ask when unresolved dates would chang
 
 Different questions may need different windows. In particular, the Q2 example asks about feedback over two
 quarters and career aspirations over 1–2 and 3–5 years. Aspirations describe future horizons rather than collection cutoffs.
-Retain those distinctions
-instead of applying one start date to every answer.
+Retain those distinctions instead of applying one start date to every answer.
 
 Use earlier reviews and 1:1 notes to understand commitments, carryover, and changes in scope. Track a
 continuing effort once, with the contribution and outcome specific to this period. Earlier work can explain
@@ -112,9 +113,9 @@ The repository already has [career-advocate](../skills/career-advocate/SKILL.md)
 window do not establish support for these quarterly question sets. Its collection path also differs from the
 newer work-summary path. Do not make running both collectors a prerequisite or silently treat them as equivalent.
 
-Working direction: share the reliable evidence foundation with weekly briefings and add a separate quarterly
-question-answering workflow. Decide whether that belongs in work-summary, career-advocate, or a small
-companion skill after comparing a representative quarterly draft with the examples. Reuse useful review lenses
+Chosen direction: share the reliable evidence foundation with weekly briefings and add a quarterly
+accomplishment briefing workflow inside work-summary. The independent worked examples confirmed that this
+can support both remembering major efforts and optional question-based drafting. Reuse useful review lenses
 without imposing promotion ratings, a career ladder, or a mandatory subagent runtime on quarterly answers.
 Keep existing weekly invocations and their default output intact.
 
@@ -123,14 +124,12 @@ editing the supplied documents, and building a promotion packet are separate cap
 Keep raw reviews, feedback, collected work evidence, and generated personal answers in private storage outside
 the tracked plan. Use synthetic fixtures for committed tests; do not depend on these Downloads paths at runtime.
 
-## Decisions still to make
+## Remaining decisions for later refinements
 
-- Entry point and ownership: which skill hosts the workflow, and how explicit dates and question sets are supplied.
-- Calendar: how a named cycle maps to accomplishment and priority dates, including fiscal calendars.
-- Questions: whether to accept a supplied form, pasted questions, or a reusable private question set;
-  which missing information warrants a question before drafting.
-- Output: desired answer length and whether core links belong inline, in indented evidence bullets,
-  or only in a separate evidence view. The examples support concise answers but do not settle link placement.
+- Calendar: whether a user wants a reusable private fiscal calendar rather than resolving each request explicitly.
+- Questions: whether repeated use justifies a saved private question set; supplied forms and pasted questions work initially.
+- Output: refine answer length and grouping from actual use; core links belong under briefing themes by default,
+  and optional answer starters keep a separate evidence view unless requested otherwise.
 - Continuity: whether to retain a private theme/commitment index across runs, and how the user corrects it.
 - Supplemental evidence: which accessible sources the user wants included for teaching, adoption, and feedback.
 
@@ -159,5 +158,27 @@ Acceptance should include:
 - Long-period caps, failed pages, unavailable tools/auth, and notes-only inputs produce useful, honestly scoped drafts.
 - Sensitive source text stays private, existing weekly output remains correct, and reviewers can trace the final claims.
 
-Planning is complete enough to begin a worked example when requested. Skill placement, interface, calendar defaults,
-and final quarterly output conventions remain proposals until that example is reviewed.
+## Implementation decisions and qualification
+
+The first implementation adds `quarterly` to work-summary, with its detailed
+[workflow](../skills/work-summary/references/quarterly-reviews.md) loaded only for that mode.
+Weekly invocations and their output contract remain intact. Quarterly answers follow the supplied questions;
+the accomplishment briefing includes selective core links, while answer starters can omit links and use a
+separate private evidence companion. No calendar is inferred
+from a filename, and no fiscal calendar default is introduced.
+
+The collector gains explicit timezone-aware timestamp bounds with an exclusive end. Provider queries can
+overfetch at their native precision; exact personal event filtering determines credit. Large GitHub role
+searches gain bounded creation-time recovery, preserving later-updated historical items and unresolved limits.
+Quarterly prose is written by the agent rather than passed through the weekly renderer.
+
+Initial continuity uses supplied prior reviews and summaries as leads; no persistent personal index or new
+storage service is added. The skill does not require career-advocate, a promotion packet, or independent
+review tooling to produce useful answers. Existing tools and source access determine actual coverage.
+
+A committed synthetic scenario exercises the two-question form, expanded feedback and aspirations form,
+and notes-only operation. An independent forward test produced useful drafts in all three environments.
+Its self-review caught an inferred commitment from peer feedback; the guidance now explicitly distinguishes
+a suggested growth opportunity from the user's confirmed intention. Personal source documents and generated
+review answers remain outside this repository. Further qualification and critical-review results belong here
+after they have actually completed.

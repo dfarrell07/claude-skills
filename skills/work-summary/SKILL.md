@@ -1,23 +1,35 @@
 ---
 name: work-summary
-description: "Create a ranked weekly what-I-did bullet list from available Git, GitHub, GitLab, and Jira evidence, using native APIs, connectors or CLIs and gracefully reducing scope when tools or access are missing."
-version: 2.2.0
-argument-hint: "[days]"
+description: "Prepare weekly work updates or quarterly accomplishment briefings and review starting points from available Git, GitHub, GitLab, Jira, and supplied context, gracefully reducing scope when tools or access are missing."
+version: 2.3.0
+argument-hint: "[days] | quarterly [review details]"
 user-invocable: true
 ---
 
 # Work Summary
 
-Use for weekly updates, “what did I do?”, and recent-work summaries. Default to
-7 rolling days; accept another positive integer. Reject invalid periods.
+Use for weekly updates, “what did I do?”, recent-work summaries, and quarterly
+check-ins or self-reviews. Weekly mode defaults to 7 rolling days and accepts
+another positive integer. Reject invalid periods. Quarterly mode uses resolved
+reporting dates and the actual review questions, not the weekly default.
 
 ```text
 /work-summary
 /work-summary 14
+/work-summary quarterly
+/work-summary quarterly accomplishments July–September 2026, priorities October–December
 ```
 
 Arguments: `$ARGUMENTS` when expanded by the host; otherwise use the user's
-requested period or 7. Return a useful summary from the evidence this environment
+requested mode and period. For quarterly requests, read
+[quarterly reviews](references/quarterly-reviews.md) before gathering evidence.
+Resolve the period there, use the shared discovery and attribution rules below,
+then return the quarterly accomplishment briefing and optional answer starters
+using that reference's format. Missing review questions or personal reflection
+must not block discovering and presenting the user's work.
+The weekly output and weekly `analysis` renderer below do not format quarterly answers.
+Do not pass the word `quarterly` to the rolling-days shell launcher.
+Return a useful summary from the evidence this environment
 can actually read. Missing optional tools or authentication must not block other
 sources or trigger an installation/login workflow.
 
@@ -268,7 +280,7 @@ accurately. Avoid generic aggregates such as “11 PRs merged” as a work topic
 Local-only evidence can support a topic without a PR; use short repository
 context when useful and keep full hashes/paths in the evidence/details.
 
-## Required Primary Output
+## Required Weekly Output
 
 Return a simple Markdown bullet list ranked by importance. A work topic can
 stand alone or have short, substantive subtopics when a shared workstream has

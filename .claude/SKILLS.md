@@ -3,6 +3,8 @@
 ## /work-summary
 
 Create a ranked weekly work list from the sources available in this session.
+For quarterly check-ins, use `quarterly` to rediscover major efforts and prepare
+an accomplishment briefing with core links and optional review answer starters.
 Each bullet has a one-line work summary and selected core Jira/PR links.
 Use substantive subtopics when a workstream has separate updates; place raw
 links beneath the description they support. Related backports share a work topic;
@@ -11,6 +13,7 @@ importance determines order. Preserve broad evidence without dumping its links.
 ```bash
 /work-summary
 /work-summary 14
+/work-summary quarterly
 make work-summary
 make work-summary DAYS=14
 make work-summary-test
