@@ -125,17 +125,24 @@ class NativeTimelineTest(unittest.TestCase):
         self.assertEqual(len(result['pages']), 2)
         validate_timeline(result, ITEM, native, [42, 43])
 
-    def test_boundary_overlap_accepts_repository_case_only_and_preserves_native_pages(self):
+    def test_boundary_overlap_accepts_equivalent_repository_and_time_and_preserves_pages(self):
         next_url = ITEM['url'] + '/timeline_more_items?after_cursor=native'
         first = paginate(event_html(), next_url)
-        second = event_html(page_url=next_url).replace('/org/repo/', '/ORG/REPO/')
+        second = event_html(page_url=next_url).replace('/org/repo/', '/ORG/REPO/').replace(
+            WHEN, '2026-10-12T12:00:00+00:00')
         pages = {ITEM['url']: first, next_url: second}
         result = collect_timeline(ITEM, [rest_event()], [42], lambda url: page(pages[url], url))
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(result['events']), 1)
         self.assertEqual(result['events'][0]['compare_path'], '/org/repo/compare/' + 'a' * 40 + '..' + 'b' * 40)
         self.assertEqual(result['pages'][1]['body'], second)
+        self.assertEqual(result['events'][0]['created_at'], WHEN)
         validate_timeline(result, ITEM, [rest_event()], [42])
+        pages[next_url] = second.replace('2026-10-12T12:00:00+00:00', '2026-10-12T13:00:00Z')
+        invalid_time = collect_timeline(ITEM, [rest_event()], [42], lambda url: page(pages[url], url))
+        self.assertEqual(invalid_time['status'], 'partial')
+        self.assertEqual(len(invalid_time['events']), 1)
+        self.assertTrue(any(error['reason'] == 'native_event_binding_failed' for error in invalid_time['errors']))
         # A genuinely different before hash still invalidates the overlapping
         # event even though both versions independently bind the native after SHA.
         pages[next_url] = second.replace('a' * 40, 'c' * 40)

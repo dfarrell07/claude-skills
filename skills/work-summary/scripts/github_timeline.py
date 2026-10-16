@@ -220,8 +220,9 @@ def _replay(item, rest_events, target_ids, pages):
                 previous = events.get(event['id'])
                 # Parsing already binds each compare path to this repository
                 # and exact hash pair. Repository casing alone is not a conflict.
-                if previous is not None and any(previous[field] != event[field] for field in (
-                        'created_at', 'before_sha', 'after_sha')):
+                if previous is not None and (
+                        timestamp(previous['created_at']) != timestamp(event['created_at'])
+                        or any(previous[field] != event[field] for field in ('before_sha', 'after_sha'))):
                     errors.append({'url': next_url, 'reason': 'native_event_observation_changed'})
                     conflicts.add(event['id'])
                     events.pop(event['id'], None)
