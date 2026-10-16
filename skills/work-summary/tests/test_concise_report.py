@@ -477,11 +477,12 @@ class ConciseReportTest(unittest.TestCase):
         self.assertEqual(contents,[(3,'Main result'),(5,'Substantive detail'),
             (7,pr['url']),(7,'Further detail'),(9,pr['url'])])
         self.assertEqual(enriched,original)
-        enriched['analysis']['themes'][0]['description']='1. Main result.'
-        numbered=MarkdownIt().parse(ws.render(enriched,source))
-        self.assertNotIn('ordered_list_open',[token.type for token in numbered])
-        self.assertEqual(sum(token.type=='bullet_list_open' for token in numbered),
-                         sum(token.type=='bullet_list_open' for token in tokens))
+        for description in ('1. Main result.','1.'):
+            enriched['analysis']['themes'][0]['description']=description
+            numbered=MarkdownIt().parse(ws.render(enriched,source))
+            self.assertNotIn('ordered_list_open',[token.type for token in numbered])
+            self.assertEqual(sum(token.type=='bullet_list_open' for token in numbered),
+                             sum(token.type=='bullet_list_open' for token in tokens))
         group=enriched['analysis']['themes'][0]
         group['links']=[pr['url']]
         with self.assertRaises(ValueError):

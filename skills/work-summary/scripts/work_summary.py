@@ -380,7 +380,7 @@ def markdown(text):
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     text = re.sub(r"([\\`*_{}\[\]()#+!|~])", r"\\\1", text)
     # Only a leading ordered-list marker makes a period structural here.
-    return re.sub(r"^([0-9]{1,9})\.(?=\s)", r"\1\\.", text)
+    return re.sub(r"^([0-9]{1,9})\.(?=\s|$)", r"\1\\.", text)
 
 
 def link(item):
