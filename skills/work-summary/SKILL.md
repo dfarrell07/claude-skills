@@ -191,6 +191,9 @@ proposals and repetitive backports unless they matter to the specific update.
 Retain those observations privately; do not reduce discovery to make the list
 shorter. Prefer a primary PR for equivalent backports and describe branch scope
 in prose. Keep multiple PRs when they implement distinct necessary pieces.
+Read later scope corrections before selecting a core ticket: an old native
+mention remains evidence even when newer comments establish it is the wrong
+work item. Omit disputed or superseded associations from the concise list.
 
 There is no fixed link quota and no requirement to fill a Jira/PR pair. A useful
 update can have no URLs. Before keeping a URL, ask what the reader would learn

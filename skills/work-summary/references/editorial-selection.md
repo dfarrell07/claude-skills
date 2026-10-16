@@ -26,6 +26,12 @@ across topics only when it serves a distinct purpose in each.
 - **Core Jira:** directly tracks the described fix, deliverable, investigation or
   acceptance criteria. Prefer the specific task over its epic, release umbrella,
   neighboring tasks, duplicate tracker or ticket quoted in historical context.
+  Read later scope corrections and owner/reviewer comments, not just titles and
+  the PR's initial ticket reference. A newer request to disassociate the PR, an
+  explicit scope mismatch, or a ticket split can make that historical link
+  inappropriate for the update even though its native provenance remains valid.
+  Keep the implementation link alone if no current core ticket is established;
+  do not substitute an umbrella just to fill the pair.
 - **Implementation PR/MR:** contains the change the bullet describes. Retain
   separate repositories or changes when they are necessary pieces of that work.
   A prerequisite belongs only when its unresolved status explains the update's
