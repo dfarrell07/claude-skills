@@ -1187,6 +1187,15 @@ class Github:
             if branch['object_type'] != 'commit':
                 continue
             branch.setdefault('prs', [])
+            try:
+                # A tip committed before the window cannot contain window commits; its PR
+                # lookup would repeat the same thousands of requests on every run.
+                stale = timestamp(branch['committed_at']) < self.start
+            except ERRORS:
+                stale = False
+            if stale:
+                self.coverage.setdefault('branches_before_window', {'status': 'ok', 'pages': 0, 'count': 0})['count'] += 1
+                continue
             remotes = {entry['repo'] for entry in by_path[branch['repo']].get('remotes', [])
                        if entry['kind'] == 'github' and entry.get('host', self.host) == self.host}
             branch['association_methods'], branch['association_lookups'], branch['related_prs'] = [], [], []

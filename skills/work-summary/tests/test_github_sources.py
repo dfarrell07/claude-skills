@@ -941,6 +941,15 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertTrue(any('repo:canonical/repo is:pr ' in query for query in calls))
         self.assertEqual(client.warnings, [])
 
+    def test_branch_tips_from_before_the_window_need_no_pr_lookups(self):
+        client = self.client(lambda args: self.fail('no lookup expected'))
+        old = {**branch(), 'committed_at': '2025-01-01T00:00:00Z'}
+        data = {}
+        client.associate_branches([old], [repository()], data)
+        self.assertEqual(client.calls, [])
+        self.assertEqual(old['pr_status'], 'unchecked')
+        self.assertEqual(client.coverage['branches_before_window']['count'], 1)
+
     def test_canonical_sha_search_failure_does_not_become_negative_after_alias(self):
         def api(args):
             if args[0] != 'graphql':
