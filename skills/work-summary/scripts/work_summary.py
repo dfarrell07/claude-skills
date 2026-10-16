@@ -25,7 +25,7 @@ from local_sources import collect_local, private_ref_pointers  # noqa: E402
 from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
-from work_links import associate_work, github_items, validate_links  # noqa: E402
+from work_links import associate_work, github_items, native_review_links, validate_links  # noqa: E402
 from extended_evidence import github_reference_comments, validate_github, validate_jira, jira_reference  # noqa: E402
 from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
 from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
@@ -253,7 +253,9 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         lambda keys: add_referenced_jira(jira, keys, start, end, warn),
         (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                   since=start, read=read_public), host, read_history=read_history,
+                                   since=start, read=read_public,
+                                   trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira)),
+        host, read_history=read_history,
         since=start, until=end)
     if github_user:
         if any(info["status"] == "partial" for info in ledger.coverage.values()):
@@ -270,6 +272,18 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         "commits": local["commits"], "branches": local["branches"],
         "unattributed_commits": local["unattributed_commits"],
     }
+
+
+def trusted_gitlab_hosts(local_metadata, jira):
+    """GitLab hosts the user already works with: configured remotes and Jira review fields."""
+    hosts = {'gitlab.com'}
+    hosts.update(remote['host'].casefold() for entry in local_metadata.get('repositories', [])
+                 for remote in entry.get('remotes', []) if isinstance(remote.get('host'), str))
+    for issue in jira.get('issues', []):
+        for link in native_review_links(issue):
+            if link.get('provider') == 'gitlab':
+                hosts.add(urlsplit(link['url']).hostname or '')
+    return hosts
 
 
 def validate(data, source=None):

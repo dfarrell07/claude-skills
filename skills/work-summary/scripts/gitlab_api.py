@@ -428,7 +428,7 @@ def unresolved_failures(capture):
             if notes_failure_scope(failure['url']) not in recovered]
 
 
-def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
+def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None, trusted_hosts=None):
     verified_emails = tuple(verified_emails)
     result = {'items': [], 'metadata': {'status': 'not_applicable', 'scope': SCOPE,
               'queries': [], 'failures': [], 'identities': [], 'identity_leads': [],
@@ -449,6 +449,9 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
             if original in attempted:
                 continue
             attempted.add(original)
+            # Hosts named only by other people's comments are context, not read targets:
+            # contacting them would disclose the run and let that host claim identities.
+            require(trusted_hosts is None or host in trusted_hosts, 'unconfigured_gitlab_host')
             endpoint = f'https://{host}/api/v4/projects/{quote(repo, safe="")}/merge_requests/{number}'
             source_kind = 'detail'
             try:

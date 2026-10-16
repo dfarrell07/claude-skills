@@ -49,6 +49,17 @@ class GitLabApiTest(unittest.TestCase):
             {'email': email, 'source': 'authenticated_github_profile'} for email in emails]}})
         return result, calls, warnings
 
+    def test_unconfigured_host_is_never_contacted(self):
+        calls, warnings = [], []
+        result = api.collect_gitlab([WEB], warnings.append, verified_emails=('own@example.test',),
+                                    read=lambda url: calls.append(url), trusted_hosts={'gitlab.com'})
+        self.assertEqual(calls, [])
+        self.assertEqual(result['items'], [])
+        self.assertEqual(result['metadata']['failures'], [{'url': WEB, 'reason': 'unconfigured_gitlab_host'}])
+        self.assertEqual(result['metadata']['identities'], [])
+        api.validate_gitlab_api({'gitlab': result, 'metadata': {'author_aliases': [
+            {'email': 'own@example.test', 'source': 'authenticated_github_profile'}]}})
+
     def test_public_details_and_all_author_all_date_notes_preserved(self):
         result, _, warnings = self.collect()
         self.assertEqual(result['items'][0]['source'], mr())

@@ -1,6 +1,8 @@
 """Read advertised GitLab MR heads using existing Git authentication, without fetch."""
 
+import functools
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -78,11 +80,48 @@ def source_key(host, repo, local_repo, remote):
     return host + ':' + repo + ':' + suffix
 
 
+# Repository-local settings that can run commands or redirect credentials during a
+# network read. Archives and copied checkouts carry .git/config, so skip such remotes.
+TRANSPORT_CONFIG = (r'^(credential|http|url|include|includeif|protocol|ssh)\.'
+                    r'|^core\.(askpass|sshcommand|gitproxy)$|^remote\..*\.(proxy|vcs|uploadpack|receivepack)$')
+
+
+def repo_transport_config(repo):
+    """Return repository-scoped transport settings; any failure counts as present."""
+    result = native_git(repo, 'config', '--show-scope', '--name-only', '--get-regexp', TRANSPORT_CONFIG, timeout=15)
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        return ['unreadable']
+    names = []
+    for line in result.stdout.decode('utf-8', errors='replace').splitlines():
+        scope, _, name = line.partition('\t')
+        if scope in {'local', 'worktree'}:
+            names.append(name)
+    return names
+
+
+@functools.lru_cache(maxsize=1)
+def user_ssh_command():
+    """The user's own global/system SSH command, such as one selecting a work key."""
+    for scope in ('--global', '--system'):
+        try:
+            result = subprocess.run(['git', 'config', scope, '--get', 'core.sshCommand'], env=GIT_ENV,
+                                    capture_output=True, timeout=5, check=False, cwd=os.path.expanduser('~'))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        value = result.stdout.decode('utf-8', errors='replace').strip()
+        if result.returncode == 0 and value:
+            return value
+    return 'ssh'
+
+
 def git_env():
+    # ssh uses the first value of each option, so the user's explicit choices still apply.
     return {**GIT_ENV, 'GIT_ALLOW_PROTOCOL': 'ssh:https', 'GIT_TERMINAL_PROMPT': '0',
             'GIT_ASKPASS': 'false', 'SSH_ASKPASS': 'false', 'SSH_ASKPASS_REQUIRE': 'never',
-            'GIT_SSH_COMMAND': ('ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no '
-                                '-o ConnectTimeout=10 -o ClearAllForwardings=yes'),
+            'GIT_SSH_COMMAND': (user_ssh_command() + ' -o BatchMode=yes -o StrictHostKeyChecking=yes '
+                                '-o UpdateHostKeys=no -o ConnectTimeout=10 -o ClearAllForwardings=yes'),
             'GIT_SSH_VARIANT': 'ssh'}
 
 
@@ -132,6 +171,7 @@ def collect_gitlab_refs(branches, repositories, warn):
                 other = dict(alternative)
                 result['failures'].append({**failure, 'host': other['host'], 'repo': other['repo'],
                                            'reason': 'additional_url_not_addressable_by_remote_name'})
+            require(not repo_transport_config(path), 'repo_local_transport_config')
             pair = route['host'], route['repo']
             requested.add(pair)
             if pair in complete:

@@ -119,6 +119,31 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertNotEqual(blocked.returncode, 0)
         self.assertFalse(marker.exists())
 
+    def test_repository_transport_config_skips_network_read(self):
+        marker = self.root / 'helper-ran'
+        for key, value in (('credential.helper', f'!touch {marker}'), ('http.proxy', 'http://127.0.0.1:9'),
+                           ('url.https://elsewhere.test/.insteadOf', 'https://gitlab.example.test/'),
+                           ('remote.origin.proxy', 'http://127.0.0.1:9')):
+            with self.subTest(key=key):
+                self.git('config', key, value)
+                self.calls.clear()
+                data = self.collect()
+                result = data['metadata']['gitlab_discovery']
+                self.assertEqual(self.calls, [])
+                self.assertEqual(result['failures'][0]['reason'], 'repo_local_transport_config')
+                self.assertEqual(result['status'], 'partial')
+                self.git('config', '--unset-all', key)
+        self.assertFalse(marker.exists())
+
+    def test_users_global_ssh_command_is_kept_with_batch_options(self):
+        gl.user_ssh_command.cache_clear()
+        self.addCleanup(gl.user_ssh_command.cache_clear)
+        config = self.root / 'global-config'
+        config.write_text('[core]\n\tsshCommand = ssh -i ~/.ssh/work_key\n')
+        with patch.dict(self.env, {'GIT_CONFIG_GLOBAL': str(config)}):
+            command = gl.git_env()['GIT_SSH_COMMAND']
+        self.assertTrue(command.startswith('ssh -i ~/.ssh/work_key -o BatchMode=yes'))
+
     def test_malformed_row_retains_other_positive_and_exact_parse_gap(self):
         data = self.collect(HEAD + 'bad native row\n' + MERGE)
         query = data['metadata']['gitlab_discovery']['queries'][0]
