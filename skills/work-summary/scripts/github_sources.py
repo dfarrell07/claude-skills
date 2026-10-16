@@ -83,6 +83,7 @@ class Github:
         self._activity_items = set()
         self._activity_seen = set()
         self._comment_seen = set()
+        self._global_snapshots = {}
         self._repository_metadata = {}
         self._repository_aliases = {}
 
@@ -492,16 +493,18 @@ class Github:
         self.cache[key] = rows
         return rows
 
-    def _snapshot_batch(self, tuples):
+    def _snapshot_batch(self, tuples, global_search=False):
         """Read each alias independently; an error never erases another alias's evidence."""
         states = {}
+        coverage_keys = {key: ('global_snapshot:' + key[1] if global_search else 'snapshot:' + ':'.join(key))
+                         for key in tuples}
         for repo, sha in tuples:
-            coverage_key = 'snapshot:' + repo + ':' + sha
+            coverage_key = coverage_keys[(repo, sha)]
             self.coverage.setdefault(coverage_key, {'status': 'ok', 'pages': 0, 'count': 0})
             states[(repo, sha)] = {'matches': {}, 'search': {'cursor': None, 'cursors': set(), 'seen': set(),
                                                           'total': None, 'pages': 0, 'done': False},
                                   'commit': {'cursor': None, 'cursors': set(), 'seen': set(),
-                                             'pages': 0, 'done': False}}
+                                             'pages': 0, 'done': global_search, 'failed': False}}
         # Both connections expose at most 100 rows per page. Bound pathological
         # servers while explicitly marking unconsumed cursors as incomplete.
         for _ in range(MAX_LIST_PAGES):
@@ -517,7 +520,7 @@ class Github:
                     aliases[alias] = (key, method)
                     after = ',after:' + json.dumps(state['cursor']) if state['cursor'] else ''
                     if method == 'search':
-                        fields.append(alias + ':search(query:' + json.dumps('repo:' + states[key].get('search_repo', repo) + ' is:pr ' + sha)
+                        fields.append(alias + ':search(query:' + json.dumps(('' if global_search else 'repo:' + states[key].get('search_repo', repo) + ' ') + 'is:pr ' + sha)
                                       + ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor}'
                                       ' nodes{...on PullRequest{' + PR_FIELDS + '}}}')
                     else:
@@ -532,12 +535,13 @@ class Github:
                 require(isinstance(result, dict) and isinstance(result.get('data'), dict), 'Missing batch result')
             except ERRORS:
                 for alias, (key, method) in aliases.items():
-                    self.problem('snapshot:' + ':'.join(key), method + ' request failed; absence is not established')
+                    self.problem(coverage_keys[key], method + ' request failed; absence is not established')
                     states[key][method]['done'] = True
+                    states[key][method]['failed'] = True
                 continue
             for alias, (key, method) in aliases.items():
                 state = states[key][method]
-                coverage_key = 'snapshot:' + ':'.join(key)
+                coverage_key = coverage_keys[key]
                 info = self.coverage[coverage_key]
                 try:
                     errors = result.get('errors') or []
@@ -592,7 +596,7 @@ class Github:
                             item = graphql_item(row, self.host)
                             require(item['url'] not in state['seen'], 'Duplicate snapshot PR')
                             state['seen'].add(item['url'])
-                            proof = 'any_author_sha_search' if method == 'search' else 'commit_association'
+                            proof = ('global_any_author_sha_search' if global_search else 'any_author_sha_search') if method == 'search' else 'commit_association'
                             states[key]['matches'].setdefault(item['url'], (item, proof))
                         except ERRORS:
                             self.problem(coverage_key, method + ' contained an invalid or duplicate PR')
@@ -621,8 +625,9 @@ class Github:
                 except ERRORS:
                     self.problem(coverage_key, method + ' lookup incomplete; absence is not established')
                     state['done'] = True
+                    state['failed'] = True
         for key, state in states.items():
-            coverage_key = 'snapshot:' + ':'.join(key)
+            coverage_key = coverage_keys[key]
             if any(not state[method]['done'] for method in ('search', 'commit')):
                 self.problem(coverage_key, 'snapshot pagination reached its safety cap')
             self.coverage[coverage_key]['count'] = len(state['matches'])
@@ -672,6 +677,21 @@ class Github:
         for offset in range(0, len(requests), BATCH_SIZE):
             batch = requests[offset:offset + BATCH_SIZE]
             states = self._snapshot_batch(batch)
+            # An inaccessible old fork may have accessible PRs elsewhere. Global
+            # SHA search supplies positive evidence while the remote access gap
+            # remains partial; an empty global search never proves private absence.
+            fallback = {sha: (repo, sha) for repo, sha in batch
+                        if states[(repo, sha)]['commit'].get('failed') and sha not in self._global_snapshots}
+            if fallback:
+                recovered = self._snapshot_batch(list(fallback.values()), global_search=True)
+                self._global_snapshots.update({key[1]: value for key, value in recovered.items()})
+            for key in batch:
+                if states[key]['commit'].get('failed'):
+                    global_state = self._global_snapshots[key[1]]
+                    for url, value in global_state['matches'].items():
+                        states[key]['matches'].setdefault(url, value)
+                    self.coverage['snapshot:' + ':'.join(key)]['global_search'] = dict(
+                        self.coverage['global_snapshot:' + key[1]])
             for key in batch:
                 repo, sha = key
                 info = self.coverage['snapshot:' + repo + ':' + sha]
@@ -684,6 +704,8 @@ class Github:
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                               'state': item['state'], 'proof': proof})
                     branch['association_methods'].extend(['any_author_sha_search:' + repo, 'commit_association:' + repo])
+                    if 'global_search' in info:
+                        branch['association_methods'].append('global_any_author_sha_search')
         # Redirects discovered while resolving snapshots also repair the all-state
         # authored index: GitHub search silently returns zero for historical names.
         for proof in list(self._repository_aliases.values()):

@@ -522,6 +522,61 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(branches[0]['association_lookups'][0]['commit_object'], 'absent')
         self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
 
+    def test_inaccessible_fork_global_sha_positive_is_kept_without_erasing_remote_gap(self):
+        def api(args):
+            query = query_text(args)
+            if 'query:"is:pr ' in query:
+                self.assertNotIn('repository(', query)
+                return {'data': {'s0': connection([gql(repo='upstream/repo', state='CLOSED')])}}
+            result = snapshot_data(args)
+            result['data']['c0'] = None
+            result['errors'] = [{'path': ['c0'], 'message': 'Repository unavailable'}]
+            return result
+        client, branches, data = self.associate(api)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['repo'], 'upstream/repo')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'global_any_author_sha_search')
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
+        self.assertEqual(branches[0]['association_lookups'][0]['global_search']['status'], 'ok')
+        self.assertEqual(data['pr_index'][0]['repo'], 'upstream/repo')
+        self.assertEqual(client.coverage['global_snapshot:' + SHA]['count'], 1)
+
+    def test_empty_global_sha_search_keeps_unknown_private_fork_and_deduplicates_hashes(self):
+        global_calls = []
+        def api(args):
+            if 'query:"is:pr ' in query_text(args):
+                global_calls.append(args)
+                return {'data': {'s0': connection()}}
+            result = snapshot_data(args)
+            for key in list(result['data']):
+                if key.startswith('c'):
+                    result['data'][key] = None
+            return result
+        client, branches, _ = self.associate(api, repos=[repository(remotes=('old/fork1', 'old/fork2'))])
+        self.assertEqual(len(global_calls), 1)
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertEqual(branches[0]['prs'], [])
+        self.assertTrue(all(info['global_search']['count'] == 0 for info in branches[0]['association_lookups']))
+
+    def test_global_sha_partial_failure_preserves_prior_page_and_remote_unknown(self):
+        calls = []
+        def api(args):
+            query = query_text(args)
+            if 'query:"is:pr ' in query:
+                calls.append(args)
+                if len(calls) == 1:
+                    return {'data': {'s0': connection([gql(repo='upstream/repo')], total=2, more=True, cursor='next')}}
+                raise subprocess.CalledProcessError(403, 'gh')
+            result = snapshot_data(args)
+            result['data']['c0'] = None
+            return result
+        client, branches, _ = self.associate(api)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'global_any_author_sha_search')
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
+        self.assertEqual(branches[0]['association_lookups'][0]['global_search']['status'], 'partial')
+        self.assertEqual(client.coverage['global_snapshot:' + SHA]['count'], 1)
+
     def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
         first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',
                  'created_at': '2026-10-12T23:32:33Z', 'updated_at': '2026-10-12T23:32:33Z',
