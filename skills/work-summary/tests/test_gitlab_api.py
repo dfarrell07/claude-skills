@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-import gitlab_api as api
+import gitlab_api as api  # noqa: E402
 
 HOST = 'gitlab.example.test'
 WEB = 'https://' + HOST + '/group/project/-/merge_requests/7'
@@ -78,7 +78,9 @@ class GitLabApiTest(unittest.TestCase):
                 return response(url, None, status=403)
             if '/notes?' in url:
                 return response(url, [])
-            value = mr(); value['author'].pop('public_email'); return response(url, value)
+            value = mr()
+            value['author'].pop('public_email')
+            return response(url, value)
         result, _, _ = self.collect(read, emails=['own@example.test'])
         self.assertEqual(len(result['items']), 1)
         self.assertFalse(result['metadata']['identities'])
@@ -172,7 +174,8 @@ class GitLabApiTest(unittest.TestCase):
 
     def test_forged_note_identity_and_public_identity_rejected(self):
         result, _, _ = self.collect()
-        bad = json.loads(json.dumps(result)); bad['items'][0]['notes'][0]['body'] = 'invented'
+        bad = json.loads(json.dumps(result))
+        bad['items'][0]['notes'][0]['body'] = 'invented'
         with self.assertRaises(ValueError):
             api.validate_gitlab_api({'gitlab': bad})
         result['metadata']['identities'] = [{'host': HOST, 'user_id': 41, 'source': mr()['author'],
@@ -211,7 +214,8 @@ class GitLabApiTest(unittest.TestCase):
         def read(url):
             if '/notes?' in url:
                 return response(url, [note()])
-            value = mr(); value['user_notes_count'] = 9
+            value = mr()
+            value['user_notes_count'] = 9
             return response(url, value)
         result, _, _ = self.collect(read)
         self.assertEqual(result['items'][0]['notes_status'], 'partial')
@@ -252,7 +256,8 @@ class GitLabApiTest(unittest.TestCase):
             self.assertNotIn('/users/', url)
             if '/notes?' in url:
                 return response(url, [])
-            value = mr(); value['author']['public_email'] = 'someone-else@example.test'
+            value = mr()
+            value['author']['public_email'] = 'someone-else@example.test'
             return response(url, value)
         result, _, _ = self.collect(read, emails=['own@example.test'])
         self.assertEqual(result['metadata']['status'], 'ok')

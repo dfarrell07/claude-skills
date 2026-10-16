@@ -118,7 +118,8 @@ def read_notes(reader, host, repo, source):
                         if old is None or timestamp(note['updated_at']) > timestamp(old['updated_at']):
                             notes[note['id']] = note
                     except (ValueError, TypeError, KeyError, AttributeError):
-                        status = 'partial'; reader.fail(endpoint, 'invalid_native_discussion_note')
+                        status = 'partial'
+                        reader.fail(endpoint, 'invalid_native_discussion_note')
             sources.append({'endpoint': endpoint, 'kind': kind, 'status': status})
             count = sum(not note.get('system', False) for note in notes.values())
             if status == 'ok' and (not integer(expected) or count == expected):
@@ -157,7 +158,8 @@ class PublicReader:
     def pages(self, endpoint, accept):
         """Preserve readable rows on malformed siblings, later errors and paging drift."""
         expected = urlsplit(endpoint)
-        base = dict(parse_qsl(expected.query)); base.update(per_page='100')
+        base = dict(parse_qsl(expected.query))
+        base.update(per_page='100')
         url = endpoint.split('?', 1)[0] + '?' + urlencode({**base, 'page': '1'})
         rows, seen_pages, seen_ids, partial = [], set(), set(), False
         totals, observed_count = {}, 0
@@ -174,7 +176,8 @@ class PublicReader:
                     try:
                         accept(row)
                         require(row['id'] not in seen_ids, 'Duplicate native row')
-                        seen_ids.add(row['id']); rows.append(row)
+                        seen_ids.add(row['id'])
+                        rows.append(row)
                     except (ValueError, TypeError, KeyError, AttributeError):
                         partial = True
                         self.fail(url, 'invalid_or_duplicate_native_row')
@@ -203,7 +206,8 @@ class PublicReader:
                 if links:
                     require(len(links) == 1, 'Ambiguous next page')
                     target = safe_api(urljoin(url, links[0]), expected.hostname)
-                    parsed = urlsplit(target); params = dict(parse_qsl(parsed.query))
+                    parsed = urlsplit(target)
+                    params = dict(parse_qsl(parsed.query))
                     require(parsed.path == expected.path, 'Next page scope changed')
                     for key, value in base.items():
                         other = params.get(key)
@@ -232,7 +236,8 @@ class PublicReader:
             except (OSError, URLError, ValueError, TypeError, KeyError, AttributeError) as error:
                 self.fail(url, type(error).__name__ if not isinstance(error, ValueError) else str(error))
                 return rows, 'partial'
-        self.fail(url, 'native_page_limit'); return rows, 'partial'
+        self.fail(url, 'native_page_limit')
+        return rows, 'partial'
 
     def fail(self, url, reason):
         self.result['metadata']['failures'].append({'url': url, 'reason': reason})
@@ -260,7 +265,8 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                 continue
             attempted.add(original)
             endpoint = f'https://{host}/api/v4/projects/{quote(repo, safe="")}/merge_requests/{number}'
-            response = reader.get(endpoint); source = response['source']
+            response = reader.get(endpoint)
+            source = response['source']
             native_host, native_repo, native_number = valid_mr(source)
             require(native_host == host and native_number == number, 'MR response identity mismatch')
             final_path = urlsplit(response['url']).path
@@ -398,7 +404,8 @@ def validate_gitlab_api(data):
         ids = set()
         for note in item['notes']:
             valid_note(note)
-            require(note['id'] not in ids, 'Duplicate MR note'); ids.add(note['id'])
+            require(note['id'] not in ids, 'Duplicate MR note')
+            ids.add(note['id'])
         receipt = next((query for query in meta['queries'] if query.get('status') == 200
                         and query.get('source') == item['source']
                         and re.fullmatch(r'/api/v4/projects/[^/]+/merge_requests/' + str(number),
@@ -414,7 +421,8 @@ def validate_gitlab_api(data):
         require(repo == original_repo or receipt.get('redirects'), 'MR rename lacks native redirect')
         counters = {}
         def replay(url):
-            position = counters.get(url, 0); counters[url] = position + 1
+            position = counters.get(url, 0)
+            counters[url] = position + 1
             require(url in queries and position < len(queries[url]), 'Missing native notes page')
             return queries[url][position]
         replay_reader = PublicReader({'metadata': {'queries': [], 'failures': []}}, replay)
