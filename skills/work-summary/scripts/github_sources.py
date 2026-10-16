@@ -23,7 +23,7 @@ PR_FIELDS = '''url title body number state createdAt updatedAt closedAt mergedAt
 repository { nameWithOwner } headRepository { nameWithOwner } mergeCommit { oid } baseRefName'''
 
 
-def branch_association_status(branch):
+def branch_association_status(branch, coverage=None):
     """Separate unsupported repository scope from an incomplete native read."""
     if branch.get('object_type') != 'commit':
         return 'not_applicable'
@@ -34,6 +34,10 @@ def branch_association_status(branch):
         return 'partial'
     if branch.get('association_scope') == 'github_global_without_repository':
         return 'unsupported' if any(info.get('scope') == 'github_global' for info in lookups) else 'partial'
+    if coverage and any(coverage.get(prefix + item['url'], {}).get('status') == 'partial'
+                        for item in branch.get('related_prs', [])
+                        for prefix in ('head_history:', 'rest_head_history:', 'html_head_history:')):
+        return 'partial'
     return 'related_only' if branch.get('related_prs') else 'no_match'
 
 
@@ -695,6 +699,9 @@ class Github:
         for offset in range(0, len(items), 15):
             self._head_history_batch(github, items[offset:offset + 15])
         self.associate_head_events(branches, github)
+        for branch in branches:
+            if 'association_lookups' in branch:
+                branch['pr_status'] = branch_association_status(branch, self.coverage)
 
     def _inspect_activity(self, github, items):
         seen = self._activity_seen

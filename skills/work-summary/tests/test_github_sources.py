@@ -1448,7 +1448,9 @@ class GithubSourcesTest(unittest.TestCase):
     def test_branch_name_only_match_is_not_exact_association(self):
         from github_sources import graphql_item
         indexed = graphql_item(gql(sha='b' * 40, head='feature'), 'github.com')
-        client, branches, _ = self.associate(lambda args: snapshot_data(args),
+        def api(args):
+            return self.head_result([]) if 'HEAD_REF_FORCE_PUSHED_EVENT' in query_text(args) else snapshot_data(args)
+        client, branches, _ = self.associate(api,
             branches=[branch(refs=['refs/remotes/upstream/feature'])], index={'org/repo': [indexed]})
         self.assertEqual(branches[0]['pr_status'], 'related_only')
         self.assertEqual(branches[0]['prs'], [])
@@ -1459,6 +1461,8 @@ class GithubSourcesTest(unittest.TestCase):
         from github_sources import graphql_item
         indexed = graphql_item(gql(sha='b' * 40, head='feature'), 'github.com')
         def api(args):
+            if 'HEAD_REF_FORCE_PUSHED_EVENT' in query_text(args):
+                return self.head_result([])
             result = snapshot_data(args)
             result['errors'] = [{'path': ['s0'], 'message': 'Native SHA search unavailable'}]
             return result
@@ -1469,6 +1473,22 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(branches[0]['related_prs'][0]['proof'], 'head_name_only')
         self.assertTrue(any(info['status'] == 'partial' for info in branches[0]['association_lookups']))
         self.assertTrue(client.warnings)
+
+    def test_branch_name_only_with_failed_native_history_remains_partial(self):
+        from github_sources import branch_association_status, graphql_item
+        indexed = graphql_item(gql(sha='b' * 40, head='feature'), 'github.com')
+        def api(args):
+            if 'HEAD_REF_FORCE_PUSHED_EVENT' in query_text(args):
+                raise subprocess.CalledProcessError(1, 'gh')
+            return snapshot_data(args)
+        client, branches, _ = self.associate(api,
+            branches=[branch(refs=['refs/remotes/upstream/feature'])], index={'org/repo': [indexed]})
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertTrue(all(info['status'] == 'ok' for info in branches[0]['association_lookups']))
+        self.assertEqual(client.coverage['head_history:' + indexed['url']]['status'], 'partial')
+        # An unrelated PR's failed history must not contaminate this candidate.
+        self.assertEqual(branch_association_status(branches[0], {
+            'head_history:https://github.com/elsewhere/project/pull/99': {'status': 'partial'}}), 'related_only')
 
     def test_snapshot_search_and_commit_pagination_follow_cursors(self):
         def api(args):

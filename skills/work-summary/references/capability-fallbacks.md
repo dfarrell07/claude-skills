@@ -175,6 +175,8 @@ proving that the captured commit belonged to that PR. Mark this `related_only`
 and keep the name-based candidate as context. It is not a failed native read,
 an exact PR association or proof of unpublished work. If any snapshot lookup
 failed, retain `partial` even when a name-based candidate exists.
+The same applies when a recorded force-push history read for that candidate PR
+failed; completed SHA searches do not erase a genuine history coverage gap.
 
 Begin or end with a short source note, for example: "Based on accessible Jira
 and GitHub records for the last 7 days; local Git and backup branches were not
