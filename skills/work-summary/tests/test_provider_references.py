@@ -7,10 +7,21 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from provider_references import complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
+from provider_references import (  # noqa: E402
+    complete_provider_references, gitlab_seed_urls, validate_gitlab_links, verified_aliases,
+)
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_selected_native_alternate_bodies_supply_mr_leads_without_historical_index_crawl(self):
+        selected = 'https://github.com/org/project/pull/42'
+        root = 'https://gitlab.example.test/team/project/-/merge_requests/'
+        github = {'prs': [{'url': selected, 'body': ''}], 'issues': [],
+                  'pr_index': [{'url': selected, 'body': root + '2'},
+                               {'url': 'https://github.com/org/other/pull/9', 'body': root + '99'}],
+                  'pr_index_observations': [{'url': selected, 'body': root + '3'}]}
+        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {root + '2', root + '3'})
+
     def test_native_descriptions_and_other_author_notes_close_cross_provider_frontier(self):
         root = 'https://gitlab.example.test/group/project/-/merge_requests/'
         jira = {'metadata': {'site': 'jira.example.test'}, 'linked_prs': [], 'issues': [{

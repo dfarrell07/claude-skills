@@ -25,9 +25,12 @@ from local_sources import collect_local  # noqa: E402
 from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
-from work_links import associate_work, complete_references, github_items, validate_links  # noqa: E402
+from work_links import associate_work, github_items, validate_links  # noqa: E402
 from extended_evidence import validate_github, validate_jira, jira_reference  # noqa: E402
 from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
+from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
+from jira_public_history import collect_public_history, validate_public_history  # noqa: E402
+from provider_references import complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
 
 
 def collect(days_text, roots, now=None):
@@ -163,9 +166,17 @@ def collect(days_text, roots, now=None):
         discovery = ledger.coverage
         if any(info["status"] != "ok" for info in discovery.values()):
             github_status = "partial"
-    expansion = complete_references(jira, github,
-                                    lambda keys: add_referenced_jira(jira, keys, start, end, warn),
-                                    (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None)
+    public_cache = {}
+    def read_public(url):
+        if url not in public_cache:
+            public_cache[url] = public_get(url)
+        return public_cache[url]
+    gitlab, expansion = complete_provider_references(jira, github, local['branches'],
+        lambda keys: add_referenced_jira(jira, keys, start, end, warn),
+        (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
+        lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
+                                   since=start, read=read_public), host)
+    jira['metadata']['public_history'] = collect_public_history(jira, warn)
     if github_user:
         if any(info["status"] != "ok" for info in ledger.coverage.values()):
             github_status = "partial"
@@ -178,7 +189,8 @@ def collect(days_text, roots, now=None):
                      "gitlab_discovery": gitlab_discovery,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
-        "github": github, "jira": jira, "commits": local["commits"], "branches": local["branches"],
+        "github": github, "jira": jira, "gitlab": gitlab,
+        "commits": local["commits"], "branches": local["branches"],
         "unattributed_commits": local["unattributed_commits"],
     }
 
@@ -227,6 +239,9 @@ def validate(data, source=None):
     validate_github(data, evidence, start, end)
     validate_gitlab(data)
     jira_items = validate_jira(data, start, end)
+    validate_public_history(data)
+    validate_gitlab_api(data)
+    validate_gitlab_links(data)
     validate_links(data)
     commits = data.get("commits")
     require(isinstance(commits, dict), "Missing commit evidence")
@@ -384,6 +399,15 @@ def validate(data, source=None):
             require(isinstance(item, dict) and any(item.get("repo") == branch["repo"]
                     and item.get("hash") == branch["hash"] for branch in data.get("branches", [])),
                     "Branch citation absent from capture")
+        mr_refs = theme.get('merge_requests', [])
+        require(isinstance(mr_refs, list), 'Invalid GitLab MR citations')
+        native_mrs = {item['url']: item for item in data.get('gitlab', {}).get('items', [])}
+        for reference_mr in mr_refs:
+            require(isinstance(reference_mr, dict) and reference_mr.get('url') in native_mrs,
+                    'GitLab MR citation absent from capture')
+            native_mr = native_mrs[reference_mr['url']]
+            require(all(reference_mr.get(key, native_mr[key]) == native_mr[key] for key in ('host', 'repo', 'number')),
+                    'GitLab MR citation identity mismatch')
         local = theme.get("commits", [])
         require(isinstance(local, list), "Invalid local commit citations")
         for item in local:
@@ -394,7 +418,7 @@ def validate(data, source=None):
         require(isinstance(children, list), "Invalid subtopics")
         for child in children:
             theme_node(child)
-        require(theme["items"] or local or jira_refs or branch_refs or children,
+        require(theme["items"] or local or jira_refs or branch_refs or mr_refs or children,
                 "A theme needs at least one source citation or evidenced subtopic")
         validate_selected_links(data, theme)
 
@@ -497,11 +521,12 @@ def topic_github_items(data, topic):
 def topic_merge_requests(data, topic):
     """Native advertised heads identify counterparts, without supplying MR state."""
     refs = {(item['repo'], item['hash']) for item in topic.get('commits', []) + topic.get('branches', [])}
-    selected = {}
+    by_url = {item['url']: item for item in data.get('gitlab', {}).get('items', [])}
+    selected = {reference['url']: by_url[reference['url']] for reference in topic.get('merge_requests', [])}
     for branch in data.get('branches', []):
         if (branch['repo'], branch['hash']) in refs:
             for mr in branch.get('merge_requests', []):
-                selected[mr['url']] = mr
+                selected[mr['url']] = by_url.get(mr['url'], mr)
     return list(selected.values())
 
 
@@ -529,7 +554,10 @@ def work_urls(data, topic):
         ticket(jira[reference['key']], True)
     for relation in local_context_links(data, topic):
         (ticket_urls if relation['provider'] == 'jira' else change_urls).add(relation['url'])
-    change_urls.update(mr['url'] for mr in topic_merge_requests(data, topic))
+    for mr in topic_merge_requests(data, topic):
+        change_urls.add(mr['url'])
+        for relation in mr.get('jira_links', []):
+            ticket(jira[relation['key']], False)
     return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
 
 
@@ -557,7 +585,7 @@ def ongoing_topic(item, prefix='Ongoing: '):
 
 def direct_urls(topic):
     """Exact cited artifacts establish work identity without traversing relations."""
-    return list(dict.fromkeys(item['url'] for field in ('items', 'jira')
+    return list(dict.fromkeys(item['url'] for field in ('items', 'jira', 'merge_requests')
                               for item in topic.get(field, [])))
 
 
@@ -633,6 +661,20 @@ def fallback_topics(data, limit=12):
         add(item['url'], 3, timestamp(event['occurred_at']),
             {'description': verb + ': ' + title, 'items': [],
              'jira': [{key: item[key] for key in ('key', 'url')}]})
+    gitlab = data.get('gitlab', {})
+    principals = {(row['host'], row['user_id']) for row in gitlab.get('metadata', {}).get('identities', [])}
+    for item in gitlab.get('items', []):
+        native = item['source']
+        def mr_topic(description):
+            return {'description': description, 'items': [], 'merge_requests': [{'url': item['url']}]}
+        if (item['host'], (native.get('author') or {}).get('id')) in principals:
+            for field, priority, verb in [('merged_at', 0, 'Merged'), ('created_at', 1, 'Opened')]:
+                if native.get(field) and start is not None and start <= timestamp(native[field]) <= end:
+                    add(item['url'], priority, timestamp(native[field]), mr_topic(verb + ': ' + native['title']))
+        for note in item.get('notes', []):
+            if (note.get('system') is False and (item['host'], (note.get('author') or {}).get('id')) in principals
+                    and start is not None and start <= timestamp(note['created_at']) <= end):
+                add(item['url'], 3, timestamp(note['created_at']), mr_topic('Discussed: ' + native['title']))
     identities = {item['path']: item['identities'] for item in metadata.get('repositories', [])}
     seen_hashes = set()
     for repo, entries in sorted(data['commits'].items()):
@@ -693,7 +735,8 @@ def render(data, source=None, detailed=False):
     states = [('GitHub', data['metadata'].get('github_status')),
               ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
               ('local Git', data['metadata'].get('local_status')),
-              ('GitLab refs', data['metadata'].get('gitlab_discovery', {}).get('status'))]
+              ('GitLab refs', data['metadata'].get('gitlab_discovery', {}).get('status')),
+              ('GitLab API', data.get('gitlab', {}).get('metadata', {}).get('status'))]
     unavailable = [name + ' unavailable' for name, status in states if status == 'unavailable']
     if unavailable:
         notes.append('Coverage is incomplete: ' + '; '.join(unavailable) + '.')
@@ -713,6 +756,8 @@ def render_detailed(data, source=None):
     prs, issues = data["github"]["prs"], data["github"]["issues"]
     by_url = {item["url"]: item for item in reversed(github_items(data["github"]))}
     jira_by_key = {item["key"]: item for item in data.get("jira", {}).get("issues", [])}
+    native_mrs = {url: item for item in data.get('gitlab', {}).get('items', [])
+                  for url in [item['url'], *item.get('requested_urls', [])]}
 
     def linked(item):
         original = by_url.get(item["url"], item)
@@ -734,7 +779,9 @@ def render_detailed(data, source=None):
                 continue
             seen_reviews.add(entry["url"])
             number = urlsplit(entry["url"]).path.rsplit("/", 1)[1]
-            links.append(f"[GitLab MR !{number}]({entry['url']}) (referenced; state/ownership unverified)")
+            native_mr = native_mrs.get(entry['url'])
+            state = ('native state: ' + native_mr['source']['state']) if native_mr else 'referenced; state unread'
+            links.append(f"[GitLab MR !{number}]({entry['url']}) ({state})")
         return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
 
     lines = [f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})", "",
@@ -821,6 +868,34 @@ def render_detailed(data, source=None):
         for event in jira.get("activity", []):
             lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}) {markdown(event['kind'])} — {jira_work(jira_by_key[event['key']])}")
         lines.append("")
+        if 'public_history' in jira['metadata']:
+            history = jira['metadata']['public_history']
+            lines += ['#### Public Jira Field History', '',
+                      f"{history['history_rows']} native rows across {history['issues_complete']} complete visible streams "
+                      f"of {history['issues_attempted']} inspected issues ({history['status']}).",
+                      'Anonymous visibility is separate from authenticated coverage. Original authenticated details and comments remain intact.', '']
+            for item in entries:
+                record = item.get('public_history')
+                if record:
+                    count = sum(len(page.get('values', [])) for page in record['pages']
+                                if isinstance(page.get('values'), list))
+                    lines.append(f"- {jira_reference(item)}: {count} native history rows ({record['status']}); "
+                                 f"{len(record['pages'])} pages, {len(record['errors'])} recorded gaps.")
+            lines.append('')
+    gitlab_api = data.get('gitlab')
+    if gitlab_api and gitlab_api.get('items'):
+        lines += ['### Public GitLab Merge Requests', '',
+                  'Native public details and public inventories are separate from API login and private visibility. '
+                  'Account attribution uses native public email matching an already verified alias; role matches remain context.', '']
+        for item in gitlab_api['items']:
+            native = item['source']
+            lines.append(f"- {item['url']} {markdown(native['title'])} ({native['state']}; "
+                         f"notes {item['notes_status']}; {len(item['notes'])} retained native notes).")
+        lines.append('')
+        for inventory in gitlab_api['metadata'].get('inventories', []):
+            lines.append(f"- {markdown(inventory['host'])}: {markdown(inventory['role'])} "
+                         f"({inventory['scope']}; {inventory['status']}).")
+        lines.append('')
     lines += ["### Git Commits", "", f"Searched {m['repos_searched']} repositories; found commits in {len(data['commits'])}.", ""]
     for repo, entries in data["commits"].items():
         lines += [f"#### {markdown(repo)}", ""]
@@ -843,9 +918,11 @@ def render_detailed(data, source=None):
         for item in selected:
             names = ", ".join(markdown(name) for name in item["refs"])
             associations = ", ".join(linked(pr) for pr in item.get("prs", []))
-            mr_links = ", ".join(mr['url'] for mr in item.get('merge_requests', []))
+            mr_links = ", ".join(mr['url'] + (" (native state: " + native_mrs[mr['url']]['source']['state'] + ")"
+                                          if mr['url'] in native_mrs else " (state unread)")
+                                 for mr in item.get('merge_requests', []))
             if mr_links:
-                associations += (", " if associations else "") + mr_links + " (advertised MR heads; state unread)"
+                associations += (", " if associations else "") + mr_links + " (advertised MR heads; state unread by Git)"
             lines.append(f"- {markdown(item['repo'])}: {names} — `{item['hash'][:12]}` "
                          f"({item['object_type']}; PR association: {item['pr_status']})" + (f" {associations}" if associations else ""))
         lines += ["", "PR no_match means completed exact-snapshot lookups found no association; partial/unchecked/unsupported remain unresolved. It does not prove unpublished work."]

@@ -19,6 +19,39 @@ from capabilities import empty_local  # noqa: E402
 
 
 class ConciseReportTest(unittest.TestCase):
+    def test_public_gitlab_identity_and_native_creation_support_a_work_bullet(self):
+        data = self.capture()
+        data['metadata']['author_aliases'] = [{'email': 'own@example.test', 'source': 'authenticated_github_profile'}]
+        url = 'https://gitlab.example.test/group/project/-/merge_requests/42'
+        native = {'id': 100, 'iid': 42, 'project_id': 99, 'web_url': url,
+                  'title': 'Prepare catalog pipeline', 'description': '', 'state': 'opened',
+                  'created_at': '2026-01-10T12:00:00Z', 'updated_at': '2026-01-11T12:00:00Z',
+                  'merged_at': None, 'closed_at': None, 'user_notes_count': 0,
+                  'author': {'id': 7, 'public_email': 'own@example.test', 'username': 'different-provider-name'},
+                  'assignees': [], 'reviewers': []}
+        def read(request):
+            if '/notes?' in request:
+                body = []
+            elif '/api/v4/merge_requests?' in request:
+                body = [] if 'assignee_id=' in request or 'reviewer_id=' in request else [native]
+            else:
+                body = native
+            return {'url': request, 'status': 200, 'headers': {'x-next-page': ''},
+                    'source': copy.deepcopy(body), 'redirects': []}
+        data['gitlab'] = ws.collect_gitlab([url], self.fail, verified_emails=['own@example.test'],
+                                         since=data['metadata']['since_at'], read=read)
+        ws.validate(data)
+        self.assertIn('- Opened: Prepare catalog pipeline\n  - ' + url, ws.render(data))
+        enriched = copy.deepcopy(data)
+        enriched['analysis'] = {'themes': [{'name': 'Catalog', 'description': 'Prepared the catalog pipeline.',
+                                           'items': [], 'merge_requests': [{'url': url}], 'links': [url]}],
+                                'in_progress': []}
+        self.assertIn('  - ' + url, ws.render(enriched, data))
+        forged = copy.deepcopy(data)
+        forged['gitlab']['metadata']['identities'][0]['user_id'] = 999
+        with self.assertRaises(ValueError):
+            ws.validate(forged)
+
     def test_native_gitlab_heads_supply_selectable_links_without_mr_state(self):
         data = self.capture()
         repo, head = '/example/gitlab', 'b' * 40

@@ -42,7 +42,8 @@ def gitlab_seed_urls(jira, github, branches):
     urls = {link['url'] for issue in jira.get('issues', []) for link in native_review_links(issue)}
     urls.update(link['url'] for branch in branches for link in branch.get('merge_requests', []))
     selected = {item['url'] for item in github_items(github, include_index=False)}
-    texts = [item.get(field) or '' for item in github_items(github, include_index=False)
+    observations = [item for item in github_items(github) if item['url'] in selected]
+    texts = [item.get(field) or '' for item in observations
              for field in ('title', 'body')]
     texts.extend(comment['body'] for comment in github.get('reference_comments', [])
                  if comment['item_url'] in selected)
