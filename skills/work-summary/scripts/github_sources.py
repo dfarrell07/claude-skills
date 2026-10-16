@@ -797,7 +797,6 @@ class Github:
                     context_only = False
                     if method == 'commit':
                         if (isinstance(connection, dict)
-                                and isinstance(connection.get('id'), str) and connection['id']
                                 and isinstance(connection.get('nameWithOwner'), str)
                                 and REPO.fullmatch(connection['nameWithOwner'])
                                 and connection['nameWithOwner'].casefold() != key[0].casefold()):

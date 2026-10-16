@@ -1625,7 +1625,7 @@ class SnapshotConcurrencyTest(unittest.TestCase):
                                 if info.get('repo')) for row in branches))
 
     def test_unverified_canonical_associated_pr_survives_as_context_without_branch_credit(self):
-        for affected in (False, True):
+        for affected, native_id in ((False, 'NATIVE_REPO'), (True, 'NATIVE_REPO'), (True, None)):
             def api(args):
                 if args[0] != 'graphql':
                     raise OSError('native repository identity unavailable')
@@ -1634,7 +1634,7 @@ class SnapshotConcurrencyTest(unittest.TestCase):
                     return {'data': {'s0': connection()}}
                 result = snapshot_data(args)
                 if 'repo:example/previous ' in query:
-                    result['data']['c0'] = {'id': 'NATIVE_REPO', 'nameWithOwner': 'example/canonical',
+                    result['data']['c0'] = {'id': native_id, 'nameWithOwner': 'example/canonical',
                         'object': {'associatedPullRequests': connection([gql(7, repo='example/canonical')])}}
                     if affected:
                         result['errors'] = [{'path': ['c0', 'object', 'associatedPullRequests'],
@@ -1642,7 +1642,7 @@ class SnapshotConcurrencyTest(unittest.TestCase):
                 else:
                     result['data']['s0'] = connection([gql(8, repo='example/healthy', sha='b' * 40)])
                 return result
-            with self.subTest(affected=affected), patch('github_sources.BATCH_SIZE', 1):
+            with self.subTest(affected=affected, native_id=native_id), patch('github_sources.BATCH_SIZE', 1):
                 client, branches, data = self.associate(api,
                     branches=[branch('/old'), branch('/healthy', sha='b' * 40)],
                     repos=[repository('/old', ('example/previous',)), repository('/healthy', ('example/healthy',))])
