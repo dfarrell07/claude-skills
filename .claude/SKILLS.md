@@ -2,14 +2,20 @@
 
 ## /work-summary
 
-Show recent work: git commits and GitHub activity (PRs, issues).
+Build a weekly “what I did” report from local commits and authored GitHub PRs/issues updated in the period.
 
 ```bash
 /work-summary           # Last 7 days with AI analysis (default)
 /work-summary 14        # Last 14 days with AI analysis
 make work-summary       # Last 7 days without AI analysis
 make work-summary DAYS=14  # Last 14 days without AI analysis
+make work-summary-test     # Offline regression tests
 ```
+
+Requires Bash 4+, Git 2.37+, and jq; GitHub collection also needs authenticated `gh`.
+Each run saves its evidence and report in a separate temporary directory and prints
+the report path. Missing sources and capped searches appear as coverage gaps.
+See [the skill](../skills/work-summary/SKILL.md) for scan roots and evidence boundaries.
 
 **With skill (AI analysis):**
 
