@@ -125,6 +125,25 @@ class NativeTimelineTest(unittest.TestCase):
         self.assertEqual(len(result['pages']), 2)
         validate_timeline(result, ITEM, native, [42, 43])
 
+    def test_boundary_overlap_accepts_repository_case_only_and_preserves_native_pages(self):
+        next_url = ITEM['url'] + '/timeline_more_items?after_cursor=native'
+        first = paginate(event_html(), next_url)
+        second = event_html(page_url=next_url).replace('/org/repo/', '/ORG/REPO/')
+        pages = {ITEM['url']: first, next_url: second}
+        result = collect_timeline(ITEM, [rest_event()], [42], lambda url: page(pages[url], url))
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(len(result['events']), 1)
+        self.assertEqual(result['events'][0]['compare_path'], '/org/repo/compare/' + 'a' * 40 + '..' + 'b' * 40)
+        self.assertEqual(result['pages'][1]['body'], second)
+        validate_timeline(result, ITEM, [rest_event()], [42])
+        # A genuinely different before hash still invalidates the overlapping
+        # event even though both versions independently bind the native after SHA.
+        pages[next_url] = second.replace('a' * 40, 'c' * 40)
+        conflict = collect_timeline(ITEM, [rest_event()], [42], lambda url: page(pages[url], url))
+        self.assertEqual(conflict['status'], 'unavailable')
+        self.assertEqual(conflict['events'], [])
+        self.assertTrue(any(error['reason'] == 'native_event_observation_changed' for error in conflict['errors']))
+
     def test_later_failed_page_retains_earlier_native_positive_and_qualifies_gap(self):
         next_url = ITEM['url'] + '/timeline_more_items?after_cursor=native'
         def read(url):
