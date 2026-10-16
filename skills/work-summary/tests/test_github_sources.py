@@ -1206,6 +1206,22 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(len(client.calls), before)
         self.assertEqual(data['activity'], [])
 
+    def test_later_readable_duplicate_head_observation_retains_new_sha_positive(self):
+        def api(args):
+            later = 'after:' in query_text(args)
+            return self.head_result([self.head_node(before=SHA if later else None)],
+                                    more=not later, cursor='next' if not later else None)
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        branches = [branch(), branch('/second', sha='b' * 40)]
+        client.associate_head_events(branches, data)
+        self.assertTrue(all(b['pr_status'] == 'matched' for b in branches))
+        self.assertEqual(len(data['head_events']), 2)
+        self.assertIsNone(data['head_events'][0]['source']['beforeCommit'])
+        self.assertEqual(data['head_events'][1]['source']['beforeCommit']['oid'], SHA)
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+
     def test_null_historical_object_retains_known_sibling_and_gap(self):
         native = self.head_node(before=None)
         client = self.client(lambda args: self.head_result([native]))

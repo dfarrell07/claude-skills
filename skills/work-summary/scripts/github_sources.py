@@ -396,7 +396,7 @@ class Github:
                             'Invalid native before/after head')
                 if source['beforeCommit'] is None or source['afterCommit'] is None:
                     self.problem(key, 'a historical head object is unavailable; retained the other native head')
-            token = kind, item['url'], identity
+            token = kind, item['url'], identity, json.dumps(source, sort_keys=True)
             if token not in self._head_seen:
                 self._head_seen.add(token)
                 record = {'item_url': item['url'], 'repo': item['repo'],
