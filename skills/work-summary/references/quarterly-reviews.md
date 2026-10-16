@@ -93,6 +93,14 @@ artifacts and related backports by their native identities and substantive
 contribution; a continuing project can have a genuinely new result this period.
 Retain Jira-only work, substantive review/design work, and local or backup branches.
 
+Local inventories can contain copied history, rebased variants, and generated
+test repositories with deliberately seeded dates. Inspect their purpose and
+actual changes before turning them into accomplishments. Preserve the evidence,
+deduplicate copied work, and distinguish developing or qualifying a tool from
+the fictional project changes inside its fixtures. Do not exclude a real tool
+effort merely because its supporting repositories live in a test/work directory.
+Current cached-default ancestry does not establish when a change landed upstream.
+
 Include user-selected teaching records, presentations, design documents, adoption
 evidence, feedback and personal notes when accessible or supplied. Do not require
 a Jira or PR for non-code work. Distinguish dated user accounts from independent
