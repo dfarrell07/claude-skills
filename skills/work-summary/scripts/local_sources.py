@@ -77,13 +77,24 @@ def recover_stale_worktree(repo, common, record):
                 gitdir = (admin / 'gitdir').read_text(encoding='utf-8')
             except OSError:
                 continue
-            if Path(gitdir.removesuffix('\n')).parent.resolve() != Path(record['path']).resolve():
+            if Path(gitdir.removesuffix('\n')).resolve() != (Path(record['path']) / '.git').resolve():
                 continue
             recovery.update(admin_dir=str(admin), gitdir=gitdir)
             options = ('--git-dir=' + str(admin),)
-            head = git(repo, *options, 'rev-parse', '--verify', 'HEAD^{commit}').removesuffix('\n')
-            require(HASH.fullmatch(head), 'Invalid retained worktree HEAD')
-            recovery['head'] = head
+            native_common = git(repo, *options, 'rev-parse', '--git-common-dir')
+            native_path = Path(native_common.removesuffix('\n'))
+            native_path = (native_path if native_path.is_absolute() else Path(repo) / native_path).resolve()
+            recovery.update(common_dir_output=native_common, common_dir=str(native_path))
+            require(native_path == Path(common).resolve(), 'Retained admin belongs to a different common repository')
+            errors = []
+            head = None
+            try:
+                head = git(repo, *options, 'rev-parse', '--verify', 'HEAD').removesuffix('\n')
+                require(HASH.fullmatch(head), 'Invalid retained worktree HEAD')
+                recovery['head'] = head
+            except (OSError, ValueError, subprocess.SubprocessError):
+                head = None
+                errors.append('head')
             for key, variable in (('configured_author_email', 'user.email'), ('configured_author_name', 'user.name')):
                 try:
                     value = git(repo, *options, 'config', '--get', variable).removesuffix('\n')
@@ -91,34 +102,53 @@ def recover_stale_worktree(repo, common, record):
                     recovery[key] = value
                 except subprocess.CalledProcessError as error:
                     if error.returncode != 1:
-                        raise
+                        errors.append('identity:' + variable)
+                    recovery[key] = None
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    errors.append('identity:' + variable)
                     recovery[key] = None
             args = (*options, 'reflog', 'show', '--no-use-mailmap', '--no-show-signature',
                     '--encoding=UTF-8', '--no-color', '--format=%H', 'HEAD')
-            raw = git(repo, *args)
+            try:
+                raw = git(repo, *args)
+            except subprocess.CalledProcessError as error:
+                raw = error.stdout if isinstance(error.stdout, str) else ''
+                errors.append('reflog_command')
+            except (OSError, ValueError, subprocess.SubprocessError):
+                raw = ''
+                errors.append('reflog_command')
             file_path = admin / 'logs' / 'HEAD'
             try:
                 file_raw = file_path.read_text(encoding='utf-8')
             except FileNotFoundError:
                 file_raw = ''
+            except (OSError, ValueError):
+                file_raw = ''
+                errors.append('reflog_file')
             file_heads = set()
-            for line in file_raw.splitlines():
-                before, after, _ = line.split(' ', 2)
-                require(HASH.fullmatch(before) and HASH.fullmatch(after), 'Invalid retained reflog record')
-                file_heads.update(sha for sha in (before, after) if set(sha) != {'0'})
+            parse_errors = []
+            for number, line in enumerate(file_raw.splitlines(), 1):
+                try:
+                    before, after, _ = line.split(' ', 2)
+                    require(HASH.fullmatch(before) and HASH.fullmatch(after), 'Invalid retained reflog record')
+                    file_heads.update(sha for sha in (before, after) if set(sha) != {'0'})
+                except ValueError:
+                    parse_errors.append({'line': number, 'reason': 'invalid_object_ids_or_record_shape'})
             # `git reflog show` silently omits entries whose objects are gone.
             # The retained native file preserves those identities and old OIDs.
-            heads = sorted(set(raw.splitlines()) | file_heads)
-            require(all(HASH.fullmatch(sha) for sha in heads), 'Invalid retained reflog identity')
+            if any(not HASH.fullmatch(sha) for sha in raw.splitlines()):
+                errors.append('reflog_output')
+            heads = sorted({sha for sha in raw.splitlines() if HASH.fullmatch(sha)} | file_heads)
             recovery.update(reflog_heads=heads, reflog_output=raw, reflog_command=list(args),
-                            reflog_file=file_raw, reflog_file_path=str(file_path))
-            candidates = sorted(set(heads + [head] + ([record['head']] if record.get('head') else [])))
+                            reflog_file=file_raw, reflog_file_path=str(file_path), reflog_parse_errors=parse_errors,
+                            errors=errors)
+            candidates = sorted(set(heads + ([head] if head else []) + ([record['head']] if record.get('head') else [])))
             require(all(HASH.fullmatch(sha) for sha in candidates), 'Invalid registered HEAD')
             checked = git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
                           stdin='\n'.join(candidates) + '\n').splitlines()
             available = [sha for sha, line in zip(candidates, checked) if line == sha + ' commit']
             recovery['available_heads'] = available
-            if len(available) == len(candidates) == len(checked):
+            if not errors and not parse_errors and len(available) == len(candidates) == len(checked):
                 recovery['status'] = 'ok'
             return recovery
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
@@ -257,11 +287,16 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             if '.git' in dirs or '.git' in files:
                 add_repo(current, marked=True)
             # Bare backups have no .git child. Detect their native shape before pruning objects.
-            bare = 'HEAD' in files and 'objects' in dirs and 'refs' in dirs and 'config' in files
+            bare = 'HEAD' in files and 'objects' in dirs and 'refs' in dirs
             if bare:
-                add_repo(current, marked=True)
-                dirs[:] = []
-                continue
+                try:
+                    verified_bare = git(current, 'rev-parse', '--is-bare-repository').strip() == 'true'
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    verified_bare = False
+                if verified_bare:
+                    add_repo(current, marked=True)
+                    dirs[:] = []
+                    continue
             keep = []
             for name in sorted(dirs):
                 child = current / name
@@ -302,7 +337,19 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         entry['paths'] = sorted(entry['paths'])
         entry.pop('worktrees_inspected', None)
         try:
-            ordinary_tips = sorted(set(git(entry['path'], 'rev-list', '--all', '--no-walk=unsorted').splitlines()))
+            try:
+                ordinary_tips = sorted(set(git(entry['path'], 'rev-list', '--all', '--no-walk=unsorted').splitlines()))
+            except subprocess.SubprocessError:
+                ordinary_tips = git(entry['path'], 'rev-list', '--single-worktree', '--all', '--no-walk=unsorted').splitlines()
+                candidates = sorted({tree['head'] for tree in entry['worktrees']
+                                     if isinstance(tree.get('head'), str) and HASH.fullmatch(tree['head'])})
+                checked = git(entry['path'], 'cat-file', '--batch-check=%(objectname) %(objecttype)',
+                              stdin='\n'.join(candidates) + '\n').splitlines() if candidates else []
+                available = {sha for sha, line in zip(candidates, checked) if line == sha + ' commit'}
+                ordinary_tips = sorted(set(ordinary_tips) | available)
+                for tree in entry['worktrees']:
+                    tree['head_available'] = tree.get('head') in available
+                warn(f'Some registered HEADs are unavailable for {entry["path"]}; healthy refs and admin histories were retained.')
             recovered_tips = {sha for tree in entry['worktrees']
                               for sha in tree.get('recovery', {}).get('available_heads', [])}
             entry['tips'] = sorted(set(ordinary_tips) | recovered_tips)
@@ -347,7 +394,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                             for ref in entry['refs']
                             if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'}
                            | recovered_tips | {tree['head'] for tree in entry['worktrees']
-                              if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])})
+                              if tree['detached'] and tree.get('head_available', True)
+                              and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])})
             tip_records[entry['path']] = log_records(entry['path'], heads, no_walk=True)
             records[entry['path']] = recent_records
             entry['status'] = 'ok'
@@ -392,7 +440,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             {'name': 'worktree:' + tree['path'], 'hash': tree['head'],
              'object_type': 'commit', 'peeled_type': None}
             for tree in entry['worktrees']
-            if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])]
+            if tree['detached'] and tree.get('head_available', True)
+            and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])]
         snapshot_refs += [
             {'name': 'worktree-reflog:' + tree['path'] + ':' + sha, 'hash': sha,
              'object_type': 'commit', 'peeled_type': None}

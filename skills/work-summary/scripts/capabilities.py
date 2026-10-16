@@ -23,7 +23,7 @@ def record(path):
     if kind == 'symlink': links.append(path)
 record(path)
 for current, dirs, files in os.walk(path, followlinks=False, onerror=lambda error: errors.append(error.filename)):
-    if '.git' in dirs or '.git' in files or ({'HEAD', 'config'} <= set(files) and {'objects', 'refs'} <= set(dirs)):
+    if '.git' in dirs or '.git' in files or ('HEAD' in files and {'objects', 'refs'} <= set(dirs)):
         candidates.append(current)
     for name in dirs + files:
         if len(entries) >= 10000:

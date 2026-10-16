@@ -53,10 +53,10 @@ class LocalRecoveryTest(unittest.TestCase):
         shutil.rmtree(tree)
         return repo, tree, former
 
-    def capture(self, repo):
+    def capture(self, repo, **kwargs):
         end = datetime.now(timezone.utc).replace(microsecond=0)
         warnings = []
-        data = local_sources.collect_local([str(repo)], end - timedelta(days=7), end, warnings.append)
+        data = local_sources.collect_local([str(repo)], end - timedelta(days=7), end, warnings.append, **kwargs)
         return data, warnings
 
     def test_stale_admin_recovers_reflog_work_and_leaves_registration_unchanged(self):
@@ -89,6 +89,69 @@ class LocalRecoveryTest(unittest.TestCase):
         self.assertNotIn(former, record['recovery']['available_heads'])
         self.assertEqual(data['metadata']['repositories'][0]['status'], 'ok')
         self.assertTrue(any('admin data is incomplete' in warning for warning in warnings))
+
+    def test_missing_stale_head_does_not_drop_healthy_reflog_or_shared_history(self):
+        repo, tree, former = self.stale()
+        admin = repo / '.git' / 'worktrees' / 'gone'
+        (admin / 'HEAD').write_text('f' * 40 + '\n')
+        data, warnings = self.capture(repo)
+        entry = data['metadata']['repositories'][0]
+        recovery = next(row for row in entry['worktrees'] if row['path'] == str(tree))['recovery']
+        self.assertEqual(entry['status'], 'ok')
+        self.assertEqual(recovery['status'], 'partial')
+        self.assertIn(former, recovery['available_heads'])
+        self.assertTrue(any(row['hash'] == former for row in data['commits'][str(repo)]))
+        self.assertTrue(any(row['hash'] == former for row in data['branches']))
+        self.assertTrue(any('HEADs are unavailable' in warning for warning in warnings))
+
+    def test_malformed_native_tail_preserves_valid_reflog_rows_with_exact_parse_gap(self):
+        repo, tree, former = self.stale()
+        log = repo / '.git' / 'worktrees' / 'gone' / 'logs' / 'HEAD'
+        with log.open('a') as stream:
+            stream.write('malformed native tail\n')
+        expected_line = len(log.read_text().splitlines())
+        data, warnings = self.capture(repo)
+        recovery = next(row for row in data['metadata']['repositories'][0]['worktrees']
+                        if row['path'] == str(tree))['recovery']
+        self.assertEqual(recovery['status'], 'partial')
+        self.assertEqual(recovery['reflog_parse_errors'], [
+            {'line': expected_line, 'reason': 'invalid_object_ids_or_record_shape'}])
+        self.assertTrue(recovery['reflog_file'].endswith('malformed native tail\n'))
+        self.assertIn(former, recovery['available_heads'])
+        self.assertTrue(any(row['hash'] == former for row in data['commits'][str(repo)]))
+        self.assertTrue(warnings)
+
+    def test_foreign_common_directory_cannot_supply_original_repository_identity(self):
+        repo, tree, _ = self.stale()
+        foreign = self.root / 'foreign'
+        shutil.copytree(repo, foreign)
+        self.git(foreign, 'config', 'user.email', 'foreign@example.test')
+        admin = repo / '.git' / 'worktrees' / 'gone'
+        (admin / 'commondir').write_text(str(foreign / '.git') + '\n')
+        data, warnings = self.capture(repo)
+        entry = data['metadata']['repositories'][0]
+        recovery = next(row for row in entry['worktrees'] if row['path'] == str(tree))['recovery']
+        self.assertEqual(recovery['status'], 'partial')
+        self.assertNotIn('foreign@example.test', entry['identities'])
+        self.assertNotIn('configured_author_email', recovery)
+        self.assertEqual(recovery['common_dir'], str(foreign / '.git'))
+        self.assertTrue(warnings)
+
+    def test_configless_bare_repository_is_discovered_and_never_marked_marker_free(self):
+        repo, _, former = self.stale()
+        bare = self.root / 'bare-without-config'
+        shutil.copytree(repo / '.git', bare)
+        shutil.rmtree(bare / 'worktrees')
+        (bare / 'config').unlink()
+        self.assertEqual(self.git(bare, 'rev-parse', '--is-bare-repository'), 'true')
+        data, _ = self.capture(self.root, author_emails=('fixture@example.test',))
+        entry = next(row for row in data['metadata']['repositories'] if row['path'] == str(bare))
+        self.assertTrue(entry['bare'])
+        self.assertEqual(entry['status'], 'ok')
+        recovery = capabilities.inspect_unreadable_tree(bare)
+        if recovery['status'] != 'unavailable':
+            self.assertEqual(recovery['status'], 'partial')
+            self.assertIn(str(bare), recovery['repository_candidates'])
 
     def test_namespace_probe_is_optional_and_rejects_incomplete_or_unsafe_walks(self):
         directory = self.root / 'directory'
