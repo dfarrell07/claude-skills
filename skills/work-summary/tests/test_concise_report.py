@@ -82,11 +82,24 @@ class ConciseReportTest(unittest.TestCase):
                 bad['github']['head_events'][0]['source'][field] = value
                 with self.assertRaises(ValueError):
                     ws.validate(bad)
-        event.update(kind='rest_force_push', source={
+        event.update(kind='rest_force_push', source_path=f"repos/{item['repo']}/issues/{item['number']}/timeline", source={
             'event': 'head_ref_force_pushed', 'id': 42, 'commit_id': head,
+            'node_id': 'native-rest-node', 'url': f"https://api.github.com/repos/{item['repo']}/issues/events/42",
             'created_at': '2025-01-01T00:00:00Z'})
         data['branches'][0]['prs'][0]['head_event_id'] = 42
         ws.validate(data)
+        for field, value in [('url', 'https://api.github.com/repos/foreign/project/issues/events/42'),
+                             ('url', f"https://api.github.com/repos/{item['repo']}/issues/events/999"),
+                             ('node_id', '')]:
+            with self.subTest(rest_field=field, value=value):
+                bad = copy.deepcopy(data)
+                bad['github']['head_events'][0]['source'][field] = value
+                with self.assertRaises(ValueError):
+                    ws.validate(bad)
+        bad = copy.deepcopy(data)
+        bad['github']['head_events'][0]['source_path'] = f"repos/{item['repo']}/issues/999/timeline"
+        with self.assertRaises(ValueError):
+            ws.validate(bad)
         self.assertNotIn('activity', data['github'])
 
     def test_stale_worktree_reflog_snapshot_requires_exact_native_head_evidence(self):

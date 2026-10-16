@@ -113,7 +113,7 @@ def validate_editor_comment(event, comment):
                     'GitHub native comment author mismatch')
 
 
-def historical_head_hashes(record, known):
+def historical_head_hashes(record, known, host='github.com'):
     """Native force-push history proves a former head, without proving weekly work."""
     require(isinstance(record, dict), 'Invalid native head event')
     item = known.get(record.get('item_url'))
@@ -138,6 +138,11 @@ def historical_head_hashes(record, known):
     else:
         require(record.get('kind') == 'rest_force_push' and source.get('event') == 'head_ref_force_pushed'
                 and integer(source.get('id'), 1), 'Invalid native REST force-push identity')
+        api_base = 'https://api.github.com' if host == 'github.com' else f'https://{host}/api/v3'
+        require(source.get('url') == f"{api_base}/repos/{item['repo']}/issues/events/{source['id']}"
+                and isinstance(source.get('node_id'), str) and bool(source['node_id'])
+                and record.get('source_path') == f"repos/{item['repo']}/issues/{item['number']}/timeline",
+                'Native REST force-push route mismatch')
         timestamp(source.get('created_at'))
         head = source.get('commit_id')
         require(head is None or isinstance(head, str) and HASH.fullmatch(head), 'Invalid native REST head')
@@ -178,7 +183,7 @@ def validate_github(data, evidence, start, end):
     head_events = github.get('head_events', [])
     require(isinstance(head_events, list), 'Invalid native head history')
     known = {**indexed, **evidence}
-    historical_heads = [(record, historical_head_hashes(record, known)) for record in head_events]
+    historical_heads = [(record, historical_head_hashes(record, known, host)) for record in head_events]
     comments_seen = {}
     comments = github.get('reference_comments', [])
     require(isinstance(comments, list), 'Invalid GitHub reference comments')
