@@ -94,6 +94,10 @@ Retain exact refs/object types, immutable tips, sanitized fetch/push remotes,
 cached default refs, detached heads, and backup snapshots. Undated tree/blob
 refs are context, not authored commits. Deduplicate clones, rebases, backports,
 commits, PRs and tickets when describing accomplishments.
+For stale worktrees, read the surviving Git administration metadata and HEAD
+reflog before declaring evidence missing. Record recovered tips separately from
+actual refs. A missing working directory alone does not mean its stored history
+was lost. Read-only recovery must leave permissions, refs and registrations intact.
 
 GitHub discovery uses the authenticated account on `GH_HOST` (default
 `github.com`): authored updates, older open authored/assigned work, review
@@ -109,9 +113,12 @@ alone does not make a passive event an accomplishment.
 For branch PR associations check all states, saved authored indexes, independent
 any-author SHA search, and commit associations. A commit association alone can
 miss closed unmerged PRs. Preserve positives even when sibling reads fail.
-Null objects, failed/capped reads, unsupported hosts and name-only matches stay
-unresolved. A completed negative lookup means only no association found for
-that exact snapshot; it does not prove unpublished work.
+Distinguish a successful lookup of an explicitly absent commit object in a
+verified repository from a failed request, missing repository or malformed
+response. Preserve failed/capped reads, unsupported hosts and name-only matches
+as unresolved. A completed negative lookup means only no association found by
+the supported methods for that exact snapshot; deleted forks and rewritten
+history can hide past associations. It does not prove unpublished work.
 
 Jira uses the authenticated tenant/account. Retain all-status assigned,
 reported, created, watched and formerly assigned inventories plus recent
@@ -121,6 +128,11 @@ comment suffix: retain those native comments immediately, read missing history,
 and preserve richer native rows when merging projected pages. Count/identity
 drift stays incomplete while valid comments and links survive. Projected rows
 without native actors/times cannot prove weekly activity.
+Check actual changelog objects and comment fidelity rather than assuming that
+an installed CLI exposes every API capability. When a supported authenticated
+REST reader or connector is available, use native paginated history and comment
+reads to fill those gaps. Otherwise retain the exact missing comment IDs,
+required read routes and native failure responses in the private capture.
 
 Assignment, watching, reporting and updatedBy are leads/context. Native comment
 actors/timestamps support activity. Day-level queries and current state do not
@@ -138,6 +150,12 @@ Review the surrounding meaning before listing a pair. Foreign-site Jira URLs
 do not identify a same-key ticket on the active site. Verify GitHub
 repository transfers using independent native reads with equal repository IDs;
 keep historical source URLs beside canonical relations.
+Include native issue/review comment bodies in reference discovery, including
+comments by other authors and comments outside the weekly window. Preserve the
+comment URL as relation evidence; a reference does not credit its author to the
+user or make an old discussion a weekly accomplishment. Failed guessed keys
+need their exact native failure and source context; a CLI's combined
+"does not exist or no permission" response cannot establish either condition alone.
 
 Preserve sensitivity and native relation provenance. Restricted titles must
 stay out of the work list; private links remain private. Native Jira GitLab MR
