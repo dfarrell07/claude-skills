@@ -416,10 +416,18 @@ class ConciseReportTest(unittest.TestCase):
         report=ws.render(self.enrich(source,(payload,)),source)
         self.assertEqual(len([line for line in report.splitlines() if line.startswith('- ')]),1)
         self.assertNotIn('\n#',report)
-        self.assertNotIn('<img',report)
+        self.assertNotIn(' <img',report)
+        self.assertIn(r'\<img',report)
+        self.assertIn(r'\[label\](javascript',report)
         self.assertNotIn('\u202e',report)
         self.assertIn(r'\~\~not\~\~',report)
         self.assertNotIn('  - https://evil.example',report)
+
+    def test_authored_descriptions_stay_pasteable(self):
+        source=self.capture()
+        description='Tuned lease_duration (default 15s) for C++ clients and #123 follow-ups; 3 < 5.'
+        report=ws.render(self.enrich(source,(description,)),source)
+        self.assertEqual(report.splitlines()[0],'- '+description)
 
     def test_sentence_periods_and_versions_remain_plain_in_the_work_list(self):
         source=self.capture()

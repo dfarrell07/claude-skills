@@ -523,8 +523,11 @@ def validate(data, source=None):
     for key, original in source.items():
         require(data.get(key) == original, f"Enrichment changed source {key}")
     analysis = data["analysis"]
+    if isinstance(analysis, dict):
+        analysis.setdefault("in_progress", [])
     require(isinstance(analysis, dict) and isinstance(analysis.get("themes"), list)
-            and isinstance(analysis.get("in_progress"), list), "Invalid analysis")
+            and isinstance(analysis.get("in_progress"), list),
+            'Invalid analysis: expected {"themes": [...], "in_progress": [...]}')
 
     def reference(item):
         require(isinstance(item, dict), "Invalid analysis citation")
@@ -766,8 +769,25 @@ def topic_nodes(topics):
         yield from topic_nodes(topic.get('subtopics', []))
 
 
-def render_topic_lines(data, topic, depth=0, detailed=False):
-    label = markdown(topic['description'])
+def authored_line(text):
+    """The agent's own description: one line, pasteable, without Markdown escapes.
+
+    Only a leading list, heading or quote marker is neutralized so the bullet
+    structure cannot change; text inside the line stays as written.
+    """
+    text = "".join(" " if unicodedata.category(char) in {"Cc", "Cf", "Cs"} else char for char in str(text))
+    text = " ".join(text.split())
+    # Constructs that hide or fetch content when the list is rendered: raw HTML,
+    # links and images, strikethrough. Prose echoing untrusted titles must not gain them.
+    text = re.sub(r"<(?=[A-Za-z/!?])", r"\\<", text)
+    text = re.sub(r"(!?)\[([^\]]*)\]\(", r"\1\\[\2\\](", text)
+    text = text.replace("~", "\\~")
+    text = re.sub(r"^([0-9]{1,9})([.)])(?=\s|$)", r"\1\\\2", text)
+    return re.sub(r"^([-+*#>])(?=\s|$)", r"\\\1", text)
+
+
+def render_topic_lines(data, topic, depth=0, detailed=False, authored=False):
+    label = authored_line(topic['description']) if authored and not detailed else markdown(topic['description'])
     if detailed:
         label = f"**{markdown(topic['name'])}**: " + label
     lines = ['  ' * depth + '- ' + label]
@@ -777,7 +797,7 @@ def render_topic_lines(data, topic, depth=0, detailed=False):
         lines.append('  ' * (depth + 1) + '- ' +
                      (f'<{url}>' if re.search(r'(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|~', url) else url))
     for child in topic.get('subtopics', []):
-        lines.extend(render_topic_lines(data, child, depth + 1, detailed))
+        lines.extend(render_topic_lines(data, child, depth + 1, detailed, authored))
     return lines
 
 
@@ -887,7 +907,7 @@ def render(data, source=None, detailed=False):
         represented.update(direct_urls(topic) + display_urls(data, topic))
     lines = []
     for topic in topics:
-        lines.extend(render_topic_lines(data, topic))
+        lines.extend(render_topic_lines(data, topic, authored='analysis' in data))
     if not topics:
         lines.append('No supported work found in the available evidence.')
     known_jira_urls = {item['url'] for item in data.get('jira', {}).get('issues', [])}
