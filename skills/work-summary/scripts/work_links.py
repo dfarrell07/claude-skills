@@ -4,7 +4,7 @@ import re
 from urllib.parse import quote, urlsplit
 
 from evidence import is_pr_url, require
-from extended_evidence import jira_key_aliases, repository_aliases
+from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -158,7 +158,7 @@ def referenced_keys(github, site=None):
     for item in selected:
         for field in ('title', 'body', 'head_ref'):
             add(item.get(field))
-    for comment in github.get('reference_comments', []):
+    for comment in github_reference_comments(github):
         if comment['item_url'] in selected_urls:
             add(comment['body'])
     return sorted(result)
@@ -168,15 +168,20 @@ def complete_references(jira, github, read_tickets, read_prs=None):
     """Follow explicit captured references to exhaustion, attempting failures once."""
     attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github, include_index=False)}
     processed_urls, unread_urls = set(attempted_urls), set()
+    def targets():
+        # Old field values are discovery context, never current ticket pairings.
+        return set(jira.get('linked_prs', [])) | {
+            link['url'] for issue in jira.get('issues', [])
+            for link in issue.get('history_review_links', []) if link['provider'] == 'github'}
     while True:
         keys = set(referenced_keys(github, jira.get('metadata', {}).get('site'))) - attempted_keys
-        urls = set(jira.get('linked_prs', [])) - processed_urls
+        urls = targets() - processed_urls
         if not keys and not urls:
             break
         if keys:
             attempted_keys.update(keys)
             read_tickets(sorted(keys))
-        urls = set(jira.get('linked_prs', [])) - processed_urls
+        urls = targets() - processed_urls
         processed_urls.update(urls)
         if urls:
             if read_prs is None:
@@ -227,7 +232,7 @@ def associate_work(jira, github):
                 if key != source_key:
                     relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
                 relations.setdefault((key, item['url']), relation)
-    for comment in github.get('reference_comments', []):
+    for comment in github_reference_comments(github):
         url = canonical.get(pr_identity(comment['item_url'], aliases))
         if url is None:
             continue
@@ -304,7 +309,7 @@ def validate_links(data):
                 require(any(comment['url'] == evidence_url
                             and pr_identity(comment['item_url'], aliases) == pr_identity(relation['url'], aliases)
                             and source_key in confirmed_keys(comment['body'], jira.get('metadata', {}).get('site'))
-                            for comment in data['github'].get('reference_comments', [])),
+                            for comment in github_reference_comments(data['github'])),
                         'GitHub key mention absent from native comment')
             elif relation['proof'].startswith('github_'):
                 require(relation['proof'] in {'github_title_key', 'github_body_key', 'github_head_ref_key'}

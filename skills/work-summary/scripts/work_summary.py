@@ -26,10 +26,10 @@ from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, github_items, validate_links  # noqa: E402
-from extended_evidence import validate_github, validate_jira, jira_reference  # noqa: E402
+from extended_evidence import github_reference_comments, validate_github, validate_jira, jira_reference  # noqa: E402
 from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
 from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
-from jira_public_history import collect_public_history, validate_public_history  # noqa: E402
+from jira_public_history import collect_public_history, public_field_events, validate_public_history  # noqa: E402
 from provider_references import complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
 
 
@@ -171,12 +171,19 @@ def collect(days_text, roots, now=None):
         if url not in public_cache:
             public_cache[url] = public_get(url)
         return public_cache[url]
+    history_warnings = set()
+    def read_history():
+        def once(message):
+            if message not in history_warnings:
+                history_warnings.add(message)
+                warn(message)
+        jira['metadata']['public_history'] = collect_public_history(
+            jira, once, reuse=True, github_host=host)
     gitlab, expansion = complete_provider_references(jira, github, local['branches'],
         lambda keys: add_referenced_jira(jira, keys, start, end, warn),
         (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                   since=start, read=read_public), host)
-    jira['metadata']['public_history'] = collect_public_history(jira, warn)
+                                   since=start, read=read_public), host, read_history=read_history)
     if github_user:
         if any(info["status"] != "ok" for info in ledger.coverage.values()):
             github_status = "partial"
@@ -546,7 +553,7 @@ def work_urls(data, topic):
     def github(item):
         change_urls.add(item['url'])
         ticket_urls.update(relation['url'] for relation in contextual_jira_links(
-            item, data['github'].get('reference_comments', [])))
+            item, github_reference_comments(data['github'])))
         for relation in item.get('jira_links', []):
             ticket(jira[relation['key']], False)
 
@@ -663,6 +670,12 @@ def fallback_topics(data, limit=12):
         add(item['url'], 3, timestamp(event['occurred_at']),
             {'description': verb + ': ' + title, 'items': [],
              'jira': [{key: item[key] for key in ('key', 'url')}]})
+    for event in public_field_events(data.get('jira', {}), start, end):
+        item = jira[event['key']]
+        title = 'restricted Jira ticket' if item['sensitive'] else item['title']
+        add(item['url'], 4, timestamp(event['occurred_at']),
+            {'description': 'Updated tracker: ' + title, 'items': [],
+             'jira': [{key: item[key] for key in ('key', 'url')}], 'links': [item['url']]})
     gitlab = data.get('gitlab', {})
     principals = {(row['host'], row['user_id']) for row in gitlab.get('metadata', {}).get('identities', [])}
     for item in gitlab.get('items', []):
@@ -723,7 +736,7 @@ def render(data, source=None, detailed=False):
         displayed = set(display_urls(data, topic))
         for item in topic_github_items(data, topic):
             contextual.update(link['url'] for link in contextual_jira_links(
-                item, data['github'].get('reference_comments', []))
+                item, github_reference_comments(data['github']))
                               if link['url'] in displayed)
         for relation in local_context_links(data, topic):
             if relation['url'] in displayed:
@@ -855,6 +868,18 @@ def render_detailed(data, source=None):
                          f"{markdown(comment['kind'])}; {actor}; created {comment['created_at']}; "
                          f"updated {comment['updated_at']}")
         lines.append("")
+    histories = data['github'].get('comment_edit_histories', [])
+    if histories:
+        lines += ['#### Native GitHub Comment Revision Context', '',
+                  'Native revisions distinguish historical editor evidence from the current body; '
+                  'unresolved personal revisions and deleted histories remain explicit gaps.', '']
+        for record in histories:
+            revisions = sum(len(page['response'].get('data', {}).get('node', {}).get(
+                'userContentEdits', {}).get('nodes', [])) for page in record['pages']
+                if isinstance(page.get('response', {}).get('data', {}).get('node'), dict))
+            lines.append(f"- [{markdown(record['repo'])}#{record['number']}]({record['rest_observation']['html_url']}): "
+                         f"{revisions} native revisions ({record['status']}).")
+        lines.append('')
     if "jira" in data:
         jira = data["jira"]
         entries = jira.get("issues", [])
@@ -870,6 +895,16 @@ def render_detailed(data, source=None):
         for event in jira.get("activity", []):
             lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}) {markdown(event['kind'])} — {jira_work(jira_by_key[event['key']])}")
         lines.append("")
+        field_events = list(public_field_events(jira, timestamp(m['since_at']) if m.get('since_at') else None,
+                                               timestamp(m['to_at']) if m.get('to_at') else None))
+        if field_events:
+            lines += ['#### Native Personal Jira Field Changes', '',
+                      'Exact actor/time field actions prove tracker updates; they do not establish implementation or delivery.', '']
+            for event in field_events:
+                fields = ', '.join(dict.fromkeys(markdown(change['field']) for change in event['fields']))
+                lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}): "
+                             f"{fields}; native history {event['history_id']}.")
+            lines.append('')
         if 'public_history' in jira['metadata']:
             history = jira['metadata']['public_history']
             lines += ['#### Public Jira Field History', '',
@@ -883,6 +918,13 @@ def render_detailed(data, source=None):
                                 if isinstance(page.get('values'), list))
                     lines.append(f"- {jira_reference(item)}: {count} native history rows ({record['status']}); "
                                  f"{len(record['pages'])} pages, {len(record['errors'])} recorded gaps.")
+            lines += ['', 'Historical review references below retain old field values and removals; '
+                      'they do not establish a current ticket pairing or weekly implementation.', '']
+            for item in entries:
+                for relation in item.get('history_review_links', []):
+                    lines.append(f"- {jira_reference(item)}: {relation['url']}; "
+                                 f"{markdown(relation['history_field'])} {relation['history_side']}; "
+                                 f"native history {relation['history_id']} at {relation['history_created']}")
             lines.append('')
     gitlab_api = data.get('gitlab')
     if gitlab_api and gitlab_api.get('items'):

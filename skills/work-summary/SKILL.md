@@ -110,7 +110,11 @@ requests, and recent review/comment/involvement candidates. Search caps and
 paging/count drift remain explicit. Candidate searches have no upper updated
 cutoff; native actor/event times determine the exact window. Preserve ID-less
 cross-reference events using native source identity. Comment edits require
-native matching editor proof. Roles and updates alone do not prove personal work. Mention/subscription,
+native matching editor proof. For edited comments that could overlap the window,
+read bounded native revision history: a later bot/other-author edit can hide an
+earlier personal edit. Preserve every revision, distinguish verified latest edits
+from unresolved historical personal edits, and retain failed/deleted histories as
+specific gaps. Roles and updates alone do not prove personal work. Mention/subscription,
 assignment, requested-review and cross-reference events are context unless
 separate substantive activity supports the described work; an actor/time match
 alone does not make a passive event an accomplishment.
@@ -198,6 +202,11 @@ crediting the numeric account. Follow current descriptions and all captured
 discussion bodies across Jira, GitHub and GitLab to a fixed point. Public Jira
 field history supplements authenticated details and comments without replacing
 their visibility or counts. Retain endpoint-specific failures and scopes.
+Follow explicit review URLs in retained Jira history too, keeping the native
+field, timestamp, and old/new side. Historical additions and removals are read
+targets and context, separate from current ticket/PR pairings; a removed link
+must not reappear as a core counterpart in the work list. Process newly discovered
+tickets' histories before declaring the cross-provider reference frontier closed.
 
 ## Select and Rank Work
 

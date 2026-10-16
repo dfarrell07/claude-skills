@@ -19,6 +19,36 @@ from capabilities import empty_local  # noqa: E402
 
 
 class ConciseReportTest(unittest.TestCase):
+    def test_native_own_field_change_supports_tracker_update_without_delivery_claim(self):
+        data = self.capture()
+        data['github']['prs'] = []
+        site = 'jira.example.test'
+        native = {'id': '123', 'key': 'TEST-123', 'self': f'https://{site}/rest/api/3/issue/123',
+                  'fields': {'summary': 'Prepare release', 'status': {'name': 'Active',
+                             'statusCategory': {'key': 'indeterminate'}}}}
+        item = {'key': 'TEST-123', 'url': f'https://{site}/browse/TEST-123', 'title': 'Prepare release',
+                'roles': ['assigned'], 'sensitive': False, 'status': 'Active',
+                'status_category': 'indeterminate', 'source': native}
+        jira = {'metadata': {'status': 'ok', 'site': site, 'account_id': 'native-person',
+                            'identity_verified': True}, 'issues': [item], 'activity': []}
+        def read(url, receipt=None):
+            if '?fields=summary' in url:
+                return native
+            return {'self': f'https://{site}/rest/api/3/issue/123/changelog?maxResults=100&startAt=0',
+                    'startAt': 0, 'maxResults': 100, 'isLast': True, 'total': 1, 'values': [{
+                        'id': '77', 'created': '2026-01-12T12:00:00Z',
+                        'author': {'accountId': 'native-person'},
+                        'items': [{'field': 'status', 'fromString': 'New', 'toString': 'Active'}]}]}
+        jira['metadata']['public_history'] = ws.collect_public_history(jira, self.fail, reader=read)
+        data['jira'] = jira
+        ws.validate(data)
+        self.assertEqual(ws.render(data), '- Updated tracker: Prepare release\n  - ' + item['url'])
+        detailed = ws.render(data, detailed=True)
+        self.assertIn('Native Personal Jira Field Changes', detailed)
+        self.assertIn('status; native history 77', detailed)
+        jira['metadata']['account_id'] = 'another-person'
+        self.assertNotIn('Updated tracker', ws.render(data))
+
     def test_public_gitlab_identity_and_native_creation_support_a_work_bullet(self):
         data = self.capture()
         data['metadata']['author_aliases'] = [{'email': 'own@example.test', 'source': 'authenticated_github_profile'}]

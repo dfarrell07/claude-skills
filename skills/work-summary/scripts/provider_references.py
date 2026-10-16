@@ -4,7 +4,7 @@ import re
 from urllib.parse import urlsplit
 
 from evidence import HOST, require
-from extended_evidence import jira_key_aliases
+from extended_evidence import github_reference_comments, jira_key_aliases
 from work_links import (URL, complete_references, confirmed_keys, discovery_keys,
                         github_items, native_review_links)
 
@@ -41,12 +41,14 @@ def code_urls(text, github_host=None):
 
 def gitlab_seed_urls(jira, github, branches):
     urls = {link['url'] for issue in jira.get('issues', []) for link in native_review_links(issue)}
+    urls.update(link['url'] for issue in jira.get('issues', [])
+                for link in issue.get('history_review_links', []) if link['provider'] == 'gitlab')
     urls.update(link['url'] for branch in branches for link in branch.get('merge_requests', []))
     selected = {item['url'] for item in github_items(github, include_index=False)}
     observations = [item for item in github_items(github) if item['url'] in selected]
     texts = [item.get(field) or '' for item in observations
              for field in ('title', 'body')]
-    texts.extend(comment['body'] for comment in github.get('reference_comments', [])
+    texts.extend(comment['body'] for comment in github_reference_comments(github)
                  if comment['item_url'] in selected)
     urls.update(url for text in texts for provider, url in code_urls(text) if provider == 'gitlab')
     return urls
@@ -63,7 +65,7 @@ def verified_aliases(metadata, jira=None):
 
 
 def complete_provider_references(jira, github, branches, read_tickets, read_prs,
-                                 read_gitlab, github_host='github.com'):
+                                 read_gitlab, github_host='github.com', read_history=None):
     """Follow each observed target once; a failed user endpoint cannot veto item reads."""
     attempted_keys, attempted_prs, unread_prs, attempted_gitlab = set(), set(), set(), set()
     gitlab = read_gitlab([])
@@ -79,10 +81,14 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
         if fresh:
             read_prs(sorted(fresh))
     while True:
+        if read_history is not None:
+            read_history()
         expansion = complete_references(jira, github, tickets_once, prs_once if read_prs is not None else None)
         attempted_keys.update(expansion['attempted_jira_keys'])
         attempted_prs.update(expansion['attempted_pr_urls'])
         unread_prs.update(expansion['unread_pr_urls'])
+        if read_history is not None and any('public_history' not in issue for issue in jira.get('issues', [])):
+            continue
         targets = gitlab_seed_urls(jira, github, branches)
         keys, prs = set(), set()
         for _, _, _, text, _ in gitlab_texts(gitlab):

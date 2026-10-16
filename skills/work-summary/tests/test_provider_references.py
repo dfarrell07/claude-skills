@@ -13,6 +13,56 @@ from provider_references import (  # noqa: E402
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_new_ticket_histories_join_reference_closure_without_reviving_old_pairings(self):
+        old_pr = 'https://github.com/org/project/pull/9'
+        mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
+        def issue(key):
+            return {'key': key, 'url': 'https://jira.example.test/browse/' + key,
+                    'sensitive': False, 'pr_links': []}
+        jira = {'metadata': {'site': 'jira.example.test'}, 'linked_prs': [], 'issues': [issue('TEST-1')]}
+        github, histories, pr_reads = {'prs': [], 'issues': []}, [], []
+        def history():
+            for item in jira['issues']:
+                if 'public_history' in item:
+                    continue
+                histories.append(item['key'])
+                item['public_history'] = {'status': 'ok'}
+                item['history_review_links'] = ([{'provider': 'github', 'url': old_pr,
+                    'history_side': 'fromString'}] if item['key'] == 'TEST-1' else
+                    [{'provider': 'gitlab', 'url': mr, 'history_side': 'toString'}]
+                    if item['key'] == 'TEST-2' else [])
+        def tickets(keys):
+            known = {item['key'] for item in jira['issues']}
+            jira['issues'].extend(issue(key) for key in keys if key not in known)
+        def prs(urls):
+            pr_reads.extend(urls)
+            github.setdefault('context_prs', []).extend({'url': url, 'body': 'TEST-2'} for url in urls)
+        def gitlab(urls):
+            return {'items': [{'url': url, 'source': {'description': 'TEST-3'}} for url in urls]}
+        captured, expansion = complete_provider_references(
+            jira, github, [], tickets, prs, gitlab, read_history=history)
+        self.assertEqual(pr_reads, [old_pr])
+        self.assertEqual(histories, ['TEST-1', 'TEST-2', 'TEST-3'])
+        self.assertEqual(expansion['attempted_gitlab_urls'], [mr])
+        self.assertEqual(captured['items'][0]['jira_links'][0]['key'], 'TEST-3')
+        self.assertTrue(all(not item['pr_links'] for item in jira['issues']))
+
+    def test_later_identity_bound_native_comment_body_keeps_cross_provider_reference(self):
+        url = 'https://github.com/org/repo/pull/42#issuecomment-7'
+        created, updated = '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'
+        rest = {'id': 7, 'node_id': 'native-comment', 'html_url': url, 'created_at': created,
+                'updated_at': created, 'user': {'login': 'bot', 'node_id': 'native-bot'}}
+        mr = 'https://gitlab.example.test/team/project/-/merge_requests/9'
+        native = {'id': 'native-comment', 'databaseId': 7, 'url': url, 'createdAt': created,
+                  'updatedAt': updated, 'body': mr, 'author': {'login': 'bot', 'id': 'native-bot'}}
+        github = {'prs': [{'url': url.split('#')[0], 'body': ''}],
+                  'comment_edit_histories': [{'item_url': url.split('#')[0], 'repo': 'org/repo',
+                      'number': 42, 'kind': 'issue_comment', 'rest_observation': rest,
+                      'pages': [{'after': None, 'response': {'data': {'node': native}}}]}]}
+        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {mr})
+        github['comment_edit_histories'][0]['pages'][0]['response']['data']['node']['databaseId'] = 8
+        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), set())
+
     def test_moved_ticket_in_native_gitlab_description_keeps_original_key_provenance(self):
         native = {'key': 'NEW-3', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',
                   'fields': {'summary': 'Canonical ticket', 'status': {'name': 'Active',
