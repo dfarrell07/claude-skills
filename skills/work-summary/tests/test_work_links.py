@@ -39,6 +39,15 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(pr['title'], 'First native observation')
 
+    def test_explicit_native_jira_authority_overrides_non_ticket_prefix_guess(self):
+        data = self.capture()
+        pr = data['github']['prs'][0]
+        pr.update(title='Advisory CVE-2026-1234 and RFC-9999',
+                  body='Track https://jira.example.test/browse/CVE-123 and '
+                       'https://jira.example.test/browse/ISO-9001')
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['CVE-123', 'ISO-9001'])
+        self.assertEqual(referenced_keys(data['github'], 'other.example.test'), [])
+
     def test_comment_only_ticket_is_discovered_and_bound_without_crediting_its_author(self):
         data = self.capture()
         pr = data['github']['prs'][0]

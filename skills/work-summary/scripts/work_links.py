@@ -12,11 +12,10 @@ URL = re.compile(r'https?://[^\s<>"\[\]()]+')
 MARKDOWN_LINK = re.compile(r'\[[^\]\n]*\]\((https?://[^\s<>"()]+)\)')
 
 
-def _key_mentions(text, site, confirmed):
-    """Separate discovery syntax from stronger native reference evidence."""
-    text = text or ''
+def _url_keys(text, site, confirmed=False):
+    """An explicit authority is stronger evidence than a project-name heuristic."""
     explicit = set()
-    for match in URL.finditer(text):
+    for match in URL.finditer(text or ''):
         try:
             parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
             # Accessing port also rejects invalid and out-of-range authorities.
@@ -29,6 +28,13 @@ def _key_mentions(text, site, confirmed):
                 and (not confirmed or parts.scheme == 'https')
                 and parts.path.startswith('/browse/') and KEY.fullmatch(key)):
             explicit.add(key.upper())
+    return explicit
+
+
+def _key_mentions(text, site, confirmed):
+    """Separate discovery syntax from stronger native reference evidence."""
+    text = text or ''
+    explicit = _url_keys(text, site, confirmed)
     bare = URL.sub(' ', MARKDOWN_LINK.sub(' ', text))
     for match in KEY.finditer(bare):
         key = match.group(1)
@@ -137,15 +143,18 @@ def referenced_keys(github, site=None):
     selected_urls = {item['url'] for item in selected}
     selected += [item for item in github.get('pr_index', []) if item['url'] in selected_urls]
     selected += [item for item in github.get('pr_index_observations', []) if item['url'] in selected_urls]
+
+    def add(text):
+        explicit = _url_keys(text, site)
+        result.update(key for key in mentioned_keys(text, site)
+                      if key.rsplit('-', 1)[0].upper() not in NON_JIRA or key in explicit)
+
     for item in selected:
         for field in ('title', 'body', 'head_ref'):
-            for key in mentioned_keys(item.get(field), site):
-                if key.rsplit('-', 1)[0].upper() not in NON_JIRA:
-                    result.add(key.upper())
+            add(item.get(field))
     for comment in github.get('reference_comments', []):
         if comment['item_url'] in selected_urls:
-            result.update(key for key in mentioned_keys(comment['body'], site)
-                          if key.rsplit('-', 1)[0].upper() not in NON_JIRA)
+            add(comment['body'])
     return sorted(result)
 
 
