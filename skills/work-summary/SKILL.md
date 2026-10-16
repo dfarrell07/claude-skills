@@ -53,6 +53,7 @@ different accounts or sites, keep their evidence separate.
    background or with a long timeout, never under a 2-minute limit:
 
    ```bash
+   DAYS=7   # or the requested positive integer
    RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/work-summary.XXXXXX")
    bash "$SKILL_DIR/scripts/work-summary.sh" "$DAYS" --output "$RUN_DIR/data.json" 2> "$RUN_DIR/collect.log"
    ```
@@ -71,9 +72,11 @@ different accounts or sites, keep their evidence separate.
 
    It lists only verified personal activity in the window, grouped by work item:
    your PRs and issues, reviews and comments on others' work, Jira tickets you
-   commented on, GitLab MRs and local commits by repository, each with the URL or
-   hashes to cite and the related links you may select. It ends with source
-   status and warning counts. Open PR bodies or tickets through `gh`/`acli` or
+   commented on or changed, GitLab MRs and local commits by repository, each with
+   the URL or hashes to cite and the related links you may select. It ends with
+   source status and warning counts. Jira changes marked "exact change unverified"
+   and open PRs "updated in the window without recorded events" are leads: confirm
+   them with `acli`/`gh` or local commits before crediting them. Open PR bodies or tickets through `gh`/`acli` or
    targeted `jq` reads of `data.json` when a claim needs more than a title.
 
 3. **Choose and rank topics** using [Credit only what happened](#credit-only-what-happened)
@@ -89,7 +92,10 @@ different accounts or sites, keep their evidence separate.
 
 5. **Reread `report.md` as the manager.** Check every claim and URL against the
    evidence, remove peripheral or redundant links, confirm the order, and make
-   sure each link sits under the description it supports. Return the list.
+   sure each link sits under the description it supports. The report may end with
+   an automatic coverage note: keep one source sentence only if a gap could hide
+   important work, rewritten plainly (see [Weekly output](#weekly-output)),
+   otherwise delete it. Return the list.
 
 Validation checks that citations and links exist in the capture, not that the
 prose is true. Without `--analysis` the renderer produces a conservative list of
@@ -108,6 +114,8 @@ produces the full private audit (very large); it is not the requested output.
   backports and repeated PRs or tickets into one piece of work.
 - Local commits count only for configured or account-verified author emails.
   Names alone are leads.
+- Do not infer deployment, tests, customer impact or resolved tickets from
+  mentions or PR prose.
 - Recording past release results this week is documentation or handoff work;
   date the release itself only from evidence of when it ran.
 - A PR description or title can claim more than the change contains. Inspect the
@@ -147,7 +155,9 @@ the link belongs in the update. For each topic keep:
   umbrella, a neighbour or a ticket a later comment says is the wrong one),
 - the implementation or review artifacts the reader needs. Prefer the primary PR
   over equivalent backports and describe branch coverage in prose, but keep
-  separate PRs that implement distinct necessary pieces.
+  separate PRs that implement distinct necessary pieces. If one link cannot
+  identify several distinct contributions, add their links or narrow the
+  description to what the chosen links show.
 
 There is no link quota and no need for a Jira/PR pair; a bullet can have no links.
 Before keeping a URL, ask what the reader learns by opening it that the other links
@@ -198,7 +208,7 @@ the run directory.
 ## Analysis schema
 
 `analysis.json` is `{"themes": [...], "in_progress": [...]}`. Themes are the ranked
-bullets, in order.
+bullets, in order; `in_progress` may be omitted or `[]`.
 
 | Field | Meaning |
 | --- | --- |
@@ -206,7 +216,8 @@ bullets, in order.
 | `description` | The one-line bullet text (required). |
 | `items` | GitHub citations `{"repo", "number", "url"}`. |
 | `jira` | Jira citations `{"key", "url"}`. |
-| `commits` / `branches` | Local citations `{"repo": PATH, "hash": FULL_HASH}` from the capture. |
+| `commits` | Local citations `{"repo": PATH, "hash": FULL_HASH}` from the digest. |
+| `branches` | Branch tips `{"repo", "hash"}` from `data.json` `branches[]`; rarely needed. |
 | `merge_requests` | GitLab citations `{"url"}`. |
 | `links` | URLs to display, in order: this node's citations or their related links. `[]` shows none; omit for the citations. |
 | `subtopics` | Child themes with the same fields. A parent may rely on its children's citations. |
@@ -225,15 +236,23 @@ among the themes instead. Do not promote backlog roles.
       "name": "Gateway failover",
       "description": "Fixed gateway failover on bare-metal clusters and backported it to both supported releases.",
       "items": [{"repo": "example/gateway", "number": 812, "url": "https://github.com/example/gateway/pull/812"},
-                {"repo": "example/gateway", "number": 815, "url": "https://github.com/example/gateway/pull/815"}],
+                {"repo": "example/gateway", "number": 815, "url": "https://github.com/example/gateway/pull/815"},
+                {"repo": "example/gateway", "number": 816, "url": "https://github.com/example/gateway/pull/816"}],
       "jira": [{"key": "NET-1423", "url": "https://jira.example.test/browse/NET-1423"}],
       "links": ["https://jira.example.test/browse/NET-1423", "https://github.com/example/gateway/pull/812"]
     },
     {
-      "name": "Evaluation sandbox",
-      "description": "Prototyped isolated containers for the automation's evaluation runs.",
-      "commits": [{"repo": "/home/me/src/automation", "hash": "0123456789abcdef0123456789abcdef01234567"}],
-      "links": []
+      "name": "CVE automation",
+      "description": "Hardened the CVE automation that opens dependency-fix PRs across repositories.",
+      "subtopics": [
+        {"name": "Grouping",
+         "description": "Grouped fixes per module and kept verified advisory IDs in PR descriptions.",
+         "items": [{"repo": "example/automation", "number": 41, "url": "https://github.com/example/automation/pull/41"}]},
+        {"name": "Sandbox",
+         "description": "Prototyped isolated containers for its evaluation runs (local only so far).",
+         "commits": [{"repo": "/home/me/src/automation", "hash": "0123456789abcdef0123456789abcdef01234567"}],
+         "links": []}
+      ]
     }
   ],
   "in_progress": []
