@@ -1,7 +1,6 @@
 """Recover retained committed work and inspect owned metadata without mutation."""
 
 from datetime import datetime, timedelta, timezone
-import json
 import os
 from pathlib import Path
 import shutil
@@ -13,7 +12,6 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-import capabilities  # noqa: E402
 import evidence  # noqa: E402
 import local_sources  # noqa: E402
 
@@ -137,7 +135,7 @@ class LocalRecoveryTest(unittest.TestCase):
         self.assertEqual(recovery['common_dir'], str(foreign / '.git'))
         self.assertTrue(warnings)
 
-    def test_configless_bare_repository_is_discovered_and_never_marked_marker_free(self):
+    def test_configless_bare_repository_is_discovered(self):
         repo, _, former = self.stale()
         bare = self.root / 'bare-without-config'
         shutil.copytree(repo / '.git', bare)
@@ -148,59 +146,6 @@ class LocalRecoveryTest(unittest.TestCase):
         entry = next(row for row in data['metadata']['repositories'] if row['path'] == str(bare))
         self.assertTrue(entry['bare'])
         self.assertEqual(entry['status'], 'ok')
-        recovery = capabilities.inspect_unreadable_tree(bare)
-        if recovery['status'] != 'unavailable':
-            self.assertEqual(recovery['status'], 'partial')
-            self.assertIn(str(bare), recovery['repository_candidates'])
-
-    def test_namespace_probe_is_optional_and_rejects_incomplete_or_unsafe_walks(self):
-        directory = self.root / 'directory'
-        directory.mkdir()
-        value = directory.stat()
-        payload = {'entries': [{'device': value.st_dev, 'inode': value.st_ino}],
-                   'repository_candidates': [], 'symlinks': [], 'errors': [], 'truncated': False, 'complete': True}
-        with patch.object(capabilities.sys, 'platform', 'darwin'), \
-                patch.object(capabilities, 'command') as command:
-            self.assertEqual(capabilities.inspect_unreadable_tree(directory)['status'], 'unavailable')
-            command.assert_not_called()
-        for field in (None, 'repository_candidates', 'symlinks', 'errors', 'truncated'):
-            evidence = {**payload, **({field: True if field == 'truncated' else ['unknown']} if field else {})}
-            with self.subTest(field=field), patch.object(capabilities.sys, 'platform', 'linux'), \
-                    patch.object(capabilities.shutil, 'which', return_value='/usr/bin/unshare'), \
-                    patch.object(capabilities, 'command', return_value=json.dumps(evidence)) as command:
-                result = capabilities.inspect_unreadable_tree(directory)
-                self.assertEqual(result['status'], 'ok' if field is None else 'partial')
-                self.assertEqual(command.call_args.kwargs['timeout'], 10)
-
-    def test_native_namespace_metadata_recovery_preserves_permissions_and_detects_git(self):
-        directory = self.root / 'fixture'
-        directory.mkdir()
-        (directory / 'generated').mkdir()
-        directory.chmod(0)
-        try:
-            recovery = capabilities.inspect_unreadable_tree(directory)
-            if recovery['status'] == 'unavailable':
-                self.skipTest('Unprivileged user namespaces are unavailable in this environment')
-            self.assertEqual(recovery['status'], 'ok', recovery)
-            self.assertEqual(directory.stat().st_mode & 0o777, 0)
-            self.assertEqual(len(recovery['entries']), 2)
-            data, warnings = self.capture(self.root)
-            self.assertEqual(warnings, [])
-            self.assertEqual(data['metadata']['local_recoveries'][0]['status'], 'ok')
-        finally:
-            directory.chmod(0o700)
-        (directory / '.git').mkdir()
-        directory.chmod(0)
-        try:
-            recovery = capabilities.inspect_unreadable_tree(directory)
-            self.assertEqual(recovery['status'], 'partial')
-            self.assertEqual(recovery['repository_candidates'], [str(directory)])
-            self.assertEqual(directory.stat().st_mode & 0o777, 0)
-            data, warnings = self.capture(self.root)
-            self.assertTrue(any('Cannot scan' in warning for warning in warnings))
-            self.assertEqual(data['metadata']['local_recoveries'][0]['status'], 'partial')
-        finally:
-            directory.chmod(0o700)
 
 
 if __name__ == '__main__':

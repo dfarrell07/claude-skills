@@ -511,13 +511,8 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
             if os.access(root, os.R_OK | os.X_OK):
                 self.skipTest("This user bypasses directory permissions")
             data = self.capture(root)
-            recovered = [entry for entry in data['metadata'].get('local_recoveries', [])
-                         if entry['path'] == str(root) and entry['status'] == 'ok']
-            self.assertEqual(data["metadata"]["local_status"], "ok" if recovered else "partial")
-            if recovered:
-                self.assertEqual(recovered[0]['repository_candidates'], [])
-                self.assertEqual(recovered[0]['symlinks'], [])
-                self.assertTrue(recovered[0]['complete'])
+            self.assertEqual(data["metadata"]["local_status"], "partial")
+            self.assertNotIn('local_recoveries', data['metadata'])
             self.assertEqual(root.stat().st_mode & 0o777, 0)
             self.assertEqual(len(data["github"]["prs"]), 1)
             self.assertTrue(data["metadata"]["warnings"])

@@ -8,7 +8,6 @@ import subprocess
 from urllib.parse import urlsplit
 
 from evidence import HASH, REPO, UTC, git, iso, require
-from capabilities import inspect_unreadable_tree
 
 
 PRUNED = {'.git', 'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.venv', 'venv', 'go-cache'}
@@ -277,7 +276,7 @@ def recover_stale_worktree(repo, common, record):
 def collect_local(roots, start, end, warn, api=None, identity=None, author_emails=()):
     identity = identity or {}
     host = os.environ.get('GH_HOST', 'github.com').lower()
-    entries, inspected, queue, recoveries = {}, set(), [], []
+    entries, inspected, queue = {}, set(), []
     configured_names = {' '.join(identity['name'].casefold().split())} if identity.get('name') else set()
 
     def add_repo(directory, marked=False):
@@ -371,10 +370,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
     visited = set()
 
     def scan_error(error):
-        recovered = inspect_unreadable_tree(error.filename)
-        recoveries.append(recovered)
-        if recovered['status'] != 'ok':
-            warn(f'Cannot scan {error.filename}; local coverage is incomplete.')
+        # Respect the user's permissions: an unreadable directory is a stated gap.
+        warn(f'Cannot scan {error.filename}; local coverage is incomplete.')
 
     for root in dict.fromkeys(scan_roots):
         try:
@@ -652,6 +649,5 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             warn(f'Cannot classify ref snapshots for {entry["path"]}; branch coverage is incomplete.')
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
-                         'repositories': list(entries.values()), 'author_aliases': list(aliases.values()),
-                         'local_recoveries': recoveries},
+                         'repositories': list(entries.values()), 'author_aliases': list(aliases.values())},
             'commits': commits, 'branches': branches, 'unattributed_commits': unattributed}
