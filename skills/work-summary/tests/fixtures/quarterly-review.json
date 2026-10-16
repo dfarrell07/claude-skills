@@ -185,7 +185,9 @@
         "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "author_email": "alex@example.test",
         "committed_at": "2026-09-16T10:00:00Z",
-        "subject": "Add resumable rebase workflow and validation cases"
+        "subject": "Add resumable rebase workflow and validation cases",
+        "authored_at": "2026-09-16T09:30:00Z",
+        "committer_email": "alex@example.test"
       },
       "observed_changes": "Added checkpoint/retry handling and isolated test cases for dependency rebases. No upstream merge or rollout evidence is available."
     },
