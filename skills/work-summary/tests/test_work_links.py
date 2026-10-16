@@ -160,6 +160,119 @@ class WorkLinksTest(unittest.TestCase):
         pr['title'], pr['body'] = '', '[ticket](https://jira.example.test/browse/TEST-123)'
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
 
+    def test_lowercase_product_paths_and_branches_are_discovery_only(self):
+        samples = [('head_ref', 'product-5-support'), ('head_ref', 'product-5-tekton'),
+                   ('body', 'plans/product-5-0-rollout.md'), ('body', 'plans/PRODUCT-5-0-rollout.md'),
+                   ('body', 'product-5.0 rollout'), ('title', 'product-5 support')]
+        for field, text in samples:
+            with self.subTest(field=field, text=text):
+                data = self.capture()
+                issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                issue.update(key='PRODUCT-5', url='https://jira.example.test/browse/PRODUCT-5',
+                             title='Unrelated old disk validation work')
+                pr.update(title='', body='', head_ref='')
+                pr[field] = text
+                expected = [] if '.0' in text else ['PRODUCT-5']
+                self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), expected)
+                associate_work(data['jira'], data['github'])
+                validate_links(data)
+                self.assertEqual(pr['jira_links'], [])
+                self.assertEqual(issue['pr_links'], [])
+
+    def test_conventional_uppercase_and_explicit_browse_references_confirm_pairing(self):
+        for field, text in [('title', 'ACM-123: fix checks'), ('head_ref', 'fix/ACM-123-checks'),
+                            ('body', 'See https://jira.example.test/browse/acm-123')]:
+            with self.subTest(field=field, text=text):
+                data = self.capture()
+                issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                issue.update(key='ACM-123', url='https://jira.example.test/browse/ACM-123')
+                pr.update(title='', body='', head_ref='')
+                pr[field] = text
+                associate_work(data['jira'], data['github'])
+                validate_links(data)
+                self.assertEqual(pr['jira_links'][0]['key'], 'ACM-123')
+
+    def test_native_jira_backreference_confirms_lowercase_branch_and_preserves_proof(self):
+        for proof in ('description', 'comment'):
+            with self.subTest(proof=proof):
+                data = self.capture()
+                issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                pr.update(title='', body='', head_ref='fix/test-123-checks')
+                if proof == 'description':
+                    issue['detail']['fields']['description'] = pr['url']
+                    evidence = issue['url']
+                else:
+                    issue['detail']['fields']['comment']['comments'] = [{'id': '7', 'body': pr['url']}]
+                    evidence = issue['url'] + '?focusedCommentId=7'
+                issue['pr_links'] = [
+                    {'url': pr['url'], 'proof': 'github_head_ref_key', 'evidence_url': pr['url'], 'sensitive': False},
+                    {'url': pr['url'], 'proof': proof, 'evidence_url': evidence, 'sensitive': False}]
+                associate_work(data['jira'], data['github'])
+                validate_links(data)
+                self.assertEqual(pr['jira_links'][0]['proof'], proof)
+                self.assertEqual(issue['pr_links'][0]['evidence_url'], evidence)
+                before = copy.deepcopy(data)
+                associate_work(data['jira'], data['github'])
+                self.assertEqual(data, before)
+
+    def test_stale_lowercase_or_numeric_derived_proof_is_rejected_and_rebuilt(self):
+        for field, text in [('head_ref', 'product-5-support'), ('body', 'plans/product-5-0-rollout.md'),
+                            ('body', 'PRODUCT-5-0 rollout'), ('body', 'PRODUCT-5.0 rollout')]:
+            with self.subTest(field=field, text=text):
+                data = self.capture()
+                issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                issue.update(key='PRODUCT-5', url='https://jira.example.test/browse/PRODUCT-5')
+                pr.update(title='', body='', head_ref='')
+                pr[field] = text
+                issue['pr_links'] = [{'url': pr['url'], 'proof': 'github_' + field + '_key',
+                                      'evidence_url': pr['url'], 'sensitive': False}]
+                pr['jira_links'] = [{'key': issue['key'], 'url': issue['url'], 'proof': 'github_' + field + '_key',
+                                     'evidence_url': pr['url'], 'sensitive': False}]
+                with self.assertRaises(ValueError):
+                    validate_links(data)
+                associate_work(data['jira'], data['github'])
+                self.assertEqual(issue['pr_links'], [])
+                self.assertEqual(pr['jira_links'], [])
+                validate_links(data)
+                before = copy.deepcopy(data)
+                associate_work(data['jira'], data['github'])
+                self.assertEqual(data, before)
+
+    def test_derived_reference_requires_known_proof_and_native_github_provenance(self):
+        for field, value in [('proof', 'github_title'),
+                             ('evidence_url', 'https://jira.example.test/browse/TEST-123')]:
+            with self.subTest(field=field):
+                data = self.capture()
+                associate_work(data['jira'], data['github'])
+                data['jira']['issues'][0]['pr_links'][0][field] = value
+                data['github']['prs'][0]['jira_links'][0][field] = value
+                with self.assertRaises(ValueError):
+                    validate_links(data)
+
+    def test_confirmed_browse_reference_requires_safe_configured_https_authority(self):
+        for url in ('http://jira.example.test/browse/TEST-123',
+                    'https://person@jira.example.test/browse/TEST-123',
+                    'https://person:secret@jira.example.test/browse/TEST-123',
+                    'https://jira.example.test:bad/browse/TEST-123',
+                    'https://jira.example.test:65536/browse/TEST-123',
+                    'https://jira.example.test/browse/../TEST-123',
+                    'https://jira.example.test/browse/%2e%2e/TEST-123'):
+            with self.subTest(url=url):
+                data = self.capture()
+                pr = data['github']['prs'][0]
+                pr.update(title='', body=url)
+                associate_work(data['jira'], data['github'])
+                validate_links(data)
+                self.assertEqual(pr['jira_links'], [])
+        data = self.capture()
+        issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+        data['jira']['metadata']['site'] = 'jira.example.test:8443'
+        issue['url'] = 'https://jira.example.test:8443/browse/TEST-123'
+        pr.update(title='', body='https://JIRA.example.test:8443/browse/test-123?view=compact#details')
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
+
     def test_version_tokens_do_not_seed_or_pair_a_real_ticket_with_the_same_prefix(self):
         for field in ('title', 'body', 'head_ref', 'indexed_head_ref'):
             for text in ('VERSION-4.20', 'version-4.20.1', 'fix/version-4.20-next'):
@@ -182,7 +295,7 @@ class WorkLinksTest(unittest.TestCase):
                                           'evidence_url': pr['url'], 'sensitive': False}]
                     with self.assertRaises(ValueError):
                         validate_links(data)
-        for text in ('VERSION-4.', 'VERSION-4. More context.', 'fix/version-4-retry',
+        for text in ('VERSION-4.', 'VERSION-4. More context.',
                      'VERSION-4/followup', 'VERSION-4.followup', 'VERSION-4: update',
                      'version-4.20; VERSION-4: genuine ticket'):
             with self.subTest(genuine_key=text):

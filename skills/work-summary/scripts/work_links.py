@@ -12,17 +12,39 @@ URL = re.compile(r'https?://[^\s<>"\[\]()]+')
 MARKDOWN_LINK = re.compile(r'\[[^\]\n]*\]\((https?://[^\s<>"()]+)\)')
 
 
-def mentioned_keys(text, site):
-    """A foreign browse URL is not a bare-key reference to this Jira site."""
+def _key_mentions(text, site, confirmed):
+    """Separate discovery syntax from stronger native reference evidence."""
     text = text or ''
     explicit = set()
     for match in URL.finditer(text):
-        parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
+        try:
+            parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
+            # Accessing port also rejects invalid and out-of-range authorities.
+            parts.port
+        except ValueError:
+            continue
         key = parts.path.removeprefix('/browse/')
-        if parts.hostname == site and parts.path.startswith('/browse/') and KEY.fullmatch(key):
+        if (site and parts.netloc.casefold() == site.casefold()
+                and (not confirmed or parts.scheme == 'https')
+                and parts.path.startswith('/browse/') and KEY.fullmatch(key)):
             explicit.add(key.upper())
     bare = URL.sub(' ', MARKDOWN_LINK.sub(' ', text))
-    return explicit | {key.upper() for key in KEY.findall(bare)}
+    for match in KEY.finditer(bare):
+        key = match.group(1)
+        if confirmed and (key != key.upper() or re.match(r'[.-][0-9]', bare[match.end():])):
+            continue
+        explicit.add(key.upper())
+    return explicit
+
+
+def mentioned_keys(text, site):
+    """Retain case-insensitive discovery leads without proving a relation."""
+    return _key_mentions(text, site, confirmed=False)
+
+
+def confirmed_keys(text, site):
+    """Accept native browse URLs or conventional uppercase ticket references."""
+    return _key_mentions(text, site, confirmed=True)
 
 
 def strings(value):
@@ -153,6 +175,10 @@ def associate_work(jira, github):
     relations = {}
     for issue in issues.values():
         for pr in issue.get('pr_links', []):
+            # Derived links must be rebuilt from current native observations.
+            # Reusing them would preserve obsolete or weaker inferred proofs.
+            if isinstance(pr.get('proof'), str) and pr['proof'].startswith('github_'):
+                continue
             url = canonical.get(pr_identity(pr['url'], aliases), pr['url'])
             relation = {**pr, 'url': url}
             if pr['url'] != url:
@@ -162,7 +188,7 @@ def associate_work(jira, github):
         if not is_pr_url(item['url']):
             continue
         for field in ('title', 'body', 'head_ref'):
-            for key in mentioned_keys(item.get(field), site):
+            for key in confirmed_keys(item.get(field), site):
                 key = key.upper()
                 issue = issues.get(key)
                 if issue is None:
@@ -221,9 +247,11 @@ def validate_links(data):
                     or evidence_url.startswith(issue['url'] + '?focusedCommentId=')
                     or evidence_url == relation['url']), 'Invalid cross-source provenance')
             if relation['proof'].startswith('github_'):
+                require(relation['proof'] in {'github_title_key', 'github_body_key', 'github_head_ref_key'}
+                        and evidence_url == relation['url'], 'Invalid GitHub reference provenance')
                 field = relation['proof'].removeprefix('github_').removesuffix('_key')
                 require(field in {'title', 'body', 'head_ref'} and any(issue['key'] in
-                    mentioned_keys(item.get(field), jira.get('metadata', {}).get('site'))
+                    confirmed_keys(item.get(field), jira.get('metadata', {}).get('site'))
                     for item in by_identity.get(pr_identity(relation['url'], aliases), [])), 'GitHub key mention absent from evidence')
             else:
                 fields = (issue.get('detail') or {}).get('fields', {})
