@@ -160,6 +160,36 @@ class WorkLinksTest(unittest.TestCase):
         pr['title'], pr['body'] = '', '[ticket](https://jira.example.test/browse/TEST-123)'
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
 
+    def test_version_tokens_do_not_seed_or_pair_a_real_ticket_with_the_same_prefix(self):
+        for field in ('title', 'body', 'head_ref', 'indexed_head_ref'):
+            for text in ('VERSION-4.20', 'version-4.20.1', 'fix/version-4.20-next'):
+                with self.subTest(field=field, text=text):
+                    data = self.capture()
+                    issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                    issue.update(key='VERSION-4', url='https://jira.example.test/browse/VERSION-4')
+                    pr.update(title='', body='', head_ref='')
+                    if field == 'indexed_head_ref':
+                        data['github']['pr_index'] = [{**pr, 'head_ref': text}]
+                    else:
+                        pr[field] = text
+                    self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), [])
+                    associate_work(data['jira'], data['github'])
+                    validate_links(data)
+                    self.assertEqual(pr['jira_links'], [])
+                    self.assertEqual(issue['pr_links'], [])
+        for text in ('VERSION-4.', 'VERSION-4. More context.', 'fix/version-4-retry',
+                     'VERSION-4/followup', 'VERSION-4.followup', 'VERSION-4: update',
+                     'version-4.20; VERSION-4: genuine ticket'):
+            with self.subTest(genuine_key=text):
+                data = self.capture()
+                issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
+                issue.update(key='VERSION-4', url='https://jira.example.test/browse/VERSION-4')
+                pr.update(title=text, body='')
+                self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['VERSION-4'])
+                associate_work(data['jira'], data['github'])
+                validate_links(data)
+                self.assertEqual(pr['jira_links'][0]['key'], 'VERSION-4')
+
     def test_browse_links_keep_keys_with_sentence_punctuation_or_code_quotes(self):
         for suffix in ('.', ', then verify.', '`', ';', '!', '?', "'.", '’', '”'):
             for host in ('jira.example.test', 'other-jira.example'):

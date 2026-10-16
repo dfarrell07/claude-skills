@@ -6,7 +6,7 @@ from urllib.parse import quote, urlsplit
 from evidence import is_pr_url, require
 from extended_evidence import repository_aliases
 
-KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_])', re.I)
+KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
 URL = re.compile(r'https?://[^\s<>"\[\]()]+')
 MARKDOWN_LINK = re.compile(r'\[[^\]\n]*\]\((https?://[^\s<>"()]+)\)')
