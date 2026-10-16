@@ -150,6 +150,13 @@ def inspect_pages(pages, requests, issue, site, issue_id):
             total = page['total']
         elif page['total'] != total:
             errors.append({'stage': 'pagination', 'reason': 'total_changed', 'page': index})
+        span = page['startAt'] + len(page['values'])
+        if span > page['total']:
+            errors.append({'stage': 'pagination', 'reason': 'page_span_exceeds_total', 'page': index})
+        if not page['isLast'] and len(page['values']) < page['maxResults']:
+            errors.append({'stage': 'pagination', 'reason': 'nonterminal_short_page', 'page': index})
+        if page['isLast'] != (span == page['total']):
+            errors.append({'stage': 'pagination', 'reason': 'terminal_count_mismatch', 'page': index})
         for row_index, row in enumerate(page['values']):
             try:
                 require(isinstance(row, dict) and not isinstance(row.get('id'), bool)

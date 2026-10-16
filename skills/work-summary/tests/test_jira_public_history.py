@@ -138,6 +138,18 @@ class JiraPublicHistoryTest(unittest.TestCase):
         jira = self.collect([wrong])
         self.assertEqual(jira['issues'][0]['public_history']['status'], 'partial')
 
+    def test_equal_totals_cannot_hide_short_page_gaps_or_rows_beyond_total(self):
+        pages = [page([history(number) for number in range(1, 51)], total=100, last=False),
+                 page([history(number) for number in range(51, 101)], offset=100, total=100)]
+        jira = self.collect(pages)
+        record = jira['issues'][0]['public_history']
+        self.assertEqual(record['pages'], pages)
+        self.assertEqual(jira['metadata']['public_history']['history_rows'], 100)
+        self.assertEqual(record['status'], 'partial')
+        reasons = {error['reason'] for error in record['errors']}
+        self.assertIn('nonterminal_short_page', reasons)
+        self.assertIn('page_span_exceeds_total', reasons)
+
     def test_failed_identity_has_no_history_and_retains_known_request(self):
         jira = self.collect(public=ph.PublicReadError('http_error', 404))
         record = jira['issues'][0]['public_history']
