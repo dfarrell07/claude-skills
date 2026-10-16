@@ -322,6 +322,23 @@ class GitLabApiTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.checked(bad)
 
+    def test_aggregate_status_cannot_hide_native_notes_inventory_or_fallback_gaps(self):
+        denied_notes, _, _ = self.collect(lambda url: response(url, mr()) if url == DETAIL
+                                           else response(url, None, status=401))
+        for result in (denied_notes, self.inventory_fallback_capture(failed_later_page=True)):
+            result['metadata']['failures'] = []
+            result['metadata']['status'] = 'ok'
+            with self.assertRaises(ValueError):
+                self.checked(result)
+
+    def test_not_applicable_requires_no_native_work_or_queries(self):
+        empty, _, _ = self.collect(urls=[])
+        self.assertEqual(empty['metadata']['status'], 'not_applicable')
+        populated, _, _ = self.collect()
+        populated['metadata']['status'] = 'not_applicable'
+        with self.assertRaises(ValueError):
+            api.validate_gitlab_api({'gitlab': populated})
+
 
 if __name__ == '__main__':
     unittest.main()

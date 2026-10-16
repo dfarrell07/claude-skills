@@ -520,3 +520,10 @@ def validate_gitlab_api(data):
                         and (item['source'].get('author') or {}).get('id') == lead['user_id']
                         and not (item['source'].get('author') or {}).get('public_email')
                         for item in capture['items']), 'Unbound GitLab public identity lead')
+    incomplete = (bool(meta['failures'])
+                  or any(item['notes_status'] == 'partial' or item['source_kind'] == 'inventory'
+                         for item in capture['items'])
+                  or any(inventory['status'] == 'partial' for inventory in meta['inventories']))
+    observed = any((capture['items'], meta['queries'], meta['identities'], meta['inventories'], meta['identity_leads']))
+    expected_status = 'partial' if incomplete else 'ok' if observed else 'not_applicable'
+    require(meta['status'] == expected_status, 'GitLab aggregate coverage differs from native component coverage')
