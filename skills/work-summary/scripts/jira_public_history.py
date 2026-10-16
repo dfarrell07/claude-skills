@@ -20,6 +20,7 @@ MAX_BODY = 16 * 1024 * 1024
 POSITIVE_ID = re.compile(r'[1-9][0-9]*\Z')
 SAFE_HEADERS = {'content-type', 'date', 'location', 'link', 'retry-after',
                 'x-page', 'x-next-page', 'x-total', 'x-total-pages'}
+HISTORY_URL = re.compile(r'https?://[^\s<>"\[\]()|]+')
 
 
 def safe_headers(headers):
@@ -177,7 +178,69 @@ def inspect_pages(pages, requests, issue, site, issue_id):
     return errors, bool(pages and ended and not errors), len(seen)
 
 
-def collect_public_history(jira, warn, workers=4, receipt=None, reader=None):
+def public_history_review_links(issue, github_host='github.com'):
+    """Historical read targets only: a removed reference is not a current relation."""
+    record = issue.get('public_history')
+    if record is None or record.get('identity') is None:
+        return []
+    site = urlsplit(issue['url']).netloc
+    # Validate the native stream without recursively validating its derived links.
+    native_issue = {key: value for key, value in issue.items() if key != 'history_review_links'}
+    validate_public_history({'jira': {'metadata': {'site': site}, 'issues': [native_issue]}})
+    result, seen = [], set()
+    for page in record['pages']:
+        values = page.get('values')
+        if not isinstance(values, list):
+            continue
+        for history in values:
+            try:
+                require(isinstance(history, dict) and not isinstance(history.get('id'), bool)
+                        and POSITIVE_ID.fullmatch(str(history.get('id')))
+                        and isinstance(history.get('items'), list)
+                        and all(isinstance(item, dict) for item in history['items'])
+                        and (history.get('author') is None or isinstance(history['author'], dict)),
+                        'invalid_history_row')
+                timestamp(history.get('created'))
+            except (ValueError, TypeError):
+                continue
+            for index, item in enumerate(history['items']):
+                if not isinstance(item.get('field'), str):
+                    continue
+                for side in ('fromString', 'toString'):
+                    text = item.get(side)
+                    if not isinstance(text, str):
+                        continue
+                    for match in HISTORY_URL.finditer(text):
+                        try:
+                            parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
+                            require(parts.scheme == 'https' and HOST.fullmatch(parts.netloc)
+                                    and parts.username is None and parts.password is None
+                                    and (parts.port is None or 1 <= parts.port <= 65535)
+                                    and all(part not in {'.', '..'} for part in parts.path.split('/')),
+                                    'unsafe_history_review_url')
+                        except ValueError:
+                            continue
+                        if (parts.netloc.casefold() == github_host.casefold() and re.fullmatch(
+                                r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)):
+                            provider = 'github'
+                        elif re.fullmatch(r'/(?:[A-Za-z0-9_.-]+/){2,}-/merge_requests/[1-9][0-9]*', parts.path):
+                            provider = 'gitlab'
+                        else:
+                            continue
+                        url = 'https://' + parts.netloc.lower() + parts.path
+                        key = str(history['id']), index, side, url
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        result.append({'url': url, 'source_url': url, 'provider': provider,
+                                       'proof': 'public_changelog', 'evidence_url': issue['url'],
+                                       'history_id': str(history['id']), 'history_created': history['created'],
+                                       'history_field': item['field'], 'history_item_index': index,
+                                       'history_side': side, 'sensitive': bool(issue.get('sensitive', True))})
+    return result
+
+
+def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reuse=False, github_host='github.com'):
     """Preserve public history separately; never replace authenticated details/comments."""
     site = jira['metadata'].get('site')
     valid_site = isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold()
@@ -244,10 +307,18 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None):
         return record
 
     issues = jira.get('issues', [])
+    if reuse:
+        retained = [issue for issue in issues if issue.get('public_history') is not None]
+        validate_public_history({'metadata': {'github_host': github_host},
+                                'jira': {'metadata': {'site': site}, 'issues': retained}})
+    pending = [issue for issue in issues if not reuse or issue.get('public_history') is None]
     with ThreadPoolExecutor(max_workers=max(1, min(4, workers))) as pool:
-        records = list(pool.map(collect, issues))
-    for issue, record in zip(issues, records):
+        collected = list(pool.map(collect, pending))
+    for issue, record in zip(pending, collected):
         issue['public_history'] = record
+    records = [issue['public_history'] for issue in issues]
+    for issue in issues:
+        issue['history_review_links'] = public_history_review_links(issue, github_host)
     complete = sum(record['status'] == 'ok' for record in records)
     status = ('unavailable' if not valid_site else 'ok' if complete == len(issues) else
               'unavailable' if all(record['status'] == 'unavailable' for record in records) else 'partial')
@@ -291,6 +362,7 @@ def validate_public_history(data):
         if record['identity'] is None:
             require(record['status'] == 'unavailable' and not record['pages'] and not record['page_requests']
                     and record['errors'], 'Unverified public identity has history')
+            require(not issue.get('history_review_links'), 'Unverified public identity has historical references')
             continue
         require(basis is not None, 'Public identity lacks authenticated source identity')
         public_identity(record['identity'], issue, site, issue_id)
@@ -300,6 +372,10 @@ def validate_public_history(data):
             require(complete and not record['errors'], 'Incomplete public history marked complete')
         else:
             require(record['status'] == 'partial' and record['errors'], 'Missing public history failure evidence')
+        if 'history_review_links' in issue:
+            require(issue['history_review_links'] == public_history_review_links(
+                issue, data.get('metadata', {}).get('github_host', 'github.com')),
+                'Historical review references differ from native field history')
     summary = jira['metadata'].get('public_history')
     if summary is not None:
         records = [issue.get('public_history') for issue in jira.get('issues', [])]

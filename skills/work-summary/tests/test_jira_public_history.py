@@ -50,6 +50,84 @@ class JiraPublicHistoryTest(unittest.TestCase):
     def setUp(self):
         self.warnings, self.calls = [], []
 
+    def test_historical_review_targets_preserve_native_field_sides_without_current_links(self):
+        row = history(1)
+        row['items'] = [{'field': 'Git Pull Request',
+                         'fromString': '[https://github.com/owner/repo/pull/1|old PR]',
+                         'toString': '[https://github.com/owner/repo/pull/2|https://github.com/owner/repo/pull/2] '
+                                     'https://gitlab.example.test/group/team/project/-/merge_requests/3'},
+                        {'field': 'description', 'toString': 'https://github.com/other/repo/pull/4'}]
+        jira = self.collect([page([row])])
+        captured = jira['issues'][0]
+        links = captured['history_review_links']
+        self.assertEqual([link['history_side'] for link in links],
+                         ['fromString', 'toString', 'toString', 'toString'])
+        self.assertEqual([link['provider'] for link in links], ['github', 'github', 'gitlab', 'github'])
+        self.assertEqual([link['history_item_index'] for link in links], [0, 0, 0, 1])
+        self.assertTrue(all(link['history_id'] == '1' and link['history_field'] in {'Git Pull Request', 'description'}
+                            and link['history_created'] == row['created'] and link['proof'] == 'public_changelog'
+                            and link['source_url'] == link['url'] and link['sensitive'] for link in links))
+        self.assertNotIn('pr_links', captured)
+        self.assertNotIn('review_links', captured)
+        self.assertEqual(jira['activity'], [{'native': 'unchanged'}])
+
+    def test_historical_review_link_forgery_rejected(self):
+        row = history(1)
+        row['items'][0]['toString'] = 'https://github.com/owner/repo/pull/2'
+        original = self.collect([page([row])])
+        for key, value in (('history_side', 'fromString'), ('history_field', 'foreign'),
+                           ('history_item_index', 1), ('history_id', '999'),
+                           ('history_created', '2026-10-12T12:34:57Z'),
+                           ('url', 'https://github.com/owner/repo/pull/3'),
+                           ('source_url', 'https://github.com/owner/repo/pull/3'),
+                           ('sensitive', False)):
+            jira = copy.deepcopy(original)
+            jira['issues'][0]['history_review_links'][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                ph.validate_public_history({'jira': jira})
+
+    def test_partial_native_history_retains_valid_links_and_rejects_unsafe_targets(self):
+        row = history(1)
+        row['items'][0]['toString'] = ('https://github.com/owner/repo/pull/2 '
+                                     'http://github.com/owner/repo/pull/3 '
+                                     'https://user:secret@github.com/owner/repo/pull/4 '
+                                     'https://github.com/../repo/pull/5 '
+                                     'https://github.com/owner/repo/pull/6extra')
+        jira = self.collect([page([row, {'id': 'bad native row'}])])
+        self.assertEqual(jira['issues'][0]['public_history']['status'], 'partial')
+        self.assertEqual([link['url'] for link in jira['issues'][0]['history_review_links']],
+                         ['https://github.com/owner/repo/pull/2'])
+
+    def test_reuse_keeps_native_records_reads_only_new_issues_and_rebuilds_total(self):
+        jira = self.collect()
+        first = copy.deepcopy(jira['issues'][0]['public_history'])
+        jira['issues'].append(issue(2))
+        calls = []
+
+        def read(url, receipt=None):
+            calls.append(url)
+            if '?fields=' in url:
+                return identity(2)
+            value = page([history(2)])
+            value['self'] = value['self'].replace('ACM-1', 'ACM-2')
+            return value
+
+        summary = ph.collect_public_history(jira, self.warnings.append, workers=1, reader=read, reuse=True)
+        jira['metadata']['public_history'] = summary
+        ph.validate_public_history({'jira': jira})
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all('/issue/2' in url for url in calls))
+        self.assertEqual(jira['issues'][0]['public_history'], first)
+        self.assertEqual(summary['issues_complete'], 2)
+        self.assertEqual(summary['history_rows'], 2)
+
+    def test_reuse_rejects_forged_existing_native_records_before_new_reads(self):
+        jira = self.collect()
+        jira['issues'][0]['public_history']['identity']['id'] = '999'
+        with self.assertRaises(ValueError):
+            ph.collect_public_history(jira, self.warnings.append, reuse=True,
+                                      reader=lambda *args, **kwargs: self.fail('Unexpected network read'))
+
     def collect(self, pages=None, public=None, jira=None):
         pages = [page([history(1)])] if pages is None else pages
         jira = {'metadata': {'site': SITE}, 'issues': [issue()], 'activity': [{'native': 'unchanged'}]} if jira is None else jira
