@@ -784,6 +784,23 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertIn(pr["url"], line)
         self.assertIn(issue["url"], line)
 
+    def test_jira_work_lists_native_gitlab_mr_reference_without_claiming_state(self):
+        data = self.capture()
+        url = 'https://git.example.test/group/project/-/merge_requests/17'
+        issue = {'key':'EXAMPLE-123', 'url':'https://jira.example.test/browse/EXAMPLE-123',
+                 'title':'Synthetic MR context', 'status':'Closed', 'status_category':'done',
+                 'roles':['assigned'], 'sensitive':False,
+                 'detail':{'fields':{'description':{'marks':[{'attrs':{'href':url}}]}}}}
+        issue['review_links'] = [{'url':url, 'source_url':url, 'provider':'gitlab', 'proof':'description',
+                                 'evidence_url':issue['url'], 'sensitive':False}]
+        data['jira'] = {'metadata':{'status':'ok','site':'jira.example.test'},'issues':[issue],'activity':[]}
+        report = self.render(data).stdout
+        line = next(line for line in report.splitlines() if 'Synthetic MR context' in line)
+        self.assertIn(issue['url'], line)
+        self.assertIn(url, line)
+        self.assertIn('state/ownership unverified', line)
+        self.assertNotIn('PR: no verified link found', line)
+
     def test_additional_sections_reject_markdown_injection(self):
         repo = self.repo("validation")
         data = self.capture(repo)

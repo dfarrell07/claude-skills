@@ -44,6 +44,50 @@ def pr_identity(url):
     return parts.netloc.casefold(), parts.path.casefold()
 
 
+def native_review_links(issue):
+    """Keep explicit GitLab MR references as context without querying that host."""
+    def values(value, sensitive):
+        if isinstance(value, str):
+            yield value, sensitive
+        elif isinstance(value, dict):
+            labels = value.get('labels')
+            private = sensitive or bool(value.get('security') or value.get('visibility')) or (
+                isinstance(labels, list) and any(isinstance(label, str) and (
+                    'security' in label.casefold() or label.upper().startswith('CVE-')) for label in labels))
+            for child in value.values():
+                yield from values(child, private)
+        elif isinstance(value, list):
+            for child in value:
+                yield from values(child, sensitive)
+
+    fields = (issue.get('detail') or {}).get('fields', {})
+    sources = [('description', issue['url'], fields.get('description'), issue['sensitive']),
+               ('issue_link', issue['url'], fields.get('issuelinks'), issue['sensitive'])]
+    comments = list((fields.get('comment') or {}).get('comments', []))
+    for page in issue.get('comment_pages', []):
+        comments.extend(page.get('comments', []))
+    for comment in comments:
+        if isinstance(comment, dict) and isinstance(comment.get('id'), str):
+            sources.append(('comment', issue['url'] + '?focusedCommentId=' + quote(comment['id'], safe=''),
+                            comment.get('body'), issue['sensitive'] or bool(comment.get('visibility'))
+                            or not isinstance(comment.get('author'), dict)))
+    result = {}
+    for proof, evidence_url, value, sensitive in sources:
+        for text, private in values(value, sensitive):
+            for match in URL.finditer(text):
+                original = match.group().rstrip('.,;:!?`\'’”')
+                parts = urlsplit(original)
+                if (parts.scheme != 'https' or not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', parts.netloc)
+                        or not re.fullmatch(r'/(?:[A-Za-z0-9_.~-]+/){2,}-/merge_requests/[1-9][0-9]*', parts.path)
+                        or any(part in {'.', '..'} for part in parts.path.split('/'))):
+                    continue
+                url = 'https://' + parts.netloc + parts.path
+                relation = {'url': url, 'source_url': original, 'provider': 'gitlab', 'proof': proof,
+                            'evidence_url': evidence_url, 'sensitive': private}
+                result[(url, proof, evidence_url, private)] = relation
+    return [result[key] for key in sorted(result)]
+
+
 def github_items(github, include_index=True):
     buckets = ('prs', 'issues', 'context_prs', 'context_issues') + (('pr_index',) if include_index else ())
     return [item for bucket in buckets for item in github.get(bucket, [])]
@@ -116,6 +160,7 @@ def associate_work(jira, github):
                               if pr_identity(url) == pr_identity(item['url'])]
     for issue in issues.values():
         issue['pr_links'] = [proof for (key, url), proof in sorted(relations.items()) if key == issue['key']]
+        issue['review_links'] = native_review_links(issue)
 
 
 def validate_links(data):
@@ -128,6 +173,9 @@ def validate_links(data):
         by_url.setdefault(item['url'], []).append(item)
         by_identity.setdefault(pr_identity(item['url']), []).append(item)
     for issue in issues.values():
+        reviews = issue.get('review_links', [])
+        require(isinstance(reviews, list) and all(relation in native_review_links(issue) for relation in reviews),
+                'Code-review reference absent from native Jira evidence')
         links = issue.get('pr_links', [])
         require(isinstance(links, list), 'Invalid Jira PR links')
 

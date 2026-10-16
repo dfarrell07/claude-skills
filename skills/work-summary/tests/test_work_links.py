@@ -62,6 +62,47 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(issue['pr_links'][0]['source_url'], original_url)
         self.assertEqual(pr['jira_links'][0]['key'], issue['key'])
 
+    def test_native_gitlab_mr_references_keep_href_comment_and_private_proof(self):
+        data = self.capture()
+        issue = data['jira']['issues'][0]
+        issue['detail']['fields']['description'] = {'marks':[{'attrs':{'href':'https://git.example.test/group/project/-/merge_requests/17'}}]}
+        issue['detail']['fields']['comment']['comments'] = [{'id':'81', 'author':{'accountId':'native-id'},
+            'visibility':{'type':'group'}, 'body':'See https://git.example.test/group/sub/project/-/merge_requests/18#note_1'}]
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        links = issue['review_links']
+        self.assertEqual(len(links), 2)
+        self.assertEqual(links[0]['provider'], 'gitlab')
+        self.assertTrue(any(link['proof']=='comment' and link['sensitive'] for link in links))
+        self.assertTrue(any(link['proof']=='description' and not link['sensitive'] for link in links))
+        self.assertTrue(any(link['source_url'].endswith('#note_1') and not link['url'].endswith('#note_1') for link in links))
+        for field, value in (('url','https://git.example.test/group/project/-/merge_requests/99'),
+                             ('proof','invented'), ('sensitive',False)):
+            broken = copy.deepcopy(data)
+            comment = next(link for link in broken['jira']['issues'][0]['review_links'] if link['proof']=='comment')
+            comment[field] = value
+            with self.assertRaises(ValueError):
+                validate_links(broken)
+
+    def test_native_mr_links_reject_unsafe_identity_and_keep_nested_label_privacy(self):
+        for label in ('security-review','CVE-2099-1234'):
+            data = self.capture()
+            issue = data['jira']['issues'][0]
+            issue['detail']['fields']['issuelinks'] = [{'outwardIssue':{'fields':{'labels':[label],
+                'description':'https://git.example.test/group/project/-/merge_requests/17'}}}]
+            associate_work(data['jira'], data['github'])
+            self.assertTrue(issue['review_links'][0]['sensitive'])
+        for url in ('http://git.example.test/group/project/-/merge_requests/17',
+                    'https://user:password@git.example.test/group/project/-/merge_requests/17',
+                    'https://git.example.test/group/../project/-/merge_requests/17',
+                    'https://git.example.test/group/%2e%2e/project/-/merge_requests/17',
+                    'https://git.example.test/group/project/-/merge_requests/17suffix'):
+            data = self.capture()
+            issue = data['jira']['issues'][0]
+            issue['detail']['fields']['description'] = url
+            associate_work(data['jira'], data['github'])
+            self.assertEqual(issue['review_links'], [])
+
     def test_foreign_jira_url_does_not_become_bare_key(self):
         for text in ('https://other-jira.example/browse/TEST-123',
                      '[TEST-123](https://other-jira.example/browse/TEST-123)'):

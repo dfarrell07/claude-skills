@@ -395,6 +395,13 @@ def render(data, source=None):
         for entry in related:
             parts = urlsplit(entry["url"]).path.strip("/").split("/")
             links.append(link({"repo": "/".join(parts[:2]), "number": int(parts[3]), "url": entry["url"]}))
+        seen_reviews = set()
+        for entry in original.get("review_links", []):
+            if entry["url"] in seen_reviews:
+                continue
+            seen_reviews.add(entry["url"])
+            number = urlsplit(entry["url"]).path.rsplit("/", 1)[1]
+            links.append(f"[GitLab MR !{number}]({entry['url']}) (referenced; state/ownership unverified)")
         return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
 
     lines = [f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})", "",

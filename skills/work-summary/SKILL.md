@@ -114,6 +114,9 @@ the report.
 
 When listing work, show **both Jira and PR links** when a verified relation exists.
 Use the same paired links in themes, ongoing work, actor events, and detailed lists.
+Retain explicit GitLab MR URLs from native Jira fields/comments as contextual
+code-review links too. These references do not establish MR state or ownership;
+GitHub reads must never receive those URLs.
 If a counterpart was not found, state that explicitly; never fabricate one or treat
 an inaccessible source as proof that no counterpart exists. A reference is context,
 not proof that the PR resolves the ticket or that the current user authored it.
