@@ -697,10 +697,17 @@ def collect_jira(start, end, warn):
         queries.append((role, clause + " ORDER BY key"))
     for role, query in queries:
         search(role, query)
-    selected = list(issues.values())
-    selected.sort(key=lambda item: ("updated_by" not in item["roles"], "recent" not in item["roles"], item["key"]))
+    # Role inventories reach back years, and Jira auto-watches every commented ticket.
+    # Read details for recently updated tickets and for unfinished owned/reported work,
+    # whose PR fields can pair with current changes; done or watch-only history stays
+    # as role context without a per-ticket read.
+    owned = {"assigned", "former_assignee", "reporter", "creator"}
+    selected = [item for item in issues.values()
+                if {"updated_by", "recent"} & set(item["roles"])
+                or (owned & set(item["roles"]) and item.get("status_category") != "done")]
+    selected.sort(key=lambda item: ("updated_by" not in item["roles"], item["key"]))
     metadata["coverage"]["details"] = {"requested_count": len(selected), "returned_count": 0,
-                                         "status": "ok"}
+                                         "status": "ok", "skipped_inactive_count": len(issues) - len(selected)}
     _detail_items(result, selected, start, end, warn)
     metadata["inventory_count"] = len(assigned_rows)
     metadata["issue_count"] = len(issues)

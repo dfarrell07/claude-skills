@@ -300,19 +300,24 @@ else:
             self.assertIn(call[:3], [["jira", "auth", "status"], ["jira", "workitem", "search"],
                                     ["jira", "workitem", "view"]])
 
-    def test_all_projects_and_old_completed_work_get_full_details_and_pr_links(self):
+    def test_all_projects_get_details_but_old_completed_work_stays_inventory_context(self):
         old = issue("OTHER-2", "done")
-        self.data["searches"]["assigned"].append(old)
-        self.data["counts"] = [2, 2]
-        self.data["details"]["OTHER-2"] = detail(old)
-        self.data["details"]["OTHER-2"]["fields"]["description"] = {
-            "text": "Historical work https://github.com/old/project/pull/37"}
+        active = issue("OTHER-3", "indeterminate")
+        self.data["searches"]["assigned"].extend([old, active])
+        self.data["counts"] = [3, 3]
+        for row in (old, active):
+            self.data["details"][row["key"]] = detail(row)
+            self.data["details"][row["key"]]["fields"]["description"] = {
+                "text": "Work https://github.com/old/project/pull/37"}
         result = self.collect()
-        self.assertEqual([row["key"] for row in result["issues"]], ["OTHER-2", "TEST-1"])
-        self.assertEqual(result["issues"][0]["detail_status"], "ok")
-        self.assertFalse(result["issues"][0]["sensitive"])
-        self.assertEqual(result["issues"][0]["pr_links"][0]["url"], "https://github.com/old/project/pull/37")
+        by_key = {row["key"]: row for row in result["issues"]}
+        self.assertEqual(sorted(by_key), ["OTHER-2", "OTHER-3", "TEST-1"])
+        self.assertEqual(by_key["OTHER-2"]["detail_status"], "not_selected")
+        self.assertTrue(by_key["OTHER-2"]["sensitive"])
+        self.assertEqual(by_key["OTHER-3"]["detail_status"], "ok")
+        self.assertEqual(by_key["OTHER-3"]["pr_links"][0]["url"], "https://github.com/old/project/pull/37")
         self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 2)
+        self.assertEqual(result["metadata"]["coverage"]["details"]["skipped_inactive_count"], 1)
 
     def test_nonassigned_activity_lead_and_old_active_context_are_detailed(self):
         for role, key in [("updated_by", "SIDE-2"), ("reporter", "SIDE-3"),
@@ -322,8 +327,9 @@ else:
             self.data["details"][key] = detail(row, [comment(key, ME)])
         result = self.collect()
         self.assertEqual(len(result["issues"]), 6)
-        self.assertEqual(len(result["activity"]), 6)
-        self.assertTrue(all(row["detail_status"] == "ok" for row in result["issues"]))
+        # A watch-only ticket without recent updates is auto-watch history, not a detail target.
+        self.assertEqual(len(result["activity"]), 5)
+        self.assertEqual({row["key"] for row in result["issues"] if row["detail_status"] != "ok"}, {"SIDE-5"})
         self.assertEqual(result["metadata"]["account_id"], "self-id")
 
     def test_query_dates_are_widened_and_identity_is_quoted(self):
@@ -500,8 +506,9 @@ else:
             query = result["metadata"]["coverage"][role]["query"]
             self.assertNotIn("statusCategory", query)
             self.assertNotIn("assignee !=", query)
-        self.assertEqual(len(viewed), 405)
-        self.assertTrue(all(item["detail_status"] == "ok" for item in result["issues"]))
+        # Completed role history is inventory context; only active work needs detail reads.
+        self.assertEqual(viewed, ["TEST-1"])
+        self.assertEqual(result["metadata"]["coverage"]["details"]["skipped_inactive_count"], 404)
         recent = result["metadata"]["coverage"]["recent"]["query"]
         self.assertIn("creator = currentUser()", recent)
 
