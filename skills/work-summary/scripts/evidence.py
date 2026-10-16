@@ -31,6 +31,10 @@ def integer(value, minimum=0):
 
 def timestamp(value):
     require(isinstance(value, str), "Timestamp must be a string")
+    require(re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})", value),
+            "Timestamp must include an ISO date, time, and timezone")
+    # Jira emits RFC 822-style offsets; Python 3.10 needs the colon form.
+    value = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", value)
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     require(result.tzinfo is not None, "Timestamp needs a timezone")
     return result.astimezone(UTC)
