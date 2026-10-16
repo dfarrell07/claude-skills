@@ -195,7 +195,8 @@ class JiraPublicHistoryTest(unittest.TestCase):
     def test_native_reader_is_verified_tls_and_records_before_json_failure(self):
         class Response:
             status = 200
-            headers = {'Content-Type': 'application/json'}
+            headers = {'Content-Type': 'application/json', 'Set-Cookie': 'private-session',
+                       'Date': 'Fri, 16 Oct 2026 16:00:00 GMT'}
 
             def __enter__(self):
                 return self
@@ -219,6 +220,9 @@ class JiraPublicHistoryTest(unittest.TestCase):
             self.assertTrue(context.check_hostname)
             self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertEqual(receipts[0]['body'], 'not json')
+        self.assertNotIn('set-cookie', receipts[0]['headers'])
+        self.assertEqual(receipts[0]['headers']['content-type'], 'application/json')
+        self.assertEqual(receipts[0]['final_url'], BASE + '/rest/api/3/issue/1?fields=summary')
 
     def test_native_http_error_receipt_keeps_actual_status_and_body(self):
         headers = Message()

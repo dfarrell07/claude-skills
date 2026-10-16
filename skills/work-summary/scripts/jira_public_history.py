@@ -1,6 +1,7 @@
 """Supplement authenticated Jira evidence with separately scoped anonymous history."""
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import re
 import ssl
 from threading import Lock
@@ -17,6 +18,12 @@ PAGE_SIZE = 100
 MAX_PAGES = 1000
 MAX_BODY = 16 * 1024 * 1024
 POSITIVE_ID = re.compile(r'[1-9][0-9]*\Z')
+SAFE_HEADERS = {'content-type', 'date', 'location', 'link', 'retry-after',
+                'x-page', 'x-next-page', 'x-total', 'x-total-pages'}
+
+
+def safe_headers(headers):
+    return {key.lower(): value for key, value in headers.items() if key.lower() in SAFE_HEADERS}
 
 
 class PublicReadError(Exception):
@@ -40,16 +47,22 @@ def read_json(url, receipt=None):
     request = Request(url, headers={'Accept': 'application/json', 'User-Agent': 'work-summary-history/1'}, method='GET')
     record = {'url': url, 'status': None, 'headers': {}, 'body': ''}
     try:
-        opener = build_opener(SameOriginRedirect(), HTTPSHandler(context=ssl.create_default_context()))
+        context = ssl.create_default_context()
+        # Some Python distributions use a separate CA store from the host OS.
+        for bundle in ('/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/certs/ca-certificates.crt'):
+            if Path(bundle).is_file():
+                context.load_verify_locations(cafile=bundle)
+        opener = build_opener(SameOriginRedirect(), HTTPSHandler(context=context))
         with opener.open(request, timeout=10) as response:
             record['status'] = response.status
-            record['headers'] = dict(response.headers.items())
+            record['headers'] = safe_headers(response.headers)
+            record['final_url'] = response.geturl() if callable(getattr(response, 'geturl', None)) else url
             raw = response.read(MAX_BODY + 1)
             if len(raw) > MAX_BODY:
                 raise PublicReadError('response_size_limit', response.status)
             record['body'] = raw.decode('utf-8')
     except HTTPError as error:
-        record.update(status=error.code, headers=dict(error.headers.items()),
+        record.update(status=error.code, headers=safe_headers(error.headers), final_url=error.geturl(),
                       body=error.read(MAX_BODY).decode('utf-8', errors='replace'), error='http_error')
         if receipt:
             receipt(record)
