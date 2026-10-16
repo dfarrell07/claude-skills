@@ -135,9 +135,10 @@ def comment_node_bound(node, rest):
                     'Native history author mismatch')
 
 
-def comment_history_negative(record, start, end, login):
-    """Replay complete native edit pages; uncertainty never proves absence."""
+def comment_history_personal_edits(record, start, end, login):
+    """Replay complete native edit pages and retain exact-window personal revisions."""
     rest, initial = record['rest_observation'], record['current_observation']
+    require(rest.get('body') is None or isinstance(rest['body'], str), 'Invalid native REST history body')
     comment_node_bound(initial, rest)
     pages = record['pages']
     require(isinstance(pages, list) and 0 < len(pages) <= 100, 'Missing/bounded native edit history')
@@ -187,7 +188,8 @@ def comment_history_negative(record, start, end, login):
         cursors.add(cursor)
     else:
         raise ValueError('Native edit pagination did not terminate')
-    creation_rows = [row for row in rows if timestamp(row['editedAt']) == timestamp(snapshot['createdAt'])]
+    creation_rows = ([row for row in rows if timestamp(row['editedAt']) == timestamp(snapshot['createdAt'])]
+                     if snapshot['includesCreatedEdit'] else [])
     require(len(creation_rows) == int(snapshot['includesCreatedEdit']), 'Ambiguous native creation revision')
     edits = [row for row in rows if row not in creation_rows]
     if edits:
@@ -197,8 +199,28 @@ def comment_history_negative(record, start, end, login):
                 'Latest native history edit mismatch')
     else:
         require(snapshot['lastEditedAt'] is None and snapshot['editor'] is None, 'Missing native edit revisions')
-    return not any(start <= timestamp(row['editedAt']) <= end
-                   and row['editor']['login'].casefold() == login.casefold() for row in edits)
+    return [row for row in edits if start <= timestamp(row['editedAt']) <= end
+            and row['editor']['login'].casefold() == login.casefold()]
+
+
+def comment_history_state(record, start, end, login, latest_proof=None):
+    """Only an independently credited current observation resolves its own revision."""
+    rows = comment_history_personal_edits(record, start, end, login)
+    resolved = set()
+    if latest_proof is not None:
+        require(latest_proof == record['current_observation'], 'Different native latest edit proof')
+        rest = record['rest_observation']
+        require(timestamp(latest_proof['updatedAt']) == timestamp(rest['updated_at'])
+                and isinstance(latest_proof.get('editor'), dict)
+                and latest_proof['editor'].get('login', '').casefold() == login.casefold(),
+                'Unbound native latest edit proof')
+        current = record['pages'][0]['response']['data']['node']
+        matches = [row for row in rows if timestamp(row['editedAt']) == timestamp(latest_proof['lastEditedAt'])]
+        if (len(matches) == 1 and current['body'] == (rest.get('body') or '')
+                and timestamp(current['updatedAt']) == timestamp(latest_proof['updatedAt'])):
+            resolved.add(matches[0]['id'])
+    ids = [row['id'] for row in rows]
+    return not rows, ids, [identity for identity in ids if identity not in resolved]
 
 
 def github_reference_comments(github):
@@ -346,13 +368,29 @@ def validate_github(data, evidence, start, end):
         require(record.get('status') in {'ok', 'partial'}
                 and type(record.get('no_personal_edits_in_window')) is bool,
                 'Invalid native history status')
+        latest = None
+        for event in github.get('activity', []):
+            if (event.get('item_url') == comment['item_url'] and event.get('id') == comment['id']
+                    and event.get('action') == comment['kind'] + '_edited'
+                    and event.get('editor_evidence') == record['current_observation']):
+                validate_editor_evidence(event)
+                validate_editor_comment(event, comment)
+                require(start <= timestamp(event['at']) <= end
+                        and event['actor'].casefold() == metadata['github_user'].casefold(),
+                        'Invalid resolved native latest edit')
+                latest = event['editor_evidence']
         try:
-            negative = comment_history_negative(record, start, end, metadata['github_user'])
+            negative, personal_ids, unresolved_ids = comment_history_state(record, start, end,
+                                                                          metadata['github_user'], latest)
         except (KeyError, ValueError, TypeError, AttributeError):
-            negative = False
+            negative, personal_ids, unresolved_ids = False, None, None
+        complete = personal_ids is not None
         require(record['no_personal_edits_in_window'] == negative
-                and record['status'] == ('ok' if negative else 'partial'), 'Unproven native edit-history status')
-        if not negative:
+                and record.get('personal_edit_ids') == personal_ids
+                and record.get('unresolved_personal_edit_ids') == unresolved_ids
+                and record['status'] == ('ok' if complete and not unresolved_ids else 'partial'),
+                'Unproven native edit-history status')
+        if not complete or unresolved_ids:
             require(metadata.get('github_status') == 'partial' and metadata.get('warnings'),
                     'Missing native edit-history coverage gap')
     for event in github.get('activity', []):

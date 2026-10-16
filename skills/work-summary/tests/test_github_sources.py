@@ -45,6 +45,19 @@ def query_text(args):
     return next(x[6:] for x in args if x.startswith('query='))
 
 
+def native_comment_response(args, node, event):
+    """Native one-revision fixture; creation is explicitly absent from this history."""
+    native = copy.deepcopy(node)
+    if 'userContentEdits' in query_text(args):
+        edited = native['lastEditedAt']
+        rows = [] if edited is None else [{'id': 'revision-' + native['id'], 'editedAt': edited,
+                 'createdAt': edited, 'updatedAt': edited, 'deletedAt': None, 'editor': native['editor']}]
+        native.update(body=event.get('body') or '', includesCreatedEdit=False,
+                      userContentEdits={'nodes': rows, 'totalCount': len(rows),
+                                        'pageInfo': {'hasNextPage': False, 'endCursor': None}})
+    return {'data': {'node': native}}
+
+
 def snapshot_data(args, change=None):
     data = {}
     for index, query in re.findall(r's(\d+):search\(query:"([^"]+)"', query_text(args)):
@@ -282,7 +295,7 @@ class GithubSourcesTest(unittest.TestCase):
                          'lastEditedAt': '2026-10-11T23:59:59Z'}
                 def api(args):
                     if args[0] == 'graphql':
-                        return {'data': {'node': proof}}
+                        return native_comment_response(args, proof, event)
                     return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
                 client = self.client(api)
                 item = {'url': 'https://github.com/org/repo/pull/1', 'repo': 'org/repo', 'number': 1}
@@ -314,7 +327,7 @@ class GithubSourcesTest(unittest.TestCase):
                         if args[0] == 'graphql':
                             self.assertIn('id=native-comment', args)
                             self.assertIn('IssueComment' if category == 'issue_comment' else 'PullRequestReviewComment', query_text(args))
-                            return {'data': {'node': copy.deepcopy(native)}}
+                            return native_comment_response(args, native, event)
                         return [copy.deepcopy(event)] if args[2] == endpoint else []
                     client = self.client(api)
                     data = {'activity': []}
@@ -611,7 +624,7 @@ class GithubSourcesTest(unittest.TestCase):
                           'createdAt': created, 'updatedAt': updated, 'lastEditedAt': edited}
                 def api(args):
                     if args[0] == 'graphql':
-                        return {'data': {'node': native}}
+                        return native_comment_response(args, native, event)
                     return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
                 client = self.client(api)
                 data = {'activity': []}
@@ -631,7 +644,7 @@ class GithubSourcesTest(unittest.TestCase):
                   'updatedAt': event['updated_at'], 'lastEditedAt': '2026-10-12T00:00:00Z'}
         def api(args):
             if args[0] == 'graphql':
-                return {'data': {'node': native}}
+                return native_comment_response(args, native, event)
             return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
         client = self.client(api)
         data = {'activity': []}
@@ -1560,7 +1573,8 @@ class CommentHistoryTest(unittest.TestCase):
             elif mutation == 'duplicate':
                 rows[1]['id'] = rows[0]['id']
             elif mutation == 'created':
-                altered['includesCreatedEdit'] = False
+                rows[-1]['editedAt'] = '2026-10-01T00:00:01Z'
+                rows[-1]['createdAt'] = rows[-1]['updatedAt'] = rows[-1]['editedAt']
             elif mutation == 'future':
                 rows[1]['editedAt'] = '2026-11-01T00:00:00Z'
             elif mutation == 'identity':
@@ -1575,6 +1589,59 @@ class CommentHistoryTest(unittest.TestCase):
                 self.assertTrue(client.warnings)
                 self.assertEqual(data['activity'], [])
                 self.assertEqual(data['comment_edit_histories'][0]['status'], 'partial')
+
+    def test_matching_latest_other_editor_cannot_hide_earlier_personal_revision(self):
+        event, node, page = self.history_fixture()
+        event['updated_at'] = node['updatedAt']
+        page['userContentEdits']['nodes'][1]['editor']['login'] = 'ME'
+        client, data = self.run_history(event, node, [{'data': {'node': page}}])
+        proof = data['comment_edit_histories'][0]
+        self.assertEqual(proof['personal_edit_ids'], ['edit1'])
+        self.assertEqual(proof['unresolved_personal_edit_ids'], ['edit1'])
+        self.assertEqual(proof['status'], 'partial')
+        self.assertTrue(client.warnings)
+        self.assertEqual(data['activity'], [])
+
+    def test_current_own_positive_survives_history_failure_and_resolves_only_its_revision(self):
+        from extended_evidence import validate_github
+        event, node, page = self.history_fixture()
+        event['updated_at'] = node['updatedAt'] = node['lastEditedAt'] = '2026-10-15T00:00:00Z'
+        node['editor']['login'] = 'me'
+        page.update(node)
+        page['body'] = event['body']
+        rows = page['userContentEdits']['nodes']
+        rows[0].update(editedAt=node['lastEditedAt'], createdAt=node['lastEditedAt'], updatedAt=node['lastEditedAt'])
+        rows[0]['editor']['login'] = 'me'
+        for mutation in ('known', 'earlier', 'failed', 'body'):
+            altered = copy.deepcopy(page)
+            if mutation == 'earlier':
+                altered['userContentEdits']['nodes'][1]['editor']['login'] = 'me'
+            elif mutation == 'body':
+                altered['body'] = 'A different current body'
+            response = {'data': {'node': altered}}
+            if mutation == 'failed':
+                response['errors'] = [{'message': 'history unavailable'}]
+            with self.subTest(mutation=mutation):
+                client, data = self.run_history(event, node, [response])
+                self.assertEqual([row['action'] for row in data['activity']], ['issue_comment_edited'])
+                proof = data['comment_edit_histories'][0]
+                self.assertEqual(proof['status'], 'ok' if mutation == 'known' else 'partial')
+                self.assertFalse(proof['no_personal_edits_in_window'])
+                if mutation == 'known':
+                    self.assertEqual(proof['personal_edit_ids'], ['edit2'])
+                    self.assertEqual(proof['unresolved_personal_edit_ids'], [])
+                    self.assertEqual(client.warnings, [])
+                else:
+                    self.assertTrue(client.warnings)
+                item = rest_item(rest(), 'prs', 'github.com')
+                source = {'github': data, 'metadata': {'github_user': 'me', 'github_status': 'partial',
+                                                      'warnings': client.warnings}}
+                validate_github(source, {item['url']: item}, START, END)
+                if mutation == 'known':
+                    forged = copy.deepcopy(source)
+                    forged['github']['activity'] = []
+                    with self.assertRaises(ValueError):
+                        validate_github(forged, {item['url']: item}, START, END)
 
     def test_capped_and_changed_native_pages_remain_explicit_gaps(self):
         event, node, page = self.history_fixture()

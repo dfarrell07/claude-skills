@@ -5,7 +5,7 @@ import json
 import subprocess
 from urllib.parse import urlsplit
 
-from extended_evidence import comment_history_negative, comment_node_bound
+from extended_evidence import comment_history_state, comment_node_bound
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
 
@@ -330,21 +330,25 @@ class Github:
                 return None
             when = timestamp(edited)
             require(timestamp(node['createdAt']) <= when <= timestamp(node['updatedAt']), 'Invalid last edit time')
-            if not self.start <= when <= self.end:
-                return None
-            require(isinstance(editor, dict) and isinstance(editor.get('login'), str)
-                    and editor['login'], 'Comment edit has no native editor')
-            return node if editor['login'].casefold() == self.login.casefold() else None
+            editor_known = isinstance(editor, dict) and isinstance(editor.get('login'), str) and bool(editor['login'])
+            latest = (node if editor_known and self.start <= when <= self.end
+                      and editor['login'].casefold() == self.login.casefold() else None)
+            if when >= self.start and timestamp(node['createdAt']) <= self.end and github is not None:
+                self._comment_history(github, item, event, category, key, node, latest)
+            else:
+                require(editor_known, 'Comment edit has no native editor')
+            return latest
         except ERRORS:
             self.problem(key, 'comment edit has no verified native editor/time; edit not credited')
             return None
 
-    def _comment_history(self, github, item, event, category, key, initial):
-        """Recover only certified absence of personal edits after observation drift."""
+    def _comment_history(self, github, item, event, category, key, initial, latest=None):
+        """Retain superseded personal-edit leads without borrowing the current body."""
         record = {'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
                   'kind': category, 'comment_id': event['id'], 'node_id': event['node_id'],
                   'rest_observation': event, 'current_observation': initial, 'pages': [],
-                  'status': 'partial', 'no_personal_edits_in_window': False}
+                  'status': 'partial', 'no_personal_edits_in_window': False,
+                  'personal_edit_ids': None, 'unresolved_personal_edit_ids': None}
         github.setdefault('comment_edit_histories', []).append(record)
         cursor, seen = None, set()
         try:
@@ -372,13 +376,16 @@ class Github:
                 require(isinstance(cursor, str) and cursor and cursor not in seen,
                         'Repeated native edit history cursor')
                 seen.add(cursor)
-            negative = comment_history_negative(record, self.start, self.end, self.login)
-            if negative:
-                record['status'], record['no_personal_edits_in_window'] = 'ok', True
+            negative, personal_ids, unresolved_ids = comment_history_state(record, self.start, self.end,
+                                                                          self.login, latest)
+            record.update(no_personal_edits_in_window=negative, personal_edit_ids=personal_ids,
+                          unresolved_personal_edit_ids=unresolved_ids)
+            if not unresolved_ids:
+                record['status'] = 'ok'
                 return
         except ERRORS:
             pass
-        self.problem(key, 'native edit history incomplete or contains unresolved personal edits; edit not credited')
+        self.problem(key, 'native editor history incomplete or contains unresolved personal revisions; historical edit bodies not credited')
 
     def _retain_comment(self, github, item, event, category, key):
         """Retain native discussion references independently of actor attribution."""
