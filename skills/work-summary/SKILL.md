@@ -126,8 +126,8 @@ missing editor evidence remain explicit limits. Observations are not an atomic
 historical snapshot.
 
 Follow explicit native Jira/PR references to a fixed point, attempting failures
-once. PR references can reveal tickets absent from inventories. Do not treat
-partial version strings such as `release-4.20` or `release-4-20` as Jira keys.
+once. PR references can reveal tickets absent from inventories. Do not confirm relations from
+partial version strings such as `release-4.20` or `release-4-20`.
 Lowercase path/branch tokens are discovery leads; an existing same-key ticket
 does not corroborate a relation. Confirm pairs through explicit native URLs,
 conventional uppercase ticket references, or native Jira references to the PR.
