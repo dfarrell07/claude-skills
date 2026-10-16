@@ -280,6 +280,18 @@ def validate(data, source=None):
             refs = {ref["name"]: ref for ref in inventory[branch["repo"]].get("refs", [])}
             worktrees = {"worktree:" + tree["path"]: tree.get("head")
                          for tree in inventory[branch["repo"]].get("worktrees", [])}
+            for tree in inventory[branch["repo"]].get("worktrees", []):
+                recovery = tree.get('recovery', {})
+                require(isinstance(recovery, dict), 'Invalid worktree recovery')
+                heads = recovery.get('reflog_heads', [])
+                require(isinstance(heads, list) and all(isinstance(head, str) and HASH.fullmatch(head)
+                        for head in heads), 'Invalid recovered worktree reflog heads')
+                if heads:
+                    require(isinstance(recovery.get('reflog_output'), str)
+                            and set(heads) == set(recovery['reflog_output'].splitlines()),
+                            'Worktree reflog heads lack native output')
+                for head in heads:
+                    worktrees['worktree-reflog:' + tree['path'] + ':' + head] = head
             require(all((name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")})
                         or (name in worktrees and worktrees[name] == branch["hash"])
                         for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
@@ -735,6 +747,17 @@ def render_detailed(data, source=None):
             lines.append(f"- {event['at']} [{markdown(event['repo'])}#{event['number']}]({event['url']}) {markdown(action)} — {linked(by_url[event['item_url']])}{source_link}")
         if not events:
             lines.append("No verified personal events captured; check coverage gaps before interpreting absence.")
+        lines.append("")
+    if 'reference_comments' in data['github']:
+        comments = data['github']['reference_comments']
+        lines += [f"#### Native GitHub Comment Context ({len(comments)})", "",
+                  "Comments from all captured authors and dates support reference discovery; "
+                  "they do not establish personal weekly activity. Native bodies remain in the saved capture.", ""]
+        for comment in comments:
+            actor = markdown(comment.get('author_login') or 'deleted author')
+            lines.append(f"- [{markdown(comment['repo'])}#{comment['number']}]({comment['url']}) "
+                         f"{markdown(comment['kind'])}; {actor}; created {comment['created_at']}; "
+                         f"updated {comment['updated_at']}")
         lines.append("")
     if "jira" in data:
         jira = data["jira"]

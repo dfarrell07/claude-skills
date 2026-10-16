@@ -140,6 +140,10 @@ def referenced_keys(github, site=None):
             for key in mentioned_keys(item.get(field), site):
                 if key.rsplit('-', 1)[0].upper() not in NON_JIRA:
                     result.add(key.upper())
+    for comment in github.get('reference_comments', []):
+        if comment['item_url'] in selected_urls:
+            result.update(key for key in mentioned_keys(comment['body'], site)
+                          if key.rsplit('-', 1)[0].upper() not in NON_JIRA)
     return sorted(result)
 
 
@@ -201,6 +205,16 @@ def associate_work(jira, github):
                     continue
                 relations.setdefault((key, item['url']), {'url': item['url'], 'proof': 'github_' + field + '_key',
                                                          'evidence_url': item['url'], 'sensitive': issue['sensitive']})
+    for comment in github.get('reference_comments', []):
+        url = canonical.get(pr_identity(comment['item_url'], aliases))
+        if url is None:
+            continue
+        for key in confirmed_keys(comment['body'], site):
+            issue = issues.get(key)
+            if issue is not None:
+                relations.setdefault((key, url), {'url': url, 'proof': 'github_comment_key',
+                                                'evidence_url': comment['url'],
+                                                'sensitive': issue['sensitive']})
     # The same PR may have several observed snapshots. Attach the same linked
     # ticket context to each while leaving original fields and states intact.
     for item in items:
@@ -251,8 +265,15 @@ def validate_links(data):
             evidence_url = relation.get('evidence_url')
             require(isinstance(evidence_url, str) and (evidence_url == issue['url']
                     or evidence_url.startswith(issue['url'] + '?focusedCommentId=')
-                    or evidence_url == relation['url']), 'Invalid cross-source provenance')
-            if relation['proof'].startswith('github_'):
+                    or evidence_url == relation['url']
+                    or relation['proof'] == 'github_comment_key'), 'Invalid cross-source provenance')
+            if relation['proof'] == 'github_comment_key':
+                require(any(comment['url'] == evidence_url
+                            and pr_identity(comment['item_url'], aliases) == pr_identity(relation['url'], aliases)
+                            and issue['key'] in confirmed_keys(comment['body'], jira.get('metadata', {}).get('site'))
+                            for comment in data['github'].get('reference_comments', [])),
+                        'GitHub key mention absent from native comment')
+            elif relation['proof'].startswith('github_'):
                 require(relation['proof'] in {'github_title_key', 'github_body_key', 'github_head_ref_key'}
                         and evidence_url == relation['url'], 'Invalid GitHub reference provenance')
                 field = relation['proof'].removeprefix('github_').removesuffix('_key')

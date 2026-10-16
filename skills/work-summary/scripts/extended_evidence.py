@@ -108,6 +108,29 @@ def validate_github(data, evidence, start, end):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid indexed PR snapshot')
         indexed[item['url']] = item
+    comments_seen = set()
+    comments = github.get('reference_comments', [])
+    require(isinstance(comments, list), 'Invalid GitHub reference comments')
+    for comment in comments:
+        require(isinstance(comment, dict), 'Invalid native GitHub comment')
+        item = evidence.get(comment.get('item_url')) or indexed.get(comment.get('item_url'))
+        require(item is not None and comment.get('repo') == item['repo']
+                and comment.get('number') == item['number'], 'GitHub comment item mismatch')
+        require(comment.get('kind') in {'issue_comment', 'review_comment'}
+                and integer(comment.get('id'), 1), 'Invalid GitHub comment identity')
+        fragment = 'issuecomment-' if comment['kind'] == 'issue_comment' else 'discussion_r'
+        require(comment.get('url') == item['url'] + '#' + fragment + str(comment['id']),
+                'Invalid native GitHub comment URL')
+        require(isinstance(comment.get('body'), str)
+                and (comment.get('author_login') is None or isinstance(comment['author_login'], str)
+                     and bool(comment['author_login']))
+                and (comment.get('node_id') is None or isinstance(comment['node_id'], str)
+                     and bool(comment['node_id'])), 'Invalid native GitHub comment fields')
+        require(timestamp(comment.get('created_at')) <= timestamp(comment.get('updated_at')),
+                'Reversed native GitHub comment timestamps')
+        identity = comment['item_url'], comment['kind'], comment['id']
+        require(identity not in comments_seen, 'Duplicate native GitHub comment')
+        comments_seen.add(identity)
     for event in github.get('activity', []):
         require(isinstance(event, dict) and event.get('item_url') in evidence, 'Unknown GitHub activity item')
         item = evidence[event['item_url']]

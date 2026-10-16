@@ -154,6 +154,30 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.validate(baseline, copy.deepcopy(evidence))
 
+    def test_context_comments_require_native_target_identity_and_dates(self):
+        baseline, evidence = self.capture()
+        item = next(iter(evidence.values()))
+        baseline['github']['reference_comments'] = [{
+            'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
+            'kind': 'issue_comment', 'id': 42, 'node_id': 'native-node',
+            'url': item['url'] + '#issuecomment-42', 'body': 'Another author mentions TASK-42.',
+            'author_login': 'someone-else', 'created_at': '2025-01-01T00:00:00Z',
+            'updated_at': '2025-01-02T00:00:00Z'}]
+        self.validate(baseline, copy.deepcopy(evidence))
+        for field, value in [('item_url', 'https://github.com/other/repo/issues/12'),
+                             ('repo', 'other/repo'), ('number', 13), ('kind', 'invented'),
+                             ('id', True), ('url', item['url'] + '#issuecomment-43'),
+                             ('body', None), ('author_login', ''), ('node_id', ''),
+                             ('created_at', '2026-01-01T00:00:00Z')]:
+            with self.subTest(field=field):
+                data = copy.deepcopy(baseline)
+                data['github']['reference_comments'][0][field] = value
+                with self.assertRaises(ValueError):
+                    self.validate(data, copy.deepcopy(evidence))
+        baseline['github']['reference_comments'] *= 2
+        with self.assertRaises(ValueError):
+            self.validate(baseline, copy.deepcopy(evidence))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -33,6 +33,29 @@ class ConciseReportTest(unittest.TestCase):
     def reference(self, item):
         return {key:item[key] for key in ('repo','number','url')}
 
+    def test_stale_worktree_reflog_snapshot_requires_exact_native_head_evidence(self):
+        data = self.capture()
+        head = 'a' * 40
+        repo, tree = '/example/repo', '/missing/worktree'
+        data['metadata'].update(repos_searched=1, repositories=[{
+            'path': repo, 'common_dir': repo + '/.git', 'status': 'ok',
+            'identities': ['person@example.test'], 'paths': [repo], 'refs': [],
+            'worktrees': [{'path': tree, 'head': 'b' * 40, 'recovery': {
+                'reflog_heads': [head], 'reflog_output': head + '\n'}}]}])
+        data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
+                             'refs': ['worktree-reflog:' + tree + ':' + head],
+                             'pr_status': 'unsupported'}]
+        ws.validate(data)
+        for field, value in [('reflog_heads', []), ('reflog_output', 'c' * 40 + '\n')]:
+            with self.subTest(field=field):
+                bad = copy.deepcopy(data)
+                bad['metadata']['repositories'][0]['worktrees'][0]['recovery'][field] = value
+                with self.assertRaises(ValueError):
+                    ws.validate(bad)
+        data['branches'][0]['hash'] = 'd' * 40
+        with self.assertRaises(ValueError):
+            ws.validate(data)
+
     def enrich(self, source, descriptions=('Fix the important behavior',)):
         enriched = copy.deepcopy(source)
         enriched['analysis'] = {'themes':[{'name':'Work', 'description':text,

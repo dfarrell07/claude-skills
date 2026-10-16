@@ -26,6 +26,43 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(data['github']['prs'][0]['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(data['jira']['issues'][0]['pr_links'][0]['url'], data['github']['prs'][0]['url'])
 
+    def test_comment_only_ticket_is_discovered_and_bound_without_crediting_its_author(self):
+        data = self.capture()
+        pr = data['github']['prs'][0]
+        pr['title'] = 'Repair checks'
+        comment = {'item_url': pr['url'], 'url': pr['url'] + '#issuecomment-77',
+                   'id': 77, 'body': 'The core task is TEST-123.', 'author_login': 'another-person'}
+        data['github']['reference_comments'] = [comment]
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        relation = data['jira']['issues'][0]['pr_links'][0]
+        self.assertEqual(relation['proof'], 'github_comment_key')
+        self.assertEqual(relation['evidence_url'], comment['url'])
+        self.assertNotIn('activity', data['github'])
+        for field, value in [('body', 'Different task TEST-999'),
+                             ('url', pr['url'] + '#issuecomment-88'),
+                             ('item_url', 'https://github.com/other/repo/pull/42')]:
+            with self.subTest(field=field):
+                broken = copy.deepcopy(data)
+                broken['github']['reference_comments'][0][field] = value
+                with self.assertRaises(ValueError):
+                    validate_links(broken)
+
+    def test_comment_discovery_reaches_fixed_point_and_preserves_weak_leads(self):
+        data = self.capture()
+        pr = data['github']['prs'][0]
+        pr['title'] = 'No ticket'
+        data['github']['reference_comments'] = [
+            {'item_url': pr['url'], 'url': pr['url'] + '#issuecomment-1', 'id': 1,
+             'body': 'Investigate branch task-99 and https://jira.example.test/browse/TEST-123'}]
+        attempted = []
+        complete_references(data['jira'], data['github'], lambda keys: attempted.extend(keys))
+        self.assertEqual(attempted, ['TASK-99', 'TEST-123'])
+        associate_work(data['jira'], data['github'])
+        self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
+        self.assertEqual(len(pr['jira_links']), 1)
+
     def test_issue_in_a_repository_named_pull_is_not_a_pr_link(self):
         data = self.capture()
         item = data['github']['prs'].pop()
