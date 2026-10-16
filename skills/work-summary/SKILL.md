@@ -127,8 +127,12 @@ historical snapshot.
 
 Follow explicit native Jira/PR references to a fixed point, attempting failures
 once. PR references can reveal tickets absent from inventories. Do not treat
-partial version strings such as `release-4.20` as Jira keys. Foreign-site Jira
-URLs do not identify a same-key ticket on the active site. Verify GitHub
+partial version strings such as `release-4.20` or `release-4-20` as Jira keys.
+Lowercase path/branch tokens are discovery leads; an existing same-key ticket
+does not corroborate a relation. Confirm pairs through explicit native URLs,
+conventional uppercase ticket references, or native Jira references to the PR.
+Review the surrounding meaning before listing a pair. Foreign-site Jira URLs
+do not identify a same-key ticket on the active site. Verify GitHub
 repository transfers using independent native reads with equal repository IDs;
 keep historical source URLs beside canonical relations.
 
