@@ -12,7 +12,8 @@ from evidence import HASH, REPO, UTC, git, iso, require
 
 PRUNED = {'.git', 'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.venv', 'venv', 'go-cache'}
 STATE_DIRS = {'.cache', '.local', '.config', '.ssh', '.gnupg', '.npm', '.cargo', '.rustup', '.mozilla',
-              '.pki', '.kube', '.claude', '.codex', '.android', '.gradle', '.m2', '.sdkman', '.vscode'}
+              '.pki', '.kube', '.aws', '.azure', '.docker', '.password-store', '.claude', '.codex',
+              '.android', '.gradle', '.m2', '.sdkman', '.vscode'}
 BACKUP = re.compile(r'(backup|(?:^|[/_-])bak\d*(?:$|[/_-])|archive|rescue|preserv|saved)', re.I)
 
 
@@ -32,11 +33,13 @@ def remote_info(name, url, host):
             'kind': 'github' if hostname == host and REPO.fullmatch(path) else 'other'}
 
 
-def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, limit=None):
+def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, limit=None, no_walk=False):
     if not tips:
         return []
     args = ['log', '--stdin', '--fixed-strings', '--no-use-mailmap', '--no-show-signature',
             '--no-color', '--encoding=UTF-8', '-z', '--format=%H%x00%ct%x00%at%x00%an%x00%ae%x00%s']
+    if no_walk:
+        args.append('--no-walk=unsorted')
     if start:
         args.append('--since-as-filter=' + iso(start))
     if end:
@@ -152,9 +155,21 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             keep = []
             for name in sorted(dirs):
                 child = current / name
-                dependency_cache = child == Path.home() / 'go/pkg'
-                hidden_state = name in STATE_DIRS
-                if name in PRUNED or name.startswith('pytest-of-') or dependency_cache or hidden_state:
+                try:
+                    target = child.resolve()
+                except (OSError, RuntimeError):
+                    warn(f'Cannot resolve scan directory {child}; local coverage is incomplete.')
+                    exclusions.append(str(child))
+                    continue
+                # Apply exclusions to symlink destinations before os.walk enters
+                # them. An innocuously named alias must not expose tool state.
+                parts = target.relative_to(root).parts if target.is_relative_to(root) else target.parts
+                dependency_root = Path.home() / 'go/pkg'
+                dependency_cache = (target.is_relative_to(dependency_root)
+                                    and not root.is_relative_to(dependency_root))
+                hidden_state = name in STATE_DIRS or any(part in STATE_DIRS for part in parts)
+                excluded_target = any(part in PRUNED or part.startswith('pytest-of-') for part in parts)
+                if name in PRUNED or name.startswith('pytest-of-') or dependency_cache or hidden_state or excluded_target:
                     if name != '.git':
                         exclusions.append(str(child))
                 else:
@@ -170,7 +185,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         login = identity['login']
         for email in ([f"{identity['id']}+{login}@users.noreply.github.com"] if host == 'github.com' and isinstance(identity.get('id'), int) else []):
             aliases[email] = {'email': email, 'source': 'authenticated_github_noreply'}
-    records, skipped = {}, 0
+    records, tip_records, skipped = {}, {}, 0
     for entry in entries.values():
         entry['identities'] = sorted(entry['identities'])
         entry['paths'] = sorted(entry['paths'])
@@ -199,6 +214,10 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 except subprocess.SubprocessError:
                     continue
             records[entry['path']] = log_records(entry['path'], entry['tips'], start, end)
+            heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
+                            for ref in entry['refs']
+                            if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'})
+            tip_records[entry['path']] = log_records(entry['path'], heads, no_walk=True)
             entry['status'] = 'ok'
         except (subprocess.SubprocessError, OSError, ValueError, OverflowError):
             skipped += 1
@@ -208,7 +227,9 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
     # Names select verification leads only. They never establish ownership.
     unknown = {}
     for entry in entries.values():
-        for commit in records.get(entry['path'], []):
+        # Historical backup tips can supply alias leads even when no commit
+        # using that email falls inside the requested rolling window.
+        for commit in records.get(entry['path'], []) + tip_records.get(entry['path'], []):
             email = commit['author_email']
             if email not in entry['identities'] and email not in aliases and ' '.join(commit['author_name'].casefold().split()) in configured_names:
                 unknown.setdefault(email, (entry, commit))
@@ -240,21 +261,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 unattributed.append({'repo': entry['path'], **record, 'reason': 'name_match_only; account attribution unverified'})
         if entry.get('status') != 'ok':
             continue
-        commit_refs = [ref for ref in entry['refs'] if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit']
-        heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash'] for ref in commit_refs})
         try:
-            info = {}
-            if heads:
-                raw = git(entry['path'], 'log', '--no-walk=unsorted', '--stdin', '--no-use-mailmap', '--no-show-signature',
-                          '--no-color', '--encoding=UTF-8', '-z', '--format=%H%x00%ct%x00%at%x00%an%x00%ae%x00%s',
-                          stdin='\n'.join(heads) + '\n')
-                fields = raw.split('\0')
-                require(fields.pop() == '' and len(fields) % 6 == 0, 'Malformed ref-tip metadata')
-                for offset in range(0, len(fields), 6):
-                    sha, epoch, authored, name, email, subject = fields[offset:offset + 6]
-                    info[sha] = {'hash': sha, 'message': subject, 'author_email': email,
-                                 'authored_at': iso(datetime.fromtimestamp(int(authored), UTC)),
-                                 'committed_at': iso(datetime.fromtimestamp(int(epoch), UTC))}
+            info = {record['hash']: record for record in tip_records.get(entry['path'], [])}
             grouped = {}
             base = entry.get('default_ref')
             for ref in entry['refs']:
@@ -265,10 +273,20 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                                          'pr_status': 'not_applicable', 'prs': []})
                     continue
                 sha = ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
-                tip = info[sha]
                 if ref['name'].startswith('refs/tags/') and not BACKUP.search(ref['name']):
                     continue
+                grouped.setdefault(sha, []).append(ref)
+            for sha, refs in grouped.items():
+                tip = info[sha]
                 owner = tip['author_email'] in entry['identities']
+                backup = any(bool(BACKUP.search(ref['name'])) or not ref['name'].startswith(
+                    ('refs/heads/', 'refs/remotes/', 'refs/tags/')) for ref in refs)
+                history_candidate = bool(base and entry['identities'] and
+                                         (backup or any(ref['name'].startswith('refs/heads/') for ref in refs)))
+                # Unrelated remote refs cannot gain attribution through this
+                # path. Avoid walking their histories merely to discard them.
+                if not owner and not history_candidate:
+                    continue
                 contained = None
                 if base:
                     try:
@@ -279,19 +297,24 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                             contained = False
                         else:
                             raise
-                backup = bool(BACKUP.search(ref['name'])) or not ref['name'].startswith(('refs/heads/', 'refs/remotes/', 'refs/tags/'))
-                if not owner and entry['identities'] and contained is False and ref['name'].startswith('refs/heads/'):
-                    owner = bool(log_records(entry['path'], [sha], emails=entry['identities'], exclude=base['hash'], limit=1))
+                proof = None
+                if not owner and history_candidate and contained is False:
+                    matches = log_records(entry['path'], [sha], emails=entry['identities'],
+                                          exclude=base['hash'], limit=1)
+                    proof = next((record for record in matches if record['author_email'] in entry['identities']), None)
+                    owner = proof is not None
                 recent = start <= datetime.fromisoformat(tip['committed_at'].replace('Z', '+00:00')) <= end
                 if not owner or (contained is True and not backup and not recent):
                     continue
-                record = grouped.setdefault(sha, {'repo': entry['path'], **tip, 'object_type': 'commit', 'refs': [],
-                                                    'backup': backup, 'contained_in_cached_default': contained,
-                                                    'recent_tip': recent, 'attribution': 'configured_or_verified_author',
-                                                    'pr_status': 'unchecked', 'prs': []})
-                record['refs'].append(ref['name'])
-                record['backup'] = record['backup'] or backup
-            branches.extend(grouped.values())
+                record = {'repo': entry['path'], **tip, 'object_type': 'commit',
+                          'refs': [ref['name'] for ref in refs], 'backup': backup,
+                          'contained_in_cached_default': contained, 'recent_tip': recent,
+                          'attribution': ('contains_configured_or_verified_author' if proof
+                                          else 'configured_or_verified_author'),
+                          'pr_status': 'unchecked', 'prs': []}
+                if proof:
+                    record['attribution_commit'] = proof
+                branches.append(record)
         except (subprocess.SubprocessError, OSError, ValueError, KeyError, OverflowError):
             warn(f'Cannot classify ref snapshots for {entry["path"]}; branch coverage is incomplete.')
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
