@@ -1624,6 +1624,57 @@ class SnapshotConcurrencyTest(unittest.TestCase):
         self.assertTrue(all(all(info['status'] == 'partial' for info in row['association_lookups']
                                 if info.get('repo')) for row in branches))
 
+    def test_unverified_canonical_associated_pr_survives_as_context_without_branch_credit(self):
+        for affected in (False, True):
+            def api(args):
+                if args[0] != 'graphql':
+                    raise OSError('native repository identity unavailable')
+                query = query_text(args)
+                if 'query:"is:pr ' in query:
+                    return {'data': {'s0': connection()}}
+                result = snapshot_data(args)
+                if 'repo:example/previous ' in query:
+                    result['data']['c0'] = {'id': 'NATIVE_REPO', 'nameWithOwner': 'example/canonical',
+                        'object': {'associatedPullRequests': connection([gql(7, repo='example/canonical')])}}
+                    if affected:
+                        result['errors'] = [{'path': ['c0', 'object', 'associatedPullRequests'],
+                                             'message': 'partial canonical connection'}]
+                else:
+                    result['data']['s0'] = connection([gql(8, repo='example/healthy', sha='b' * 40)])
+                return result
+            with self.subTest(affected=affected), patch('github_sources.BATCH_SIZE', 1):
+                client, branches, data = self.associate(api,
+                    branches=[branch('/old'), branch('/healthy', sha='b' * 40)],
+                    repos=[repository('/old', ('example/previous',)), repository('/healthy', ('example/healthy',))])
+                self.assertEqual([row['number'] for row in data['pr_index']], [7, 8])
+                self.assertEqual(branches[0]['prs'], [])
+                self.assertEqual(branches[0]['pr_status'], 'partial')
+                self.assertEqual(branches[1]['prs'][0]['number'], 8)
+                self.assertEqual(branches[1]['pr_status'], 'matched')
+                self.assertTrue(client.warnings)
+                self.assertFalse(data.get('repository_aliases'))
+
+    def test_partial_graphql_canonical_connection_requires_independent_alias_proof(self):
+        reads = []
+        def api(args):
+            if args[0] != 'graphql':
+                reads.append(args[2])
+                return {'id': 42, 'full_name': 'example/canonical',
+                        'html_url': 'https://github.com/example/canonical'}
+            result = snapshot_data(args)
+            if 'c0:repository' in query_text(args):
+                result['data']['c0'] = {'id': 'NATIVE_REPO', 'nameWithOwner': 'example/canonical',
+                    'object': {'associatedPullRequests': connection([gql(7, repo='example/canonical')])}}
+                result['errors'] = [{'path': ['c0', 'object', 'associatedPullRequests'], 'message': 'partial'}]
+            return result
+        client, branches, data = self.associate(api, repos=[repository(remotes=('example/previous',))])
+        self.assertEqual(reads, ['repos/example/previous', 'repos/example/canonical'])
+        self.assertEqual(branches[0]['prs'][0]['number'], 7)
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'commit_association')
+        self.assertEqual(len(data['repository_aliases']), 1)
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
+        self.assertTrue(client.warnings)
+
     def test_unexpected_worker_exception_propagates(self):
         def api(args):
             raise RuntimeError('unexpected programmer failure')

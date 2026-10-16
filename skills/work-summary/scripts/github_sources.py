@@ -794,15 +794,24 @@ class Github:
                     if affected:
                         self.problem(coverage_key, method + ' returned GraphQL errors; retaining readable results')
                     connection = result['data'][alias]
+                    context_only = False
                     if method == 'commit':
-                        if (not affected and isinstance(connection, dict)
+                        if (isinstance(connection, dict)
                                 and isinstance(connection.get('id'), str) and connection['id']
                                 and isinstance(connection.get('nameWithOwner'), str)
                                 and REPO.fullmatch(connection['nameWithOwner'])
                                 and connection['nameWithOwner'].casefold() != key[0].casefold()):
                             canonical = connection['nameWithOwner']
-                            self._verify_repository_alias(key[0], canonical)
-                            if states[key].get('search_repo') != canonical:
+                            try:
+                                self._verify_repository_alias(key[0], canonical)
+                            except ERRORS:
+                                # The native connection still contains readable
+                                # PRs. Preserve them without asserting that this
+                                # local remote is the returned repository.
+                                context_only = True
+                                state['failed'] = True
+                                self.problem(coverage_key, 'repository alias unverified; associated PRs retained as context')
+                            if not context_only and states[key].get('search_repo') != canonical:
                                 # Search does not follow repository redirects. A
                                 # valid zero for the historical name proves nothing
                                 # about the canonical repository's PRs.
@@ -839,6 +848,10 @@ class Github:
                             item = graphql_item(row, self.host)
                             require(item['url'] not in state['seen'], 'Duplicate snapshot PR')
                             state['seen'].add(item['url'])
+                            if context_only:
+                                if item not in states[key]['observations']:
+                                    states[key]['observations'].append(item)
+                                continue
                             proof = ('global_any_author_sha_search' if global_search else 'any_author_sha_search') if method == 'search' else 'commit_association'
                             previous = states[key]['matches'].setdefault(item['url'], (item, proof))[0]
                             if item != previous and item not in states[key]['observations']:
