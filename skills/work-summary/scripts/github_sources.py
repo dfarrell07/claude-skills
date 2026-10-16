@@ -84,6 +84,9 @@ class Github:
         self._activity_seen = set()
         self._comment_seen = set()
         self._global_snapshots = {}
+        self._head_seen = set()
+        self._history_read = set()
+        self._branch_snapshots = None
         self._repository_metadata = {}
         self._repository_aliases = {}
 
@@ -365,6 +368,177 @@ class Github:
         except ERRORS:
             self.problem(key, 'invalid native comment reference skipped; discussion coverage is incomplete')
 
+    def _retain_head_event(self, github, item, source, kind, key, source_path=None):
+        """Preserve native force-push context without attributing weekly activity."""
+        try:
+            require(isinstance(source, dict), 'Invalid native head event')
+            identity = source.get('id')
+            if kind == 'rest_force_push':
+                require(source.get('event') == 'head_ref_force_pushed' and integer(identity, 1),
+                        'Invalid REST head event identity')
+                expected_path = f"repos/{item['repo']}/issues/{item['number']}/timeline"
+                api_root = 'https://api.github.com' if self.host == 'github.com' else f'https://{self.host}/api/v3'
+                require(source_path == expected_path and isinstance(source.get('node_id'), str) and source['node_id']
+                        and source.get('url') == api_root + f"/repos/{item['repo']}/issues/events/{identity}",
+                        'REST head event route or native ID disagrees')
+                timestamp(source.get('created_at'))
+                sha = source.get('commit_id')
+                require(sha is None or isinstance(sha, str) and HASH.fullmatch(sha), 'Invalid historical commit SHA')
+            else:
+                require(kind == 'graphql_force_push' and source.get('__typename') == 'HeadRefForcePushedEvent'
+                        and isinstance(identity, str) and identity, 'Invalid typed head event identity')
+                timestamp(source.get('createdAt'))
+                require((source.get('pullRequest') or {}).get('url', '').casefold() == item['url'].casefold(),
+                        'Head event belongs to another PR')
+                for field in ('beforeCommit', 'afterCommit'):
+                    require(field in source and (source[field] is None or isinstance(source[field], dict)
+                            and isinstance(source[field].get('oid'), str) and HASH.fullmatch(source[field]['oid'])),
+                            'Invalid native before/after head')
+                if source['beforeCommit'] is None or source['afterCommit'] is None:
+                    self.problem(key, 'a historical head object is unavailable; retained the other native head')
+            token = kind, item['url'], identity
+            if token not in self._head_seen:
+                self._head_seen.add(token)
+                record = {'item_url': item['url'], 'repo': item['repo'],
+                          'number': item['number'], 'kind': kind, 'source': source}
+                if kind == 'rest_force_push':
+                    record['source_path'] = source_path
+                github.setdefault('head_events', []).append(record)
+            return True
+        except ERRORS:
+            self.problem(key, 'invalid native head event skipped; historical association coverage is incomplete')
+            return False
+
+    def _head_history_batch(self, github, items):
+        """Read bounded candidate PR histories; totalCount includes other item types."""
+        states = {item['url']: {'item': item, 'cursor': None, 'cursors': set(), 'ids': set(), 'done': False}
+                  for item in items if item['url'] not in self._history_read}
+        for item in items:
+            self.coverage.setdefault('head_history:' + item['url'], {'status': 'ok', 'pages': 0, 'count': 0})
+        for _ in range(MAX_LIST_PAGES):
+            active = [state for state in states.values() if not state['done']]
+            if not active:
+                break
+            fields = []
+            for index, state in enumerate(active):
+                item = state['item']
+                owner, name = item['repo'].split('/')
+                after = ',after:' + json.dumps(state['cursor']) if state['cursor'] else ''
+                fields.append('p' + str(index) + ':repository(owner:' + json.dumps(owner) + ',name:' + json.dumps(name)
+                    + '){pullRequest(number:' + str(item['number']) + '){url number repository{nameWithOwner} '
+                    'timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT],first:100' + after + '){totalCount '
+                    'pageInfo{hasNextPage endCursor} nodes{__typename ...on HeadRefForcePushedEvent{id createdAt '
+                    'beforeCommit{oid} afterCommit{oid} pullRequest{url}}}}}}')
+            try:
+                result = self.graphql('graphql', '-f', 'query=query{' + ''.join(fields) + '}')
+                require(isinstance(result, dict) and isinstance(result.get('data'), dict), 'Missing native history result')
+            except ERRORS:
+                for state in active:
+                    self.problem('head_history:' + state['item']['url'], 'history request failed; retained earlier events')
+                    state['done'] = True
+                continue
+            for index, state in enumerate(active):
+                item, alias = state['item'], 'p' + str(index)
+                key = 'head_history:' + item['url']
+                info = self.coverage[key]
+                try:
+                    errors = result.get('errors') or []
+                    require(isinstance(errors, list), 'Malformed native history errors')
+                    if any(not isinstance(error, dict) or not isinstance(error.get('path'), list)
+                           or not error['path'] or error['path'][0] == alias for error in errors):
+                        self.problem(key, 'history returned GraphQL errors; retaining readable events')
+                    pr = result['data'][alias]['pullRequest']
+                    require(pr['url'].casefold() == item['url'].casefold() and pr['number'] == item['number']
+                            and pr['repository']['nameWithOwner'].casefold() == item['repo'].casefold(),
+                            'Historical PR route mismatch')
+                    connection = pr['timelineItems']
+                    require(isinstance(connection, dict) and isinstance(connection.get('nodes'), list)
+                            and len(connection['nodes']) <= PAGE_SIZE and integer(connection.get('totalCount')),
+                            'Malformed native history connection')
+                    info['pages'] += 1
+                    # Native totalCount counts the broader timeline, not just the
+                    # filtered force-push nodes. Cursor exhaustion is authoritative.
+                    info['unfiltered_total_count'] = connection['totalCount']
+                    for event in connection['nodes']:
+                        if self._retain_head_event(github, item, event, 'graphql_force_push', key):
+                            if event['id'] in state['ids']:
+                                self.problem(key, 'a duplicate native history event was observed')
+                            state['ids'].add(event['id'])
+                    info['count'] = len(state['ids'])
+                    page = connection['pageInfo']
+                    require(type(page.get('hasNextPage')) is bool, 'Invalid native history pagination')
+                    state['done'] = not page['hasNextPage']
+                    if not state['done']:
+                        cursor = page.get('endCursor')
+                        require(isinstance(cursor, str) and cursor and cursor not in state['cursors'],
+                                'Native history cursor did not advance')
+                        state['cursors'].add(cursor)
+                        state['cursor'] = cursor
+                except ERRORS:
+                    self.problem(key, 'history lookup incomplete; retained readable events')
+                    state['done'] = True
+        for url, state in states.items():
+            if not state['done']:
+                self.problem('head_history:' + url, 'native history reached its page safety cap')
+            self._history_read.add(url)
+
+    @staticmethod
+    def _head_shas(record):
+        source = record['source']
+        candidates = ([source.get('commit_id')] if record['kind'] == 'rest_force_push' else
+                      [(source.get(field) or {}).get('oid') for field in ('beforeCommit', 'afterCommit')])
+        return {sha for sha in candidates if isinstance(sha, str) and HASH.fullmatch(sha)}
+
+    def associate_head_events(self, branches, github):
+        """Apply captured historical head identities globally, independently of local remotes."""
+        by_sha = {}
+        for branch in branches:
+            if branch['object_type'] == 'commit':
+                by_sha.setdefault(branch['hash'], []).append(branch)
+        indexed = {item['url']: item for item in github.get('pr_index', [])}
+        for record in github.get('head_events', []):
+            matched = self._head_shas(record) & by_sha.keys()
+            if not matched:
+                continue
+            item = indexed.get(record['item_url'])
+            if item is None:
+                key = 'head_history_metadata:' + record['item_url']
+                try:
+                    owner, name = record['repo'].split('/')
+                    query = ('query{repository(owner:' + json.dumps(owner) + ',name:' + json.dumps(name)
+                             + '){pullRequest(number:' + str(record['number']) + '){' + PR_FIELDS + '}}}')
+                    result = self.graphql('graphql', '-f', 'query=' + query)
+                    require(not result.get('errors'), 'Historical PR metadata failed')
+                    item = graphql_item(result['data']['repository']['pullRequest'], self.host)
+                    require(item['url'].casefold() == record['item_url'].casefold(), 'Historical metadata route mismatch')
+                    github.setdefault('pr_index', []).append(item)
+                    indexed[item['url']] = item
+                    self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1}
+                except ERRORS:
+                    self.problem(key, 'native PR metadata unavailable; historical positive remains contextual')
+                    continue
+            for sha in matched:
+                for branch in by_sha[sha]:
+                    if not any(pr['url'] == item['url'] for pr in branch.setdefault('prs', [])):
+                        branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
+                            'state': item['state'], 'proof': 'historical_head_event', 'head_event_id': record['source']['id']})
+                    branch['pr_status'] = 'matched'
+                    if 'historical_head_events' not in branch.setdefault('association_methods', []):
+                        branch['association_methods'].append('historical_head_events')
+
+    def _expand_head_context(self, branches, github, candidates=()):
+        """Expand actual local-name/REST-SHA leads once and reuse their history."""
+        candidates = set(candidates)
+        local_shas = {branch['hash'] for branch in branches if branch['object_type'] == 'commit'}
+        candidates.update(record['item_url'] for record in github.get('head_events', [])
+                          if self._head_shas(record) & local_shas)
+        self.associate_head_events(branches, github)
+        indexed = {item['url']: item for item in github.get('pr_index', [])}
+        items = [indexed[url] for url in sorted(candidates) if url in indexed and url not in self._history_read]
+        for offset in range(0, len(items), 15):
+            self._head_history_batch(github, items[offset:offset + 15])
+        self.associate_head_events(branches, github)
+
     def _inspect_activity(self, github, items):
         seen = self._activity_seen
         for item in items:
@@ -388,6 +562,8 @@ class Github:
             for category, endpoint in endpoints:
                 key = f"activity:{item['repo']}#{item['number']}:{category}"
                 for event in self.listing(endpoint, key):
+                    if category == 'timeline' and isinstance(event, dict) and event.get('event') == 'head_ref_force_pushed':
+                        self._retain_head_event(github, item, event, 'rest_force_push', key, endpoint)
                     if category in {'issue_comment', 'review_comment'}:
                         self._retain_comment(github, item, event, category, key)
                     try:
@@ -440,6 +616,9 @@ class Github:
                                                        **({'review_state': event.get('state')} if category == 'review' else {})})
                     except (ValueError, TypeError, KeyError, AttributeError):
                         self.problem(key, 'an invalid actor event was skipped')
+
+        if self._branch_snapshots is not None:
+            self._expand_head_context(self._branch_snapshots, github)
 
     def authored_index(self, repo):
         """Cache all states, retaining valid pages when the index is incomplete."""
@@ -643,6 +822,7 @@ class Github:
 
     def associate_branches(self, branches, repositories, github):
         """Match current native snapshots; no_match does not exclude historical PR use."""
+        self._branch_snapshots = branches
         indices, pending = {}, {}
         by_path = {entry['path']: entry for entry in repositories}
         all_indexed, observations, seen_observations = {}, [], set()
@@ -678,18 +858,15 @@ class Github:
                     indices[remote] = self.authored_index(remote)
                     for item in indices[remote]:
                         retain_index(item)
-                exact = False
                 for item in indices[remote]:
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                               'state': item['state'], 'proof': 'exact_head_or_merge_sha'})
-                        exact = True
                     elif item['head_ref'] in names:
                         branch['related_prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                                       'state': item['state'], 'proof': 'head_name_only'})
                 branch['association_methods'].append('authored_pr_index:' + remote)
-                if not exact:
-                    pending.setdefault((remote, branch['hash']), []).append(branch)
+                pending.setdefault((remote, branch['hash']), []).append(branch)
         # One index per remote, one lookup per distinct (remote,SHA), and bounded
         # GraphQL batches avoid a separate HTTP request for every local alias.
         requests = list(pending)
@@ -785,6 +962,25 @@ class Github:
                     elif item['head_ref'] in names:
                         branch['related_prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                                       'state': item['state'], 'proof': 'head_name_only'})
+        # Every globally proven SHA relationship also applies to routed clones
+        # of the same immutable object, even when their narrower lookups succeeded.
+        for branch in branches:
+            state = self._global_snapshots.get(branch['hash']) if branch['object_type'] == 'commit' else None
+            if state is None:
+                continue
+            info = self.coverage['global_snapshot:' + branch['hash']]
+            lookup = {'scope': 'github_global', **info}
+            if lookup not in branch.setdefault('association_lookups', []):
+                branch['association_lookups'].append(lookup)
+            if 'global_any_author_sha_search' not in branch.setdefault('association_methods', []):
+                branch['association_methods'].append('global_any_author_sha_search')
+            for item, proof in state['matches'].values():
+                retain_index(item)
+                if not any(pr['url'] == item['url'] for pr in branch.setdefault('prs', [])):
+                    branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
+                                          'state': item['state'], 'proof': proof})
+            for item in state['observations']:
+                retain_index(item)
         for branch in branches:
             if 'association_lookups' in branch:
                 if branch['prs']:
@@ -801,3 +997,5 @@ class Github:
         for proof in self._repository_aliases.values():
             if proof is not None and proof not in github.setdefault('repository_aliases', []):
                 github['repository_aliases'].append(proof)
+        self._expand_head_context(branches, github, {
+            pr['url'] for branch in branches for pr in branch.get('related_prs', [])})

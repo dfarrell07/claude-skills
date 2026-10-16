@@ -501,6 +501,10 @@ class GithubSourcesTest(unittest.TestCase):
             if args[0] != 'graphql':
                 return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
             calls.append(query_text(args))
+            if 'timelineItems(' in query_text(args):
+                return {'data': {'p0': {'pullRequest': {'url': indexed['url'], 'number': 8,
+                    'repository': {'nameWithOwner': 'canonical/repo'}, 'timelineItems': {
+                        'totalCount': 9, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}}}
             if 'q=is:pr repo:canonical/repo author:me sort:created-asc' in args:
                 return {'data': {'search': connection([indexed])}}
             if any(arg.startswith('q=') for arg in args):
@@ -572,7 +576,8 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(len(global_calls), 1)
         self.assertEqual(branches[0]['pr_status'], 'partial')
         self.assertEqual(branches[0]['prs'], [])
-        self.assertTrue(all(info['global_search']['count'] == 0 for info in branches[0]['association_lookups']))
+        self.assertTrue(all(info.get('global_search', info)['count'] == 0
+                            for info in branches[0]['association_lookups']))
 
     def test_global_sha_partial_failure_preserves_prior_page_and_remote_unknown(self):
         calls = []
@@ -1121,6 +1126,162 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(len(client.authored_index('org/repo')), 1)
         self.assertEqual(client.coverage['pr_index:org/repo']['status'], 'partial')
 
+    @staticmethod
+    def head_node(item=None, before=SHA, after='b' * 40, identity='FP_native'):
+        return {'__typename': 'HeadRefForcePushedEvent', 'id': identity,
+                'createdAt': '2025-01-01T00:00:00Z',
+                'beforeCommit': None if before is None else {'oid': before},
+                'afterCommit': None if after is None else {'oid': after},
+                'pullRequest': {'url': (item or gql())['url']}}
+
+    @staticmethod
+    def head_result(nodes, more=False, cursor=None, total=999, item=None):
+        native = item or gql()
+        return {'data': {'p0': {'pullRequest': {'url': native['url'], 'number': native['number'],
+            'repository': native['repository'], 'timelineItems': {'nodes': nodes, 'totalCount': total,
+                'pageInfo': {'hasNextPage': more, 'endCursor': cursor}}}}}}
+
+    def test_historical_before_and_after_match_all_local_copies_without_weekly_credit(self):
+        native = self.head_node()
+        client = self.client(lambda args: self.head_result([native]))
+        data = {'pr_index': [graphql_item(gql(), 'github.com')], 'activity': []}
+        branches = [branch('/local-only'), branch('/foreign-provider', sha='b' * 40), branch('/other-copy')]
+        client._head_history_batch(data, data['pr_index'])
+        client.associate_head_events(branches, data)
+        self.assertTrue(all(b['pr_status'] == 'matched' for b in branches))
+        self.assertTrue(all(b['prs'][0]['proof'] == 'historical_head_event' for b in branches))
+        self.assertTrue(all(b['prs'][0]['head_event_id'] == native['id'] for b in branches))
+        self.assertEqual(data['head_events'][0]['source'], native)
+        self.assertEqual(data['activity'], [])
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'ok')
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['unfiltered_total_count'], 999)
+        client._head_history_batch(data, data['pr_index'])
+        self.assertEqual(len(client.calls), 1)
+
+    def test_historical_paging_failure_retains_first_page_positive(self):
+        def api(args):
+            if 'after:' in query_text(args):
+                raise subprocess.CalledProcessError(1, 'gh')
+            return self.head_result([self.head_node()], more=True, cursor='next')
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        branches = [branch()]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(len(data['head_events']), 1)
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+        self.assertIn('after:"next"', query_text(client.calls[1]))
+
+    def test_repeated_history_cursor_retains_both_pages_and_marks_incomplete(self):
+        def api(args):
+            later = 'after:' in query_text(args)
+            return self.head_result([self.head_node(identity='event2' if later else 'event1')],
+                                    more=True, cursor='same')
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(len(data['head_events']), 2)
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+
+    def test_new_context_rest_head_lead_expands_history_once_for_all_snapshots(self):
+        event = {'id': 42, 'node_id': 'native-rest-42', 'event': 'head_ref_force_pushed',
+                 'actor': {'login': 'other'}, 'created_at': '2025-01-01T00:00:00Z',
+                 'commit_id': SHA, 'commit_url': 'https://api.github.com/repos/org/repo/commits/' + SHA,
+                 'url': 'https://api.github.com/repos/org/repo/issues/events/42'}
+        def api(args):
+            if args[0] == 'graphql':
+                return self.head_result([self.head_node()])
+            return [event] if args[2].endswith('/timeline') else []
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')], 'activity': []}
+        branches = [branch('/old'), branch('/new', sha='b' * 40)]
+        client._branch_snapshots = branches
+        client._inspect_activity(data, [rest_item(rest(), 'prs', 'github.com')])
+        self.assertTrue(all(b['pr_status'] == 'matched' for b in branches))
+        self.assertEqual(branches[1]['prs'][0]['head_event_id'], 'FP_native')
+        before = len(client.calls)
+        client._inspect_activity(data, [rest_item(rest(), 'prs', 'github.com')])
+        self.assertEqual(len(client.calls), before)
+        self.assertEqual(data['activity'], [])
+
+    def test_null_historical_object_retains_known_sibling_and_gap(self):
+        native = self.head_node(before=None)
+        client = self.client(lambda args: self.head_result([native]))
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        branches = [branch(sha='b' * 40)]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertIsNone(data['head_events'][0]['source']['beforeCommit'])
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+
+    def test_wrong_historical_target_type_and_sha_never_create_edges(self):
+        for field, value in [('pullRequest', {'url': gql(2)['url']}),
+                             ('__typename', 'IssueComment'), ('beforeCommit', {'oid': 'not-sha'})]:
+            with self.subTest(field=field):
+                native = self.head_node()
+                native[field] = value
+                client = self.client(lambda args: self.head_result([native]))
+                data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+                client._head_history_batch(data, data['pr_index'])
+                branches = [branch()]
+                client.associate_head_events(branches, data)
+                self.assertEqual(branches[0]['prs'], [])
+                self.assertEqual(data.get('head_events', []), [])
+                self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+
+    def test_rest_old_other_actor_head_context_has_native_route_binding(self):
+        event = {'id': 42, 'node_id': 'native-rest-42', 'event': 'head_ref_force_pushed',
+                 'actor': {'login': 'other'}, 'created_at': '2025-01-01T00:00:00Z',
+                 'commit_id': SHA, 'commit_url': 'https://api.github.com/repos/org/repo/commits/' + SHA,
+                 'url': 'https://api.github.com/repos/org/repo/issues/events/42'}
+        def api(args):
+            return [event] if args[2].endswith('/timeline') else []
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')], 'activity': []}
+        client._inspect_activity(data, [rest_item(rest(), 'prs', 'github.com')])
+        branches = [branch()]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'historical_head_event')
+        self.assertEqual(data['head_events'][0]['source_path'], 'repos/org/repo/issues/1/timeline')
+        self.assertEqual(data['activity'], [])
+        for field, value in [('url', 'https://api.github.com/repos/wrong/repo/issues/events/42'),
+                             ('node_id', None)]:
+            bad = dict(event, **{field: value})
+            self.assertFalse(client._retain_head_event({}, rest_item(rest(), 'prs', 'github.com'),
+                bad, 'rest_force_push', 'test', 'repos/org/repo/issues/1/timeline'))
+
+    def test_historical_positive_requires_real_native_metadata_when_not_indexed(self):
+        client = self.client(lambda args: {'data': {'repository': {'pullRequest': gql(state='CLOSED')}}})
+        data = {'head_events': [{'item_url': gql()['url'], 'repo': 'org/repo', 'number': 1,
+                                'kind': 'graphql_force_push', 'source': self.head_node()}]}
+        branches = [branch()]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['prs'][0]['state'], 'closed')
+        self.assertEqual(data['pr_index'][0]['head_sha'], SHA)
+        self.assertIn(PR_FIELDS, query_text(client.calls[0]))
+
+    def test_exact_index_positive_does_not_skip_other_pr_sha_associations(self):
+        indexed = graphql_item(gql(), 'github.com')
+        def api(args):
+            return snapshot_data(args, lambda i, repo, data: data.update({'s' + i: connection([gql(2)])}))
+        _, branches, _ = self.associate(api, index={'org/repo': [indexed]})
+        self.assertEqual({pr['number'] for pr in branches[0]['prs']}, {1, 2})
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'exact_head_or_merge_sha')
+
+    def test_cached_global_positive_shared_to_routed_snapshot_after_successful_narrow_search(self):
+        def api(args):
+            if 'query:"is:pr ' in query_text(args):
+                return {'data': {'s0': connection([gql(2, repo='other/upstream')])}}
+            return snapshot_data(args)
+        _, branches, _ = self.associate(api, branches=[branch('/routed'), branch('/local')],
+            repos=[repository('/routed'), repository('/local', ())])
+        self.assertTrue(all(b['prs'][0]['number'] == 2 for b in branches))
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'ok')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'global_any_author_sha_search')
+
     def associate(self, handler, branches=None, repos=None, index=None):
         client = self.client(handler)
         client.authored_index = lambda repo: copy.deepcopy((index or {}).get(repo, []))
@@ -1209,7 +1370,10 @@ class GithubSourcesTest(unittest.TestCase):
         indexed = graphql_item(gql(), 'github.com')
         def api(args):
             result = snapshot_data(args)
-            result['data']['s0'] = connection([gql(sha='b' * 40, state='CLOSED')])
+
+            for alias in result['data']:
+                if alias.startswith('s'):
+                    result['data'][alias] = connection([gql(sha='b' * 40, state='CLOSED')])
             return result
         client, branches, data = self.associate(api,
             branches=[branch('/old'), branch('/new', sha='b' * 40)],
