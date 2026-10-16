@@ -1,5 +1,6 @@
 """Validation and citations for additional source inventories."""
 
+import json
 import re
 from urllib.parse import quote, urlsplit
 
@@ -235,9 +236,48 @@ def comment_history_state(record, start, end, login, latest_proof=None):
     return not rows, ids, [identity for identity in ids if identity not in resolved]
 
 
+def validate_review_context(source, item, host='github.com'):
+    """A review's submitted time is native context, not a text-revision timestamp."""
+    require(isinstance(source, dict) and is_pr_url(item['url']) and integer(source.get('id'), 1),
+            'Invalid native review identity')
+    require(source.get('html_url') == item['url'] + '#pullrequestreview-' + str(source['id']),
+            'Native review target mismatch')
+    require('body' in source and (source['body'] is None or isinstance(source['body'], str)),
+            'Invalid native review body')
+    require('user' in source and (source['user'] is None or isinstance(source['user'], dict)
+            and isinstance(source['user'].get('login'), str) and bool(source['user']['login'])),
+            'Invalid native review author')
+    author = source['user']
+    if author is not None:
+        require('id' not in author or integer(author['id'], 1), 'Invalid native review author ID')
+        require(author.get('node_id') is None or isinstance(author['node_id'], str) and bool(author['node_id']),
+                'Invalid native review author node ID')
+    require(source.get('node_id') is None or isinstance(source['node_id'], str) and bool(source['node_id']),
+            'Invalid native review node ID')
+    require(isinstance(source.get('state'), str)
+            and source['state'].upper() in {'APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING'},
+            'Invalid native review state')
+    require('submitted_at' in source, 'Missing native review submission observation')
+    if source['submitted_at'] is not None:
+        timestamp(source['submitted_at'])
+    if source.get('updated_at') is not None:
+        timestamp(source['updated_at'])
+    if 'pull_request_url' in source:
+        api = 'https://api.github.com' if host.casefold() == 'github.com' else f'https://{host}/api/v3'
+        require(source['pull_request_url'] == f"{api}/repos/{item['repo']}/pulls/{item['number']}",
+                'Native review API route mismatch')
+
+
 def github_reference_comments(github):
     """Yield saved discussion bodies and identity-bound current native bodies."""
     yield from github.get('reference_comments', [])
+    for record in github.get('reference_reviews', []):
+        source = record['source']
+        yield {'item_url': record['item_url'], 'repo': record['repo'], 'number': record['number'],
+               'kind': 'review', 'id': source['id'], 'node_id': source.get('node_id'),
+               'url': source['html_url'], 'body': source['body'] or '',
+               'author_login': (source['user'] or {}).get('login'),
+               'author_node_id': (source['user'] or {}).get('node_id'), 'submitted_at': source['submitted_at']}
     for record in github.get('comment_edit_histories', []):
         for page in record.get('pages', []):
             try:
@@ -354,6 +394,18 @@ def validate_github(data, evidence, start, end):
         identity = comment['item_url'], comment['kind'], comment['id']
         require(identity not in comments_seen, 'Duplicate native GitHub comment')
         comments_seen[identity] = comment
+    reviews = github.get('reference_reviews', [])
+    require(isinstance(reviews, list), 'Invalid native review contexts')
+    reviews_seen = set()
+    for record in reviews:
+        require(isinstance(record, dict), 'Invalid native review context')
+        item = evidence.get(record.get('item_url')) or indexed.get(record.get('item_url'))
+        require(item is not None and record.get('repo') == item['repo']
+                and record.get('number') == item['number'], 'Native review item mismatch')
+        validate_review_context(record.get('source'), item, host)
+        identity = item['url'], json.dumps(record['source'], sort_keys=True)
+        require(identity not in reviews_seen, 'Duplicate native review observation')
+        reviews_seen.add(identity)
     histories = github.get('comment_edit_histories', [])
     require(isinstance(histories, list), 'Invalid native comment edit histories')
     histories_seen = set()

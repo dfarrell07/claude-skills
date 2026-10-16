@@ -8,7 +8,7 @@ import subprocess
 from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
-from extended_evidence import comment_history_state, comment_node_bound
+from extended_evidence import comment_history_state, comment_node_bound, validate_review_context
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
 
@@ -88,6 +88,7 @@ class Github:
         self._activity_items = set()
         self._activity_seen = set()
         self._comment_seen = set()
+        self._review_seen = set()
         self._global_snapshots = {}
         self._head_seen = set()
         self._history_read = set()
@@ -423,6 +424,18 @@ class Github:
         except ERRORS:
             self.problem(key, 'invalid native comment reference skipped; discussion coverage is incomplete')
 
+    def _retain_review(self, github, item, source, key):
+        """Preserve all readable review bodies before any personal-actor filtering."""
+        try:
+            validate_review_context(source, item, self.host)
+            identity = item['url'], json.dumps(source, sort_keys=True)
+            if identity not in self._review_seen:
+                self._review_seen.add(identity)
+                github.setdefault('reference_reviews', []).append({
+                    'item_url': item['url'], 'repo': item['repo'], 'number': item['number'], 'source': source})
+        except ERRORS:
+            self.problem(key, 'invalid native review context skipped; discussion coverage is incomplete')
+
     def _retain_head_event(self, github, item, source, kind, key, source_path=None):
         """Preserve native force-push context without attributing weekly activity."""
         try:
@@ -557,6 +570,8 @@ class Github:
                 self._retain_head_event(github, item, event, 'rest_force_push', key, route)
             elif event.get('event') == 'commented':
                 self._retain_comment(github, item, event, 'issue_comment', key)
+            elif event.get('event') == 'reviewed':
+                self._retain_review(github, item, event, key)
 
     @staticmethod
     def _head_shas(record):
@@ -642,6 +657,8 @@ class Github:
                         self._retain_head_event(github, item, event, 'rest_force_push', key, endpoint)
                     if category in {'issue_comment', 'review_comment'}:
                         self._retain_comment(github, item, event, category, key)
+                    elif category == 'review':
+                        self._retain_review(github, item, event, key)
                     try:
                         actor = (event.get('actor') or event.get('user') or {}).get('login', '')
                         is_author = actor.casefold() == self.login.casefold()

@@ -1487,6 +1487,93 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(sorted(query_text(call).count(':search(') for call in client.calls), [1, 20])
 
 
+class ReviewContextTest(unittest.TestCase):
+    client = GithubSourcesTest.client
+
+    @staticmethod
+    def native_review(body='Review context', identity=7):
+        return {'id': identity, 'node_id': 'REVIEW' + str(identity), 'user': {'login': 'other', 'id': 123},
+                'html_url': gql()['url'] + '#pullrequestreview-' + str(identity), 'body': body,
+                'state': 'COMMENTED', 'submitted_at': '2025-01-01T00:00:00Z', 'commit_id': SHA,
+                'pull_request_url': 'https://api.github.com/repos/org/repo/pulls/1'}
+
+    def test_other_author_review_only_references_reach_jira_and_gitlab_without_actor_credit(self):
+        from extended_evidence import github_reference_comments, validate_github
+        from provider_references import gitlab_seed_urls
+        from work_links import associate_work, referenced_keys, validate_links
+        mr = 'https://code.company.test/team/project/-/merge_requests/7'
+        review = self.native_review('https://jira.example/browse/CORE-123 ' + mr)
+        item = rest_item(rest(), 'prs', 'github.com')
+        client = self.client(lambda args: [review] if args[2].endswith('/reviews') else [])
+        data = {'prs': [item], 'issues': [], 'activity': []}
+        client._inspect_activity(data, [item])
+        self.assertEqual(data['reference_reviews'][0]['source'], review)
+        self.assertEqual(data['activity'], [])
+        self.assertEqual(referenced_keys(data, 'jira.example'), ['CORE-123'])
+        jira = {'issues': [{'key': 'CORE-123', 'url': 'https://jira.example/browse/CORE-123', 'sensitive': False}],
+                'metadata': {'site': 'jira.example'}}
+        self.assertEqual(gitlab_seed_urls(jira, data, []), {mr})
+        common = list(github_reference_comments(data))[0]
+        self.assertEqual(common['kind'], 'review')
+        self.assertNotIn('created_at', common)
+        self.assertNotIn('updated_at', common)
+        source = {'github': data, 'jira': jira, 'metadata': {'github_user': 'me'}}
+        validate_github(source, {item['url']: item}, START, END)
+        associate_work(jira, data)
+        validate_links(source)
+        self.assertEqual(jira['issues'][0]['pr_links'][0]['evidence_url'], review['html_url'])
+        self.assertEqual(client.warnings, [])
+
+    def test_exact_duplicate_review_deduplicates_and_changed_native_body_survives(self):
+        from extended_evidence import github_reference_comments, validate_github
+        client = self.client(lambda args: [])
+        item = graphql_item(gql(), 'github.com')
+        first, second = self.native_review('First native body'), self.native_review('Later native body')
+        data = {'pr_index': [item], 'activity': []}
+        for review in (first, copy.deepcopy(first), second):
+            client._retain_review(data, item, review, 'reviews')
+        self.assertEqual(len(data['reference_reviews']), 2)
+        self.assertEqual([row['body'] for row in github_reference_comments(data)],
+                         ['First native body', 'Later native body'])
+        validate_github({'github': data, 'metadata': {'github_user': 'me'}}, {}, START, END)
+        forged = copy.deepcopy(data)
+        forged['reference_reviews'].append(copy.deepcopy(forged['reference_reviews'][0]))
+        with self.assertRaises(ValueError):
+            validate_github({'github': forged, 'metadata': {'github_user': 'me'}}, {}, START, END)
+
+    def test_invalid_review_routes_and_observations_never_enter_reference_frontier(self):
+        item = graphql_item(gql(), 'github.com')
+        for field, value in [('html_url', gql(2)['url'] + '#pullrequestreview-7'),
+                             ('pull_request_url', 'https://api.github.com/repos/wrong/repo/pulls/1'),
+                             ('id', True), ('body', {}), ('user', {'login': ''}),
+                             ('state', 'SHIP_IT'), ('submitted_at', 'not a date'), ('node_id', '')]:
+            with self.subTest(field=field):
+                review = self.native_review()
+                review[field] = value
+                client, data = self.client(lambda args: []), {}
+                client._retain_review(data, item, review, 'reviews')
+                self.assertFalse(data.get('reference_reviews'))
+                self.assertEqual(client.coverage['reviews']['status'], 'partial')
+                self.assertTrue(client.warnings)
+
+    def test_fallback_reviewed_event_and_pending_null_submission_remain_native_context(self):
+        from extended_evidence import github_reference_comments, validate_github
+        review = self.native_review('Native timeline review')
+        review.update(event='reviewed', state='commented')
+        item = graphql_item(gql(), 'github.com')
+        client = self.client(lambda args: [review])
+        data = {'pr_index': [item], 'activity': []}
+        client._rest_head_history(data, item)
+        pending = self.native_review(None, identity=8)
+        pending.update(user=None, state='PENDING', submitted_at=None)
+        client._retain_review(data, item, pending, 'pending')
+        self.assertEqual([row['source'] for row in data['reference_reviews']], [review, pending])
+        self.assertIsNone(list(github_reference_comments(data))[1]['submitted_at'])
+        self.assertEqual(data['activity'], [])
+        validate_github({'github': data, 'metadata': {'github_user': 'me'}}, {}, START, END)
+        self.assertEqual(client.warnings, [])
+
+
 class RestHeadRecoveryTest(unittest.TestCase):
     client = GithubSourcesTest.client
     head_node = staticmethod(GithubSourcesTest.head_node)
