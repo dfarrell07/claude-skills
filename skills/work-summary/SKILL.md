@@ -113,12 +113,19 @@ alone does not make a passive event an accomplishment.
 For branch PR associations check all states, saved authored indexes, independent
 any-author SHA search, and commit associations. A commit association alone can
 miss closed unmerged PRs. Preserve positives even when sibling reads fail.
+If a saved remote is inaccessible, a global SHA search can recover associations
+in other readable repositories. Retain the original remote access gap. Verify
+renamed repository IDs and repeat searches under the canonical name: a successful
+zero-result search for an old name may omit the current repository entirely.
 Distinguish a successful lookup of an explicitly absent commit object in a
 verified repository from a failed request, missing repository or malformed
 response. Preserve failed/capped reads, unsupported hosts and name-only matches
 as unresolved. A completed negative lookup means only no association found by
 the supported methods for that exact snapshot; deleted forks and rewritten
 history can hide past associations. It does not prove unpublished work.
+Preserve distinct native PR observations when heads or bodies change during
+collection; an exact-SHA proof must match the particular captured observation
+that supplied it, rather than assuming every response observed the same head.
 
 Jira uses the authenticated tenant/account. Retain all-status assigned,
 reported, created, watched and formerly assigned inventories plus recent
