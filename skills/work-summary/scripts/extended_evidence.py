@@ -415,6 +415,11 @@ def validate_github(data, evidence, start, end):
         require(start is not None and start <= timestamp(event['at']) <= end, 'Activity outside capture window')
         require(isinstance(event.get('action'), str) and event['action'], 'Invalid activity action')
         require(isinstance(event.get('body'), str), 'Invalid activity body')
+        if 'body_source' in event:
+            require(event['body_source'] == 'rest_current_observation'
+                    and event['action'] in {'issue_comment', 'review_comment',
+                                            'issue_comment_edited', 'review_comment_edited'},
+                    'Invalid native comment body provenance')
         require(isinstance(event.get('url'), str) and (event['url'] == item['url']
                 or event['url'].startswith(item['url'] + '#')), 'Invalid activity URL')
         require(event['url'] == item['url'] or re.fullmatch(r'[A-Za-z0-9_-]+', urlsplit(event['url']).fragment),

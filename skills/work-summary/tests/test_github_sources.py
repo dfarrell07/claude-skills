@@ -1484,8 +1484,151 @@ class GithubSourcesTest(unittest.TestCase):
         branches = [branch(sha=f'{i:040x}') for i in range(21)]
         client, _, _ = self.associate(lambda args: snapshot_data(args), branches=branches)
         self.assertEqual(len(client.calls), 2)
-        self.assertEqual(query_text(client.calls[0]).count(':search('), 20)
-        self.assertEqual(query_text(client.calls[1]).count(':search('), 1)
+        self.assertEqual(sorted(query_text(call).count(':search(') for call in client.calls), [1, 20])
+
+
+class SnapshotConcurrencyTest(unittest.TestCase):
+    client = GithubSourcesTest.client
+    associate = GithubSourcesTest.associate
+
+    def test_four_native_reads_overlap_but_results_and_warnings_apply_in_source_order(self):
+        from threading import Barrier, Event, Lock, get_ident
+        barrier, lock = Barrier(4), Lock()
+        done = [Event() for _ in range(4)]
+        active, maximum, completed = 0, 0, []
+        owner, warning_threads = get_ident(), []
+        def api(args):
+            nonlocal active, maximum
+            number = int(re.search(r'is:pr ([0-9a-f]{40})', query_text(args))[1], 16)
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            try:
+                if number <= 4:
+                    barrier.wait(timeout=3)
+                    if number < 4:
+                        self.assertTrue(done[number].wait(timeout=3))
+                result = snapshot_data(args)
+                result['data']['s0'] = connection([gql(number)])
+                result['errors'] = [{'path': ['s0'], 'message': 'partial native sibling'}]
+                with lock:
+                    completed.append(number)
+                return result
+            finally:
+                with lock:
+                    active -= 1
+                if number <= 4:
+                    done[number - 1].set()
+        client = self.client(api)
+        client.authored_index = lambda repo: []
+        original_warn = client.warn
+        client.warn = lambda warning: (warning_threads.append(get_ident()), original_warn(warning))
+        branches = [branch(sha=f'{number:040x}') for number in range(1, 9)]
+        data = {}
+        with patch('github_sources.BATCH_SIZE', 1):
+            client.associate_branches(branches, [repository()], data)
+        self.assertEqual(maximum, 4)
+        self.assertEqual(completed[:4], [4, 3, 2, 1])
+        self.assertEqual([row['number'] for row in data['pr_index']], list(range(1, 9)))
+        self.assertEqual(len(client.warnings), 8)
+        self.assertEqual([warning.split(':')[-2] for warning in client.warnings], [f'{number:040x}' for number in range(1, 9)])
+        self.assertTrue(all(thread == owner for thread in warning_threads))
+        self.assertTrue(all(row['pr_status'] == 'matched' and row['association_lookups'][0]['status'] == 'partial'
+                            for row in branches))
+
+    def test_parallel_and_serial_results_preserve_partial_positives_identically(self):
+        def api(args):
+            number = int(re.search(r'is:pr ([0-9a-f]{40})', query_text(args))[1], 16)
+            result = snapshot_data(args)
+            result['data']['s0'] = connection([gql(number)])
+            result['errors'] = [{'path': ['s0'], 'message': 'native partial result'}]
+            return result
+        outcomes = []
+        for workers in (1, 4):
+            with patch('github_sources.BATCH_SIZE', 1), patch('github_sources.SNAPSHOT_WORKERS', workers):
+                client, branches, data = self.associate(api,
+                    branches=[branch(sha=f'{number:040x}') for number in range(1, 9)])
+            outcomes.append((client.coverage, client.warnings, branches, data))
+        self.assertEqual(outcomes[0], outcomes[1])
+
+    def test_alias_identity_reads_are_serialized_cached_and_exported_once(self):
+        from threading import Lock
+        lock, reads = Lock(), []
+        def api(args):
+            if args[0] != 'graphql':
+                with lock:
+                    reads.append(args[2])
+                return {'id': 123, 'full_name': 'org/canonical', 'html_url': 'https://github.com/org/canonical'}
+            result = snapshot_data(args)
+            for index in re.findall(r'c(\d+):repository', query_text(args)):
+                result['data']['c' + index] = {'id': 'R123', 'nameWithOwner': 'org/canonical', 'object': None}
+            return result
+        with patch('github_sources.BATCH_SIZE', 1):
+            client, branches, data = self.associate(api,
+                branches=[branch(sha=f'{number:040x}') for number in range(1, 9)])
+        self.assertEqual(sorted(reads), ['repos/org/canonical', 'repos/org/repo'])
+        self.assertEqual(len(data['repository_aliases']), 1)
+        self.assertEqual(data['repository_aliases'][0]['canonical_repo'], 'org/canonical')
+        self.assertTrue(all(row['pr_status'] == 'no_match' for row in branches))
+        self.assertTrue(all(row['association_lookups'][0]['search_repo'] == 'org/canonical' for row in branches))
+        self.assertEqual(client.warnings, [])
+
+    def test_failed_shared_alias_proof_does_not_retry_or_erase_parallel_positives(self):
+        from threading import Lock
+        lock, reads = Lock(), []
+        def api(args):
+            if args[0] != 'graphql':
+                with lock:
+                    reads.append(args[2])
+                if args[2] == 'repos/org/canonical':
+                    raise subprocess.CalledProcessError(403, 'native read')
+                return {'id': 123, 'full_name': 'org/canonical', 'html_url': 'https://github.com/org/canonical'}
+            query = query_text(args)
+            if 'query:"is:pr ' in query:
+                return {'data': {'s0': connection()}}
+            number = int(re.search(r'is:pr ([0-9a-f]{40})', query)[1], 16)
+            result = snapshot_data(args)
+            result['data']['s0'] = connection([gql(number, repo='org/canonical')])
+            result['data']['c0'] = {'id': 'R123', 'nameWithOwner': 'org/canonical', 'object': None}
+            return result
+        with patch('github_sources.BATCH_SIZE', 1):
+            client, branches, data = self.associate(api,
+                branches=[branch(sha=f'{number:040x}') for number in range(1, 9)])
+        self.assertEqual(sorted(reads), ['repos/org/canonical', 'repos/org/repo'])
+        self.assertEqual(len(data['pr_index']), 8)
+        self.assertTrue(all(row['pr_status'] == 'matched' and row['association_lookups'][0]['status'] == 'partial'
+                            for row in branches))
+        self.assertTrue(client.warnings)
+        self.assertFalse(data.get('repository_aliases'))
+
+    def test_global_fallback_remains_deduplicated_under_parallel_routed_batches(self):
+        from threading import Lock
+        lock, global_reads = Lock(), []
+        def api(args):
+            query = query_text(args)
+            sha = re.search(r'is:pr ([0-9a-f]{40})', query)[1]
+            if 'query:"is:pr ' in query:
+                with lock:
+                    global_reads.append(sha)
+                return {'data': {'s0': connection([gql(int(sha, 16), repo='other/upstream')])}}
+            result = snapshot_data(args)
+            result['data']['c0'] = None
+            return result
+        with patch('github_sources.BATCH_SIZE', 1):
+            _, branches, data = self.associate(api,
+                branches=[branch(sha=f'{number:040x}') for number in range(1, 5)],
+                repos=[repository(remotes=('old/fork', 'org/repo'))])
+        self.assertEqual(sorted(global_reads), [f'{number:040x}' for number in range(1, 5)])
+        self.assertEqual(len(data['pr_index']), 4)
+        self.assertTrue(all(row['pr_status'] == 'matched' and len(row['prs']) == 1 for row in branches))
+        self.assertTrue(all(all(info['status'] == 'partial' for info in row['association_lookups']
+                                if info.get('repo')) for row in branches))
+
+    def test_unexpected_worker_exception_propagates(self):
+        def api(args):
+            raise RuntimeError('unexpected programmer failure')
+        with patch('github_sources.BATCH_SIZE', 1), self.assertRaisesRegex(RuntimeError, 'programmer failure'):
+            self.associate(api, branches=[branch(), branch(sha='b' * 40)])
 
 
 class CommentHistoryTest(unittest.TestCase):
@@ -1638,6 +1781,8 @@ class CommentHistoryTest(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 client, data = self.run_history(event, node, [response])
                 self.assertEqual([row['action'] for row in data['activity']], ['issue_comment_edited'])
+                self.assertEqual(data['activity'][0]['body_source'], 'rest_current_observation')
+                self.assertEqual(data['activity'][0]['body'], event['body'])
                 proof = data['comment_edit_histories'][0]
                 self.assertEqual(proof['status'], 'ok' if mutation == 'known' else 'partial')
                 self.assertFalse(proof['no_personal_edits_in_window'])
@@ -1651,6 +1796,13 @@ class CommentHistoryTest(unittest.TestCase):
                 source = {'github': data, 'metadata': {'github_user': 'me', 'github_status': 'partial',
                                                       'warnings': client.warnings}}
                 validate_github(source, {item['url']: item}, START, END)
+                forged_body = copy.deepcopy(source)
+                forged_body['github']['activity'][0]['body_source'] = 'exact_authored_revision'
+                with self.assertRaises(ValueError):
+                    validate_github(forged_body, {item['url']: item}, START, END)
+                legacy = copy.deepcopy(source)
+                legacy['github']['activity'][0].pop('body_source')
+                validate_github(legacy, {item['url']: item}, START, END)
                 if mutation == 'known':
                     forged = copy.deepcopy(source)
                     forged['github']['activity'] = []

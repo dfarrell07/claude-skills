@@ -1,8 +1,11 @@
 """Role-aware GitHub discovery, actor evidence, and batched ref-to-PR association."""
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 import subprocess
+from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
 from extended_evidence import comment_history_state, comment_node_bound
@@ -12,6 +15,7 @@ from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is
 ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError)
 MAX_LIST_PAGES = 100
 BATCH_SIZE = 20
+SNAPSHOT_WORKERS = 4
 
 
 PR_FIELDS = '''url title body number state createdAt updatedAt closedAt mergedAt isDraft headRefOid headRefName
@@ -90,6 +94,8 @@ class Github:
         self._branch_snapshots = None
         self._repository_metadata = {}
         self._repository_aliases = {}
+        self._alias_lock = RLock()
+        self._snapshot_io = BoundedSemaphore(SNAPSHOT_WORKERS)
 
     def graphql(self, *args):
         # gh exits nonzero for GraphQL errors even when stdout retains successful
@@ -661,6 +667,8 @@ class Github:
                                                        'actor': event_actor, 'action': action, 'at': iso(when), 'url': url,
                                                        'id': event.get('id'), 'body': event.get('body') or '',
                                                        **({'source': source} if source is not None else {}),
+                                                       **({'body_source': 'rest_current_observation'}
+                                                          if category in {'issue_comment', 'review_comment'} else {}),
                                                        **({'editor_evidence': editor_evidence} if editor_evidence else {}),
                                                        **({'review_state': event.get('state')} if category == 'review' else {})})
                     except (ValueError, TypeError, KeyError, AttributeError):
@@ -765,7 +773,8 @@ class Github:
             if not fields:
                 break
             try:
-                result = self.graphql('graphql', '-f', 'query=query{' + ' '.join(fields) + '}')
+                with self._snapshot_io:
+                    result = self.graphql('graphql', '-f', 'query=query{' + ' '.join(fields) + '}')
                 require(isinstance(result, dict) and isinstance(result.get('data'), dict), 'Missing batch result')
             except ERRORS:
                 for alias, (key, method) in aliases.items():
@@ -869,6 +878,45 @@ class Github:
             self.coverage[coverage_key]['count'] = len(state['matches'])
         return states
 
+    def _snapshot_batches(self, requests, global_search=False):
+        """Overlap bounded native reads, applying results and warnings in source order."""
+        batches = (requests[offset:offset + BATCH_SIZE] for offset in range(0, len(requests), BATCH_SIZE))
+
+        def read(batch):
+            warnings = []
+            worker = Github(self.api, self.host, self.login, self.start, self.end, warnings.append)
+            worker._snapshot_io = self._snapshot_io
+
+            def alias(requested, canonical):
+                # Native repository identity reads/cache are shared, unlike
+                # coverage or warnings. Serialize this rare two-read proof.
+                with self._alias_lock, self._snapshot_io:
+                    return self._verify_repository_alias(requested, canonical)
+
+            worker._verify_repository_alias = alias
+            states = worker._snapshot_batch(batch, global_search=global_search)
+            return states, worker.coverage, warnings
+
+        with ThreadPoolExecutor(max_workers=SNAPSHOT_WORKERS) as pool:
+            pending = deque()
+            for _ in range(SNAPSHOT_WORKERS):
+                batch = next(batches, None)
+                if batch is None:
+                    break
+                pending.append((batch, pool.submit(read, batch)))
+            while pending:
+                batch, future = pending.popleft()
+                # Ordinary native errors already preserve successful aliases
+                # inside _snapshot_batch. Unexpected programming errors propagate.
+                states, coverage, warnings = future.result()
+                self.coverage.update(coverage)
+                for warning in warnings:
+                    self.warn(warning)
+                following = next(batches, None)
+                if following is not None:
+                    pending.append((following, pool.submit(read, following)))
+                yield batch, states
+
     def associate_branches(self, branches, repositories, github):
         """Match current native snapshots; no_match does not exclude historical PR use."""
         self._branch_snapshots = branches
@@ -919,9 +967,7 @@ class Github:
         # One index per remote, one lookup per distinct (remote,SHA), and bounded
         # GraphQL batches avoid a separate HTTP request for every local alias.
         requests = list(pending)
-        for offset in range(0, len(requests), BATCH_SIZE):
-            batch = requests[offset:offset + BATCH_SIZE]
-            states = self._snapshot_batch(batch)
+        for batch, states in self._snapshot_batches(requests):
             # An inaccessible old fork may have accessible PRs elsewhere. Global
             # SHA search supplies positive evidence while the remote access gap
             # remains partial; an empty global search never proves private absence.
@@ -961,8 +1007,7 @@ class Github:
         # SHA once globally, preserving the unresolved provider/repository scope.
         requests = [(None, sha) for sha in sorted({branch['hash'] for branch in unrouted})
                     if sha not in self._global_snapshots]
-        for offset in range(0, len(requests), BATCH_SIZE):
-            states = self._snapshot_batch(requests[offset:offset + BATCH_SIZE], global_search=True)
+        for _, states in self._snapshot_batches(requests, global_search=True):
             self._global_snapshots.update({sha: state for (_, sha), state in states.items()})
         route_gaps = set()
         for branch in unrouted:
@@ -984,7 +1029,7 @@ class Github:
 
         # Redirects discovered while resolving snapshots also repair the all-state
         # authored index: GitHub search silently returns zero for historical names.
-        for proof in list(self._repository_aliases.values()):
+        for _, proof in sorted(self._repository_aliases.items()):
             if proof is None or proof['requested_repo'] not in indices:
                 continue
             requested, canonical = proof['requested_repo'], proof['canonical_repo']
@@ -1043,7 +1088,7 @@ class Github:
                 branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
         github['pr_index'] = list(all_indexed.values())
         github['pr_index_observations'] = observations
-        for proof in self._repository_aliases.values():
+        for _, proof in sorted(self._repository_aliases.items()):
             if proof is not None and proof not in github.setdefault('repository_aliases', []):
                 github['repository_aliases'].append(proof)
         self._expand_head_context(branches, github, {
