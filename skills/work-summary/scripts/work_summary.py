@@ -422,17 +422,20 @@ def native_https_urls(text):
             yield original, parts
 
 
-def contextual_jira_links(item):
+def contextual_jira_links(item, comments=()):
     """Retain explicit native browse URLs without inventing a Jira identity."""
     if not is_pr_url(item['url']):
         return []
     result = {}
-    for field in ('title', 'body'):
-        for original, parts in native_https_urls(item.get(field, '')):
+    sources = [(field, item['url'], item.get(field, '')) for field in ('title', 'body')]
+    sources.extend(('comment', comment['url'], comment['body']) for comment in comments
+                   if comment['item_url'] == item['url'])
+    for field, evidence_url, text in sources:
+        for original, parts in native_https_urls(text):
             if re.fullmatch(r'/browse/[A-Z][A-Z0-9_]*-[1-9][0-9]*', parts.path, re.I):
                 url = 'https://' + parts.netloc.lower() + '/browse/' + parts.path.rsplit('/', 1)[1].upper()
                 result[url] = {'url': url, 'source_url': original, 'proof': 'github_' + field + '_url',
-                               'evidence_url': item['url']}
+                               'evidence_url': evidence_url}
     return [result[url] for url in sorted(result)]
 
 
@@ -487,7 +490,8 @@ def work_urls(data, topic):
 
     def github(item):
         change_urls.add(item['url'])
-        ticket_urls.update(relation['url'] for relation in contextual_jira_links(item))
+        ticket_urls.update(relation['url'] for relation in contextual_jira_links(
+            item, data['github'].get('reference_comments', [])))
         for relation in item.get('jira_links', []):
             ticket(jira[relation['key']], False)
 
@@ -642,7 +646,8 @@ def render(data, source=None, detailed=False):
     for topic in topic_nodes(topics):
         displayed = set(display_urls(data, topic))
         for item in topic_github_items(data, topic):
-            contextual.update(link['url'] for link in contextual_jira_links(item)
+            contextual.update(link['url'] for link in contextual_jira_links(
+                item, data['github'].get('reference_comments', []))
                               if link['url'] in displayed)
         for relation in local_context_links(data, topic):
             if relation['url'] in displayed:

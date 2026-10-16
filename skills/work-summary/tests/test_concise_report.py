@@ -146,6 +146,29 @@ class ConciseReportTest(unittest.TestCase):
                 self.assertEqual(ws.contextual_jira_links(pr),[])
                 self.assertNotIn('Jira state is unverified',ws.render(source))
 
+    def test_comment_only_context_is_selectable_without_jira_access(self):
+        source = self.capture()
+        pr = source['github']['prs'][0]
+        ticket = 'https://jira.example.test/browse/CONTEXT-9'
+        comment = {'item_url': pr['url'], 'repo': pr['repo'], 'number': pr['number'],
+                   'kind': 'issue_comment', 'id': 42, 'node_id': None,
+                   'url': pr['url'] + '#issuecomment-42', 'body': 'Core context: ' + ticket,
+                   'author_login': 'another-author', 'created_at': '2025-01-01T00:00:00Z',
+                   'updated_at': '2025-01-02T00:00:00Z'}
+        source['github']['reference_comments'] = [comment]
+        source['jira'] = {'metadata': {'status': 'unavailable', 'site': ''}, 'issues': [], 'activity': []}
+        enriched = self.enrich(source)
+        enriched['analysis']['themes'][0]['links'] = [ticket, pr['url']]
+        report = ws.render(enriched, source)
+        self.assertIn('  - ' + ticket, report)
+        self.assertIn('Jira state is unverified', report)
+        proof = ws.contextual_jira_links(pr, [comment])[0]
+        self.assertEqual(proof['proof'], 'github_comment_url')
+        self.assertEqual(proof['evidence_url'], comment['url'])
+        self.assertNotIn('activity', source['github'])
+        self.assertNotIn('jira_links', pr)
+        self.assertEqual(ws.contextual_jira_links({**pr, 'url': pr['url'] + '9'}, [comment]), [])
+
     def test_foreign_site_context_never_joins_a_same_key_native_ticket(self):
         source = self.capture()
         issue = self.add_jira(source)
