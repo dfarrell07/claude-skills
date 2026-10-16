@@ -199,10 +199,10 @@ def read_graphql_notes(reader, host, repo, source):
             result = response['source']
             require(isinstance(result, dict), 'Invalid native GraphQL response')
             errors = result.get('errors', [])
-            require(isinstance(errors, list), 'Invalid native GraphQL errors')
-            if errors:
+            if not isinstance(errors, list) or errors:
                 partial = True
-                reader.fail(url, 'native_graphql_errors')
+                reader.fail(url, 'native_graphql_errors' if isinstance(errors, list)
+                            else 'invalid_native_graphql_errors')
             project = result['data']['project']
             require(isinstance(project, dict) and project.get('id') == 'gid://gitlab/Project/' + str(source['project_id'])
                     and project.get('fullPath') == repo, 'GraphQL project identity mismatch')

@@ -439,6 +439,7 @@ class GraphqlNotesTest(unittest.TestCase):
         graph['errors'] = {}
         result, _, _ = self.graph_capture(lambda variables: graph)
         self.assertEqual(result['items'][0]['notes_status'], 'partial')
+        self.assertEqual(result['items'][0]['notes'][0]['id'], 'gid://gitlab/Note/1')
 
     def test_same_host_other_mr_graphql_failure_is_not_recovered_by_success(self):
         result, _, _ = self.graph_capture(lambda variables: self.graph([self.native_note()]))
