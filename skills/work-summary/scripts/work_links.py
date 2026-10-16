@@ -54,6 +54,13 @@ def confirmed_keys(text, site):
     return _key_mentions(text, site, confirmed=True)
 
 
+def discovery_keys(text, site):
+    """Keep broad ticket leads while recognizing explicit native URL authorities."""
+    explicit = _url_keys(text, site)
+    return {key for key in mentioned_keys(text, site)
+            if key.rsplit('-', 1)[0].upper() not in NON_JIRA or key in explicit}
+
+
 def strings(value):
     if isinstance(value, str):
         yield value
@@ -145,9 +152,7 @@ def referenced_keys(github, site=None):
     selected += [item for item in github.get('pr_index_observations', []) if item['url'] in selected_urls]
 
     def add(text):
-        explicit = _url_keys(text, site)
-        result.update(key for key in mentioned_keys(text, site)
-                      if key.rsplit('-', 1)[0].upper() not in NON_JIRA or key in explicit)
+        result.update(discovery_keys(text, site))
 
     for item in selected:
         for field in ('title', 'body', 'head_ref'):
