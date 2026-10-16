@@ -9,7 +9,7 @@ import subprocess
 from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
-from extended_evidence import comment_history_state, comment_node_bound, validate_review_context
+from extended_evidence import comment_history_state, comment_node_bound, same_github_item_url, validate_review_context
 from github_timeline import collect_timeline
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
@@ -300,7 +300,7 @@ class Github:
 
     def discover(self, github, linked_prs=()):
         github['context_prs'], github['context_issues'], github['activity'] = [], [], []
-        all_items = {item['url']: item for kind in ('prs', 'issues') for item in github[kind]}
+        all_items = {item['url'].casefold(): item for kind in ('prs', 'issues') for item in github[kind]}
         since = iso(self.start)
         specifications = [
             ('open_authored_prs', 'prs', f'is:pr author:{self.login} is:open'),
@@ -317,19 +317,20 @@ class Github:
         for key, kind, query in specifications:
             rows = self.search(query, key, kind)
             for item in rows + self.search_observations.get(key, []):
-                if item['url'] not in all_items:
+                identity = item['url'].casefold()
+                if identity not in all_items:
                     item['roles'] = []
                     item['observed_at'] = iso(datetime.now(UTC))
                     github['context_' + kind].append(item)
-                    all_items[item['url']] = item
-                original = all_items[item['url']]
+                    all_items[identity] = item
+                original = all_items[identity]
                 self.retain_context_observation(github, item, original)
                 original.setdefault('roles', [])
                 if key not in original['roles']:
                     original['roles'].append(key)
                 original.setdefault('author_login', item.get('author_login'))
         for item in self.add_linked_prs(github, linked_prs):
-            all_items[item['url']] = item
+            all_items[item['url'].casefold()] = item
         self._inspect_activity(github, all_items.values())
         return all_items
 
@@ -519,7 +520,7 @@ class Github:
             require(integer(event.get('id'), 1), 'Missing comment identity')
             url, body = event.get('html_url'), event.get('body')
             fragment = 'issuecomment-' if category == 'issue_comment' else 'discussion_r'
-            require(isinstance(url, str) and url == item['url'] + '#' + fragment + str(event['id']),
+            require(same_github_item_url(url, item['url'] + '#' + fragment + str(event['id'])),
                     'Comment URL does not identify this item')
             require(body is None or isinstance(body, str), 'Invalid comment body')
             created, updated = event['created_at'], event['updated_at']
@@ -803,9 +804,9 @@ class Github:
     def _inspect_activity(self, github, items):
         seen = self._activity_seen
         for item in items:
-            if item['url'] in self._activity_items:
+            if item['url'].casefold() in self._activity_items:
                 continue
-            self._activity_items.add(item['url'])
+            self._activity_items.add(item['url'].casefold())
             if (item.get('author_login') or '').casefold() == self.login.casefold() and item.get('created_at'):
                 try:
                     created = timestamp(item['created_at'])
@@ -854,7 +855,8 @@ class Github:
                             if not self.start <= when <= self.end:
                                 continue
                             url = event.get('html_url') or item['url']
-                            require(url == item['url'] or url.startswith(item['url'] + '#'), 'Invalid event URL')
+                            require(isinstance(url, str) and same_github_item_url(url.partition('#')[0], item['url']),
+                                    'Invalid event URL')
                             require(isinstance(action, str) and action, 'Invalid actor action')
                             source = None
                             event_identity = event.get('id')
@@ -1277,7 +1279,7 @@ class Github:
                 names = {ref.removeprefix('refs/heads/') for ref in branch['refs'] if ref.startswith('refs/heads/')}
                 names.update(ref[len('refs/remotes/'):].split('/', 1)[1] for ref in branch['refs']
                              if ref.startswith('refs/remotes/') and '/' in ref[len('refs/remotes/'):])
-                for item in indices[canonical]:
+                for item in indices[canonical] + self._index_observations.get(canonical, []):
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
                         if any(pr['url'] == item['url'] for pr in branch['prs']):
                             # An earlier SHA-search observation already proves the

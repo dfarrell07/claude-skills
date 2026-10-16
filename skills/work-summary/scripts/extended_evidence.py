@@ -236,11 +236,30 @@ def comment_history_state(record, start, end, login, latest_proof=None):
     return not rows, ids, [identity for identity in ids if identity not in resolved]
 
 
+def same_github_item_url(left, right):
+    """GitHub owner/repo casing is equivalent; native route/fragment stay exact."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        first, second = urlsplit(left), urlsplit(right)
+    except ValueError:
+        return False
+    a, b = first.path.split('/'), second.path.split('/')
+    return (first.scheme == second.scheme == 'https'
+            and HOST.fullmatch(first.netloc) is not None
+            and first.netloc.casefold() == second.netloc.casefold()
+            and len(a) == len(b) == 5 and a[0] == b[0] == ''
+            and REPO.fullmatch('/'.join(a[1:3])) is not None
+            and [part.casefold() for part in a[1:3]] == [part.casefold() for part in b[1:3]]
+            and a[3:] == b[3:] and a[3] in {'pull', 'issues'}
+            and first.query == second.query and first.fragment == second.fragment)
+
+
 def validate_review_context(source, item, host='github.com'):
     """A review's submitted time is native context, not a text-revision timestamp."""
     require(isinstance(source, dict) and is_pr_url(item['url']) and integer(source.get('id'), 1),
             'Invalid native review identity')
-    require(source.get('html_url') == item['url'] + '#pullrequestreview-' + str(source['id']),
+    require(same_github_item_url(source.get('html_url'), item['url'] + '#pullrequestreview-' + str(source['id'])),
             'Native review target mismatch')
     require('body' in source and (source['body'] is None or isinstance(source['body'], str)),
             'Invalid native review body')
@@ -390,10 +409,13 @@ def validate_github(data, evidence, start, end):
                     and remote.get('host', host) == host} for path, row in inventory.items()}
     unrouted = {path for path, repositories in routes.items() if not repositories}
     repository_aliases(github, host)
+    selected_urls = {url.casefold() for url in evidence}
+    require(len(selected_urls) == len(evidence), 'Duplicate selected GitHub identity')
     for kind in ('prs', 'issues'):
         for item in github.get('context_' + kind, []):
             valid_item(item, kind, host)
-            require(item['url'] not in evidence, 'Duplicate GitHub context item')
+            require(item['url'].casefold() not in selected_urls, 'Duplicate GitHub context item')
+            selected_urls.add(item['url'].casefold())
             require(isinstance(item.get('roles'), list) and all(isinstance(role, str) for role in item['roles']),
                     'Invalid GitHub context roles')
             timestamp(item['observed_at'])
@@ -448,7 +470,7 @@ def validate_github(data, evidence, start, end):
         require(comment.get('kind') in {'issue_comment', 'review_comment'}
                 and integer(comment.get('id'), 1), 'Invalid GitHub comment identity')
         fragment = 'issuecomment-' if comment['kind'] == 'issue_comment' else 'discussion_r'
-        require(comment.get('url') == item['url'] + '#' + fragment + str(comment['id']),
+        require(same_github_item_url(comment.get('url'), item['url'] + '#' + fragment + str(comment['id'])),
                 'Invalid native GitHub comment URL')
         require(isinstance(comment.get('body'), str)
                 and (comment.get('author_login') is None or isinstance(comment['author_login'], str)
@@ -540,9 +562,9 @@ def validate_github(data, evidence, start, end):
                     and event['action'] in {'issue_comment', 'review_comment',
                                             'issue_comment_edited', 'review_comment_edited'},
                     'Invalid native comment body provenance')
-        require(isinstance(event.get('url'), str) and (event['url'] == item['url']
-                or event['url'].startswith(item['url'] + '#')), 'Invalid activity URL')
-        require(event['url'] == item['url'] or re.fullmatch(r'[A-Za-z0-9_-]+', urlsplit(event['url']).fragment),
+        require(isinstance(event.get('url'), str)
+                and same_github_item_url(event['url'].partition('#')[0], item['url']), 'Invalid activity URL')
+        require(same_github_item_url(event['url'], item['url']) or re.fullmatch(r'[A-Za-z0-9_-]+', urlsplit(event['url']).fragment),
                 'Invalid activity fragment')
         validate_activity_identity(event, item, host)
         validate_editor_evidence(event)

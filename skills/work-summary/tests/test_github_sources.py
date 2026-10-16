@@ -90,6 +90,131 @@ class GithubSourcesTest(unittest.TestCase):
         client.calls, client.warnings = calls, warnings
         return client
 
+    def test_role_case_variants_preserve_native_observation_and_inspect_one_identity(self):
+        from extended_evidence import validate_github
+        from work_links import referenced_keys
+        def api(args):
+            if 'search/issues' in args:
+                query = next(arg[2:] for arg in args if arg.startswith('q='))
+                if not query.startswith('is:pr '):
+                    return {'total_count': 0, 'incomplete_results': False, 'items': []}
+                first = 'author:me is:open' in query
+                row = {**rest(repo='ORG/REPO' if first else 'org/repo'),
+                       'created_at': '2026-10-10T00:00:00Z', 'user': {'login': 'me'},
+                       'body': 'PROJ-123' if first else 'TASK-124'}
+                return {'total_count': 1, 'incomplete_results': False, 'items': [row]}
+            return []
+        client = self.client(api)
+        github = {'prs': [], 'issues': []}
+        client.discover(github)
+        self.assertEqual(len(github['context_prs']), 1)
+        self.assertEqual(len(github['activity']), 1)
+        self.assertEqual(github['context_prs'][0]['url'], 'https://github.com/ORG/REPO/pull/1')
+        self.assertEqual(github['context_observations'][0]['url'], 'https://github.com/org/repo/pull/1')
+        self.assertEqual(set(referenced_keys(github)), {'PROJ-123', 'TASK-124'})
+        reads = [args[2].casefold() for args in client.calls if len(args) > 2 and args[2].startswith('repos/')]
+        self.assertEqual(len(reads), len(set(reads)))
+        self.assertEqual(len(github['context_prs'][0]['roles']), 7)
+        validate_github({'metadata': {'github_host': 'github.com', 'github_user': 'me'}, 'github': github},
+                        {}, START, END)
+        github['context_prs'].append({**github['context_prs'][0],
+                                      'url': 'https://github.com/org/repo/pull/1', 'repo': 'org/repo'})
+        with self.assertRaisesRegex(ValueError, 'Duplicate'):
+            validate_github({'metadata': {'github_host': 'github.com', 'github_user': 'me'}, 'github': github},
+                            {}, START, END)
+
+    def test_case_variant_native_comments_reviews_keep_activity_and_exact_proof_fragments(self):
+        from extended_evidence import same_github_item_url, validate_github
+        from work_links import referenced_keys
+        for kind in ('prs', 'issues'):
+            with self.subTest(kind=kind):
+                route, number = ('pull', 1) if kind == 'prs' else ('issues', 2)
+                lower = f'https://github.com/org/repo/{route}/{number}'
+                comments = {}
+                for category, identity, fragment, body in [
+                        ('issue_comment', 42, 'issuecomment-', 'COMMENT-7'),
+                        ('review_comment', 43, 'discussion_r', 'INLINE-9')]:
+                    comments[category] = {'id': identity, 'node_id': 'N' + str(identity),
+                        'user': {'login': 'me'}, 'body': body, 'created_at': '2026-10-10T00:00:00Z',
+                        'updated_at': '2026-10-10T00:00:00Z', 'html_url': lower + '#' + fragment + str(identity)}
+                def api(args):
+                    if args[0] == 'graphql':
+                        identity = next(arg[3:] for arg in args if arg.startswith('id='))
+                        row = next(row for row in comments.values() if row['node_id'] == identity)
+                        return {'data': {'node': {'id': identity, 'databaseId': row['id'], 'url': row['html_url'],
+                            'author': {'login': 'me'}, 'editor': None, 'lastEditedAt': None,
+                            'createdAt': row['created_at'], 'updatedAt': row['updated_at']}}}
+                    if 'search/issues' in args:
+                        query = next(arg[2:] for arg in args if arg.startswith('q='))
+                        if query.startswith('is:pr ') != (kind == 'prs'):
+                            return {'total_count': 0, 'incomplete_results': False, 'items': []}
+                        first = 'author:me is:open' in query
+                        row = {**rest(number), 'user': {'login': 'me'}, 'created_at': '2026-10-10T00:00:00Z',
+                               'html_url': lower.replace('/org/repo/', '/ORG/REPO/') if first else lower}
+                        if kind == 'issues':
+                            row.pop('pull_request')
+                        return {'total_count': 1, 'incomplete_results': False, 'items': [row]}
+                    endpoint = args[2].casefold()
+                    if f'/issues/{number}/comments' in endpoint:
+                        return [comments['issue_comment']]
+                    if endpoint.endswith('/reviews'):
+                        return [{'id': 44, 'user': {'login': 'me'}, 'body': 'REVIEW-8', 'state': 'APPROVED',
+                                 'submitted_at': '2026-10-11T00:00:00Z',
+                                 'html_url': lower + '#pullrequestreview-44'}]
+                    if endpoint.endswith('/pulls/1/comments'):
+                        return [comments['review_comment']]
+                    return []
+                client = self.client(api)
+                github = {'prs': [], 'issues': []}
+                client.discover(github)
+                self.assertEqual(len(github['context_' + kind]), 1)
+                self.assertEqual(len(github['activity']), 4 if kind == 'prs' else 2)
+                self.assertEqual(len(github['reference_comments']), 2 if kind == 'prs' else 1)
+                self.assertEqual(set(referenced_keys(github)),
+                                 {'COMMENT-7', 'REVIEW-8', 'INLINE-9'} if kind == 'prs' else {'COMMENT-7'})
+                self.assertEqual(github['reference_comments'][0]['url'], lower + '#issuecomment-42')
+                self.assertEqual(github['reference_comments'][0]['node_id'], 'N42')
+                validate_github({'metadata': {'github_host': 'github.com', 'github_user': 'me'}, 'github': github},
+                                {}, START, END)
+                self.assertEqual(client.warnings, [])
+                for bad in [lower.replace('/org/repo/', '/org/wrong/') + '#issuecomment-42',
+                            lower[:-1] + '9#issuecomment-42', lower + '#issuecomment-43',
+                            lower + '#ISSUECOMMENT-42', lower.replace('/' + route + '/', '/' + route.upper() + '/')
+                            + '#issuecomment-42', lower + '?x=1#issuecomment-42']:
+                    altered = copy.deepcopy(github)
+                    altered['reference_comments'][0]['url'] = bad
+                    with self.assertRaises(ValueError):
+                        validate_github({'metadata': {'github_host': 'github.com', 'github_user': 'me'},
+                                         'github': altered}, {}, START, END)
+                self.assertFalse(same_github_item_url(lower + '#ISSUECOMMENT-42', lower + '#issuecomment-42'))
+
+    def test_redirect_repair_matches_later_canonical_index_head_observation(self):
+        first = gql(repo='new/repo', sha='b' * 40, head='unrelated')
+        later = gql(repo='new/repo', sha=SHA, head='unrelated')
+        def api(args):
+            if args[0] != 'graphql':
+                return {'id': 7, 'full_name': 'new/repo', 'html_url': 'https://github.com/new/repo'}
+            if any(arg.startswith('q=is:pr repo:') for arg in args):
+                if 'q=is:pr repo:old/repo author:me sort:created-asc' in args:
+                    return {'data': {'search': connection()}}
+                after = 'after=next' in args
+                return {'data': {'search': connection([later] if after else [first], total=2,
+                                                      more=not after, cursor=None if after else 'next')}}
+            result = snapshot_data(args)
+            for alias in result['data']:
+                if alias.startswith('c'):
+                    result['data'][alias] = {'id': 'native-repo', 'nameWithOwner': 'new/repo', 'object': None}
+            return result
+        client = self.client(api)
+        github = {'prs': [], 'issues': [], 'activity': []}
+        branches = [branch()]
+        client.associate_branches(branches, [repository(remotes=('old/repo',))], github)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'exact_head_or_merge_sha')
+        self.assertEqual(github['pr_index'][0]['head_sha'], 'b' * 40)
+        self.assertEqual(github['pr_index_observations'][0]['head_sha'], SHA)
+        self.assertEqual(client.coverage['pr_index:new/repo']['status'], 'partial')
+
     def test_role_snapshots_keep_pr_and_issue_reference_frontiers_without_duplicate_activity(self):
         from work_links import associate_work, complete_references, referenced_keys, validate_links
         from provider_references import gitlab_seed_urls

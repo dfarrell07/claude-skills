@@ -129,7 +129,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                                     "author_login": (row.get("user") or {}).get("login")}
                             require(isinstance(item["body"], str), "Invalid GitHub body")
                             valid_item(item, kind, host)
-                            key = (item["repo"], item["number"])
+                            key = (item["repo"].casefold(), item["number"])
                             if key in seen:
                                 initial_observations.append(item)
                             require(key not in seen, "Duplicate search item")
@@ -162,7 +162,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                         info['initial_incomplete_results'] = response['incomplete_results']
                         info['incomplete_results'] = native['status'] != 'ok' and native['incomplete_results']
                         for item in recovered:
-                            identity_key = (item['repo'], item['number'])
+                            identity_key = (item['repo'].casefold(), item['number'])
                             if identity_key in seen:
                                 initial_observations.append(item)
                                 continue
@@ -215,21 +215,21 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     if github_user:
         ledger = Github(api, host, github_user, start, end, warn)
         ledger.discover(github, jira["linked_prs"])
-        known = {item['url']: item for item in github_items(github)}
+        known = {item['url'].casefold(): item for item in reversed(github_items(github, include_index=False))}
         retained_context = []
         for kind, items in initial_context.items():
             for item in items:
-                if item['url'] not in known:
+                if item['url'].casefold() not in known:
                     item = {**item, 'roles': [], 'observed_at': iso(datetime.now(UTC))}
                     github['context_' + kind].append(item)
-                    known[item['url']] = item
+                    known[item['url'].casefold()] = item
                     retained_context.append(item)
-                original = known[item['url']]
+                original = known[item['url'].casefold()]
                 ledger.retain_context_observation(github, item, original)
                 if 'initial_dated_search_context' not in original.setdefault('roles', []):
                     original['roles'].append('initial_dated_search_context')
         for item in initial_observations:
-            ledger.retain_context_observation(github, item, known[item['url']])
+            ledger.retain_context_observation(github, item, known[item['url'].casefold()])
         if retained_context:
             ledger._inspect_activity(github, retained_context)
         ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
@@ -423,7 +423,7 @@ def validate(data, source=None):
     if "github_searches" in metadata:
         retained_context_by_url = {}
         for item in github_items(github, include_index=False):
-            retained_context_by_url.setdefault(item['url'], []).append(item)
+            retained_context_by_url.setdefault(item['url'].casefold(), []).append(item)
         searches = metadata["github_searches"]
         require(isinstance(searches, dict), "Invalid GitHub search coverage")
         if metadata.get("github_status") != "unavailable":
@@ -436,6 +436,8 @@ def validate(data, source=None):
                     "GitHub search count disagrees with evidence")
             total = info.get("total_count")
             require(total is None or integer(total), "Invalid GitHub total count")
+            selected_identities = {url.casefold() for url in evidence}
+            primary_identities = {row['url'].casefold() for row in github[kind]}
             outside = info.get('outside_window_count', 0)
             require(integer(outside) and (not outside or metadata.get('window_kind') == 'explicit'),
                     "Invalid native-query boundary count")
@@ -446,14 +448,14 @@ def validate(data, source=None):
                 context_urls = set()
                 for item in context:
                     valid_item(item, kind, host)
-                    require(item['url'] not in context_urls and item['url'] in evidence
-                            and item['url'] not in {row['url'] for row in github[kind]}
+                    require(item['url'].casefold() not in context_urls and item['url'].casefold() in selected_identities
+                            and item['url'].casefold() not in primary_identities
                             and not start <= timestamp(item['updated_at']) <= end,
                             'Invalid native-query context item')
-                    retained = retained_context_by_url.get(item['url'], [])
+                    retained = retained_context_by_url.get(item['url'].casefold(), [])
                     require(any(all(row.get(field) == value for field, value in item.items())
                                 for row in retained), 'Native-query context payload was not retained')
-                    context_urls.add(item['url'])
+                    context_urls.add(item['url'].casefold())
             if info["status"] == "ok":
                 require(total == len(github[kind]) + outside and not info["incomplete_results"],
                         "Incomplete search marked complete")
