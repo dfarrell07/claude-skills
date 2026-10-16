@@ -26,6 +26,30 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(data['github']['prs'][0]['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(data['jira']['issues'][0]['pr_links'][0]['url'], data['github']['prs'][0]['url'])
 
+    def test_authenticated_custom_field_counterparts_keep_exact_native_field_provenance(self):
+        from jira_sources import _custom_pr_links
+        from work_links import native_review_links
+        data = self.capture()
+        issue = data['jira']['issues'][0]
+        pr = data['github']['prs'][0]
+        pr['title'] = 'Repair checks'
+        mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
+        issue['full_detail'] = {'fields': {'customfield_123': {
+            'content': [{'text': pr['url'], 'marks': [{'attrs': {'href': mr}}]}]}}}
+        issue['pr_links'] = _custom_pr_links(issue, issue['full_detail']['fields'], 'full_detail', 'github.com')
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        relation = pr['jira_links'][0]
+        self.assertEqual((relation['field_id'], relation['source_kind']), ('customfield_123', 'full_detail'))
+        review = native_review_links(issue)[0]
+        self.assertEqual((review['url'], review['field_id'], review['source_kind']),
+                         (mr, 'customfield_123', 'full_detail'))
+        for field, value in [('field_id', 'customfield_999'), ('source_kind', 'detail')]:
+            broken = copy.deepcopy(data)
+            broken['jira']['issues'][0]['pr_links'][0][field] = value
+            with self.assertRaises(ValueError):
+                validate_links(broken)
+
     def test_moved_native_jira_key_links_canonical_ticket_and_retains_original_reference(self):
         data = self.capture()
         native = {'key': 'TEST-123', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',

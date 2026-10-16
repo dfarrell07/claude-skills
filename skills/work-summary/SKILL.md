@@ -148,6 +148,9 @@ with each historical-head proof. A matching name is only a lead; a native former
 head proves an association, not authorship or new work during the requested week.
 Follow the filtered connection's cursors to completion: its reported total may
 describe the unfiltered timeline and must not be treated as a filtered event count.
+When a historical after-commit object is unavailable, read the native paginated
+REST timeline: its force-push event can retain the hash. Keep any still-unknown
+before head distinct from the recovered after head.
 
 Jira uses the authenticated tenant/account. Retain all-status assigned,
 reported, created, watched and formerly assigned inventories plus recent
@@ -157,6 +160,10 @@ comment suffix: retain those native comments immediately, read missing history,
 and preserve richer native rows when merging projected pages. Count/identity
 drift stays incomplete while valid comments and links survive. Projected rows
 without native actors/times cannot prove weekly activity.
+Request all readable detail fields, including custom fields: a narrow field list
+can omit the ticket's current PR/MR field. Bind custom-field links to their native
+field ID and observation. When enriching a saved narrow capture, retain the
+original responses and add an authenticated full-field observation separately.
 Follow moved Jira keys using independent authenticated reads of the requested
 and canonical keys with equal native issue IDs. Preserve both native responses
 and the original reference URL. A readable canonical issue survives a failed
@@ -183,8 +190,8 @@ Review the surrounding meaning before listing a pair. Foreign-site Jira URLs
 do not identify a same-key ticket on the active site. Verify GitHub
 repository transfers using independent native reads with equal repository IDs;
 keep historical source URLs beside canonical relations.
-Include native issue/review comment bodies in reference discovery, including
-comments by other authors and comments outside the weekly window. Preserve the
+Include native issue/review comments and top-level review bodies in reference
+discovery, including other authors and dates outside the weekly window. Preserve the
 comment URL as relation evidence; a reference does not credit its author to the
 user or make an old discussion a weekly accomplishment. Failed guessed keys
 need their exact native failure and source context; a CLI's combined

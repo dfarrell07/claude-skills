@@ -5,6 +5,7 @@ from urllib.parse import quote, urlsplit
 
 from evidence import is_pr_url, require
 from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
+from jira_sources import _custom_pr_links
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -105,8 +106,13 @@ def native_review_links(issue):
                 yield from values(child, sensitive)
 
     fields = (issue.get('detail') or {}).get('fields', {})
-    sources = [('description', issue['url'], fields.get('description'), issue['sensitive']),
-               ('issue_link', issue['url'], fields.get('issuelinks'), issue['sensitive'])]
+    sources = [('description', issue['url'], fields.get('description'), issue['sensitive'], {}),
+               ('issue_link', issue['url'], fields.get('issuelinks'), issue['sensitive'], {})]
+    for source_kind in ('detail', 'full_detail'):
+        for field_id, value in (issue.get(source_kind) or {}).get('fields', {}).items():
+            if re.fullmatch(r'customfield_[1-9][0-9]*', field_id):
+                sources.append(('custom_field', issue['url'], value, issue['sensitive'],
+                                {'field_id': field_id, 'source_kind': source_kind}))
     comments = list((fields.get('comment') or {}).get('comments', []))
     for page in issue.get('comment_pages', []):
         comments.extend(page.get('comments', []))
@@ -114,11 +120,11 @@ def native_review_links(issue):
         if isinstance(comment, dict) and isinstance(comment.get('id'), str):
             sources.append(('comment', issue['url'] + '?focusedCommentId=' + quote(comment['id'], safe=''),
                             comment.get('body'), issue['sensitive'] or bool(comment.get('visibility'))
-                            or not isinstance(comment.get('author'), dict)))
+                            or not isinstance(comment.get('author'), dict), {}))
     result = {}
-    for proof, evidence_url, value, sensitive in sources:
+    for proof, evidence_url, value, sensitive, extra in sources:
         for text, private in values(value, sensitive):
-            for match in URL.finditer(text):
+            for match in URL.finditer(text.replace('|', ' ')):
                 original = match.group().rstrip('.,;:!?`\'’”')
                 try:
                     parts = urlsplit(original)
@@ -132,8 +138,8 @@ def native_review_links(issue):
                     continue
                 url = 'https://' + parts.netloc + parts.path
                 relation = {'url': url, 'source_url': original, 'provider': 'gitlab', 'proof': proof,
-                            'evidence_url': evidence_url, 'sensitive': private}
-                result[(url, proof, evidence_url, private)] = relation
+                            'evidence_url': evidence_url, 'sensitive': private, **extra}
+                result[(url, proof, evidence_url, private, tuple(sorted(extra.items())))] = relation
     return [result[key] for key in sorted(result)]
 
 
@@ -214,7 +220,7 @@ def associate_work(jira, github):
             if isinstance(pr.get('proof'), str) and pr['proof'].startswith('github_'):
                 continue
             url = canonical.get(pr_identity(pr['url'], aliases), pr['url'])
-            relation = {**pr, 'url': url}
+            relation = {**pr, 'url': url, 'sensitive': bool(pr.get('sensitive', issue['sensitive']) or issue['sensitive'])}
             if pr['url'] != url:
                 relation['source_url'] = pr['url']
             relations.setdefault((issue['key'], url), relation)
@@ -251,7 +257,7 @@ def associate_work(jira, github):
     for item in items:
         item['jira_links'] = [{'key': key, 'url': issues[key]['url'], 'proof': proof['proof'],
                                'evidence_url': proof['evidence_url'], 'sensitive': proof.get('sensitive', issues[key]['sensitive']),
-                               **{field: proof[field] for field in ('source_key', 'jira_source_url') if field in proof}}
+                               **{field: proof[field] for field in ('source_key', 'jira_source_url', 'field_id', 'source_kind') if field in proof}}
                               for (key, url), proof in sorted(relations.items())
                               if pr_identity(url, aliases) == pr_identity(item['url'], aliases)]
     for issue in issues.values():
@@ -335,6 +341,17 @@ def validate_links(data):
                                 and evidence_url == issue['url'] + '?focusedCommentId=' + quote(comment['id'], safe='')
                                 and native_pr_mention(comment.get('body'), relation.get('source_url', relation['url'])) for comment in comments),
                             'Jira PR mention absent from native comment')
+                elif proof == 'custom_field':
+                    source_kind = relation.get('source_kind')
+                    require(source_kind in {'detail', 'full_detail'}, 'Unknown Jira custom field observation')
+                    native = issue.get(source_kind)
+                    require(isinstance(native, dict) and isinstance(native.get('fields'), dict)
+                            and evidence_url == issue['url'], 'Missing native Jira custom field source')
+                    expected = _custom_pr_links(issue, native['fields'], source_kind, host)
+                    require(any(row['url'] == relation.get('source_url', relation['url'])
+                                and row['field_id'] == relation.get('field_id')
+                                and row['sensitive'] == relation.get('sensitive') for row in expected),
+                            'Jira PR mention absent from native custom field')
                 else:
                     require(False, 'Unknown cross-source proof')
     for item in items:
@@ -345,6 +362,6 @@ def validate_links(data):
                     pr_identity(pr['url'], aliases) == pr_identity(item['url'], aliases) and pr['proof'] == relation.get('proof')
                     and pr['evidence_url'] == relation.get('evidence_url')
                     and pr.get('sensitive', issue['sensitive']) == relation.get('sensitive', issue['sensitive'])
-                    and all(pr.get(field) == relation.get(field) for field in ('source_key', 'jira_source_url'))
+                    and all(pr.get(field) == relation.get(field) for field in ('source_key', 'jira_source_url', 'field_id', 'source_kind'))
                     for pr in issue.get('pr_links', [])),
                     'GitHub Jira relation is absent from source issue')

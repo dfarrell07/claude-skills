@@ -562,6 +562,8 @@ def validate_jira(data, start, end):
     jira = data.get('jira')
     if jira is None:
         return {}
+    from jira_sources import validate_full_details
+    validate_full_details(jira)
     require(isinstance(jira, dict) and isinstance(jira.get('metadata'), dict), 'Invalid Jira capture')
     meta = jira['metadata']
     require(meta.get('status') in {'ok', 'partial', 'unavailable'}, 'Invalid Jira status')

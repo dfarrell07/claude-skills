@@ -868,6 +868,18 @@ def render_detailed(data, source=None):
                          f"{markdown(comment['kind'])}; {actor}; created {comment['created_at']}; "
                          f"updated {comment['updated_at']}")
         lines.append("")
+    reviews = data['github'].get('reference_reviews', [])
+    if reviews:
+        lines += [f'#### Native GitHub Review Context ({len(reviews)})', '',
+                  'Review bodies from every captured author support reference discovery. '
+                  'The current body does not prove historical wording or personal weekly work.', '']
+        for record in reviews:
+            native = record['source']
+            author = (native.get('user') or {}).get('login') or 'deleted author'
+            lines.append(f"- [{markdown(record['repo'])}#{record['number']}]({native['html_url']}) "
+                         f"{markdown(author)}; {markdown(native['state'])}; "
+                         f"submitted {markdown(native.get('submitted_at') or 'unsubmitted')}")
+        lines.append('')
     histories = data['github'].get('comment_edit_histories', [])
     if histories:
         lines += ['#### Native GitHub Comment Revision Context', '',
