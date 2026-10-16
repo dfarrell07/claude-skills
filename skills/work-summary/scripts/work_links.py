@@ -124,7 +124,8 @@ def native_review_links(issue):
 
 
 def github_items(github, include_index=True):
-    buckets = ('prs', 'issues', 'context_prs', 'context_issues') + (('pr_index',) if include_index else ())
+    buckets = ('prs', 'issues', 'context_prs', 'context_issues') + (
+        ('pr_index', 'pr_index_observations') if include_index else ())
     return [item for bucket in buckets for item in github.get(bucket, [])]
 
 
@@ -135,6 +136,7 @@ def referenced_keys(github, site=None):
     selected = github_items(github, include_index=False)
     selected_urls = {item['url'] for item in selected}
     selected += [item for item in github.get('pr_index', []) if item['url'] in selected_urls]
+    selected += [item for item in github.get('pr_index_observations', []) if item['url'] in selected_urls]
     for item in selected:
         for field in ('title', 'body', 'head_ref'):
             for key in mentioned_keys(item.get(field), site):

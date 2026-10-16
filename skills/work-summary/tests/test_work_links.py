@@ -26,6 +26,19 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(data['github']['prs'][0]['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(data['jira']['issues'][0]['pr_links'][0]['url'], data['github']['prs'][0]['url'])
 
+    def test_later_selected_native_observation_keeps_new_ticket_reference(self):
+        data = self.capture()
+        pr = data['github']['prs'][0]
+        pr['title'] = 'First native observation'
+        data['github']['pr_index_observations'] = [
+            {**pr, 'title': 'TEST-123: later native observation'},
+            {**pr, 'url': 'https://github.com/org/repo/pull/999', 'title': 'UNRELATED-999'}]
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
+        self.assertEqual(pr['title'], 'First native observation')
+
     def test_comment_only_ticket_is_discovered_and_bound_without_crediting_its_author(self):
         data = self.capture()
         pr = data['github']['prs'][0]

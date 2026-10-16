@@ -133,6 +133,16 @@ def validate_github(data, evidence, start, end):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid indexed PR snapshot')
         indexed[item['url']] = item
+    observations = github.get('pr_index_observations', [])
+    require(isinstance(observations, list), 'Invalid native PR index observations')
+    indexed_observations = {url: [item] for url, item in indexed.items()}
+    for item in observations:
+        valid_item(item, 'prs', host)
+        require(item['url'] in indexed, 'Native PR observation absent from index')
+        for field in ('head_sha', 'merge_sha'):
+            require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
+                    'Invalid native PR observation snapshot')
+        indexed_observations[item['url']].append(item)
     comments_seen = {}
     comments = github.get('reference_comments', [])
     require(isinstance(comments, list), 'Invalid GitHub reference comments')
@@ -194,7 +204,8 @@ def validate_github(data, evidence, start, end):
                                        'global_any_author_sha_search', 'commit_association'},
                     'Invalid branch PR proof')
             if pr['proof'] == 'exact_head_or_merge_sha':
-                require(branch['hash'] in (original.get('head_sha'), original.get('merge_sha')), 'Branch SHA mismatch')
+                require(any(branch['hash'] in (row.get('head_sha'), row.get('merge_sha'))
+                            for row in indexed_observations[pr['url']]), 'Branch SHA mismatch')
         if branch['pr_status'] == 'matched':
             require(bool(prs), 'Matched branch needs PR evidence')
         if branch['pr_status'] == 'no_match':

@@ -33,6 +33,28 @@ class ConciseReportTest(unittest.TestCase):
     def reference(self, item):
         return {key:item[key] for key in ('repo','number','url')}
 
+    def test_mutating_pr_heads_preserve_both_native_observations_for_exact_branch_proof(self):
+        data = self.capture()
+        item = {**data['github']['prs'][0], 'head_sha': 'c' * 40, 'merge_sha': None}
+        later = {**item, 'head_sha': 'b' * 40, 'body': 'A later native observation.'}
+        data['github'].update(pr_index=[item], pr_index_observations=[later])
+        repo = '/example/repo'
+        data['metadata'].update(repos_searched=1, repositories=[{
+            'path': repo, 'common_dir': repo + '/.git', 'status': 'ok', 'identities': [],
+            'paths': [repo], 'refs': [{'name': 'refs/heads/work', 'hash': 'b' * 40}]}])
+        data['branches'] = [{'repo': repo, 'hash': 'b' * 40, 'object_type': 'commit',
+                             'refs': ['refs/heads/work'], 'pr_status': 'matched', 'prs': [{
+                                 **self.reference(item), 'state': item['state'], 'proof': 'exact_head_or_merge_sha'}]}]
+        ws.validate(data)
+        self.assertEqual(data['github']['pr_index'][0]['head_sha'], 'c' * 40)
+        for field, value in [('head_sha', 'a' * 40), ('head_sha', 'invalid'),
+                             ('url', 'https://github.com/org/repo/pull/999')]:
+            with self.subTest(field=field):
+                broken = copy.deepcopy(data)
+                broken['github']['pr_index_observations'][0][field] = value
+                with self.assertRaises(ValueError):
+                    ws.validate(broken)
+
     def test_stale_worktree_reflog_snapshot_requires_exact_native_head_evidence(self):
         data = self.capture()
         head = 'a' * 40
