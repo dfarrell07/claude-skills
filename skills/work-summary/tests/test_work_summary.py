@@ -54,7 +54,16 @@ if "search/commits" in args:
                                 "commit":{"author":{"email":email}}}]
     print(json.dumps({"total_count":len(items),"incomplete_results":False,"items":items}))
     sys.exit(0)
+if "graphql" in args:
+    print(json.dumps({"data":{"search":{"issueCount":0,"nodes":[],"pageInfo":{"hasNextPage":False,"endCursor":None}}}}))
+    sys.exit(0)
+if "search/issues" not in args:
+    print("[]")
+    sys.exit(0)
 query = next(value[2:] for value in args if value.startswith("q="))
+if ".." not in query:
+    print(json.dumps({"total_count":0,"incomplete_results":False,"items":[]}))
+    sys.exit(0)
 kind = "prs" if "is:pr " in query else "issues"
 page = int(next(value[5:] for value in args if value.startswith("page=")))
 if os.environ.get("GH_FAIL") == kind and page == int(os.environ.get("GH_FAIL_PAGE", "1")):
@@ -83,6 +92,10 @@ for index in range((page-1)*100, min(page*100, total)):
     if kind == "prs":
         item["pull_request"] = {"merged_at": updated if state == "merged" else None}
     rows.append(item)
+# The CLI cap check exercises reported coverage, while the direct Github tests
+# traverse all 1,000 rows without thousands of unrelated subprocess launches.
+if os.environ.get("GH_CAP"):
+    rows = rows[:1]
 if mode == "duplicate" and len(rows) > 1:
     rows[1] = rows[0]
 if mode == "invalid_item" and rows:
@@ -96,6 +109,10 @@ if mode == "drift" and page > 1:
 print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplete", "items": rows}))
 ''')
         gh.chmod(0o755)
+        # An absent Jira integration is deterministic even on a signed-in developer host.
+        acli = self.bin / "acli"
+        acli.write_text("#!/bin/sh\nexit 1\n")
+        acli.chmod(0o755)
 
     def run_script(self, script, *args, check=True):
         return subprocess.run(
@@ -131,7 +148,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["github"]["prs"][0]["state"], "merged")
         self.assertEqual(data["metadata"]["github_status"], "ok")
         calls = [json.loads(line) for line in (self.root / "gh.log").read_text().splitlines()]
-        searches = [args for args in calls if "search/issues" in args]
+        searches = [args for args in calls if "search/issues" in args and any(".." in v for v in args)]
         self.assertEqual(len(searches), 2)
         for args in searches:
             self.assertIn("sort=updated", args)
@@ -195,7 +212,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.env["GH_CAP"] = "1"
         data = self.capture()
         self.assertEqual(data["metadata"]["github_status"], "partial")
-        self.assertEqual(len(data["metadata"]["warnings"]), 2)
+        self.assertEqual(len([w for w in data["metadata"]["warnings"] if "exceeds the 1000-result cap" in w]), 2)
 
     def test_missing_author_is_a_gap(self):
         repo = self.repo("missing-author")
@@ -282,7 +299,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["metadata"]["github_status"], "ok")
         self.assertEqual(len(data["github"]["prs"]), 1)
         calls = [json.loads(line) for line in (self.root / "gh.log").read_text().splitlines()]
-        queries = [value for args in calls for value in args if value.startswith("q=")]
+        queries = [value for args in calls for value in args if value.startswith("q=") and ".." in value]
         self.assertEqual(len(queries), 2)
         self.assertTrue(all("author:mona-cat_octo" in query for query in queries))
 
@@ -679,6 +696,126 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         repo = self.repo("no-bytecode")
         self.run_script(copied / "work-summary.sh", "7", repo)
         self.assertEqual(list(copied.rglob("__pycache__")), [])
+
+    def test_additional_context_can_support_citations_without_becoming_weekly_updates(self):
+        data = self.capture()
+        item = copy.deepcopy(data["github"]["prs"][0])
+        item.update(number=77, url="https://github.com/org/project/pull/77", state="open",
+                    updated_at="2020-01-01T00:00:00Z", closed_at=None, merged_at=None,
+                    roles=["open_authored_prs"], observed_at=data["metadata"]["to_at"])
+        data["github"]["context_prs"] = [item]
+        enriched = copy.deepcopy(data)
+        enriched["analysis"] = {"themes": [], "in_progress": [{"repo":item["repo"], "number":77,
+                                    "url":item["url"], "description":"Older work under review"}]}
+        source = self.root / "source.json"
+        source.write_text(json.dumps(data))
+        report = self.root / "enriched.json"
+        report.write_text(json.dumps(enriched))
+        output = self.run_script(RENDER, report, source).stdout
+        self.assertIn("Older work under review", output)
+        self.assertIn("older open work", output)
+        enriched["github"]["context_prs"][0]["title"] = "Altered"
+        report.write_text(json.dumps(enriched))
+        self.assertNotEqual(self.run_script(RENDER, report, source, check=False).returncode, 0)
+
+    def test_jira_citations_and_restricted_details(self):
+        data = self.capture()
+        item = {"key":"EXAMPLE-123", "url":"https://jira.example.test/browse/EXAMPLE-123",
+                "title":"Private title must stay hidden", "status":"In Progress", "status_category":"indeterminate",
+                "roles":["assigned"], "sensitive":True}
+        data["jira"] = {"metadata":{"status":"ok", "site":"jira.example.test", "identity_verified":True,
+                                    "account_id":"test-account"}, "issues":[item], "activity":[{
+                    "key":item["key"], "comment_id":"42", "url":item["url"]+"?focusedCommentId=42", "kind":"comment_created",
+                    "actor_account_id":"test-account", "occurred_at":data["metadata"]["to_at"]}]}
+        report = self.render(data).stdout
+        self.assertIn("Restricted ticket", report)
+        self.assertNotIn("Private title must stay hidden", report)
+        broken = copy.deepcopy(data)
+        broken["jira"]["metadata"]["account_id"] = None
+        broken["jira"]["activity"][0]["actor_account_id"] = None
+        invalid = self.root / "missing-principal.json"
+        invalid.write_text(json.dumps(broken))
+        self.assertNotEqual(self.run_script(RENDER, invalid, check=False).returncode, 0)
+        enriched = copy.deepcopy(data)
+        citation = {"key":item["key"], "url":item["url"]}
+        enriched["analysis"] = {"themes":[{"name":"Investigation", "description":"Investigated reported behavior",
+                                          "items":[], "jira":[citation]}],
+                               "in_progress":[{**citation, "description":"Investigation continues"}]}
+        source = self.root / "jira-source.json"
+        source.write_text(json.dumps(data))
+        capture = self.root / "jira-enriched.json"
+        capture.write_text(json.dumps(enriched))
+        self.assertIn("Investigated reported behavior", self.run_script(RENDER, capture, source).stdout)
+        enriched["analysis"]["themes"][0]["jira"][0]["key"] = "EXAMPLE-999"
+        capture.write_text(json.dumps(enriched))
+        self.assertNotEqual(self.run_script(RENDER, capture, source, check=False).returncode, 0)
+
+    def test_work_lists_and_analysis_show_both_jira_and_pr_links(self):
+        data = self.capture()
+        pr = data["github"]["prs"][0]
+        pr["body"] = "References EXAMPLE-123"
+        issue = {"key":"EXAMPLE-123", "url":"https://jira.example.test/browse/EXAMPLE-123",
+                 "title":"Synthetic linked work", "status":"Active", "status_category":"indeterminate",
+                 "roles":["referenced_by_github"], "sensitive":False,
+                 "pr_links":[{"url":pr["url"], "proof":"github_body_key", "evidence_url":pr["url"], "sensitive":False}]}
+        pr["jira_links"] = [{"key":issue["key"], "url":issue["url"], "proof":"github_body_key",
+                              "evidence_url":pr["url"], "sensitive":False}]
+        data["jira"] = {"metadata":{"status":"ok", "site":"jira.example.test"}, "issues":[issue], "activity":[]}
+        report = self.render(data).stdout
+        github_line = next(line for line in report.splitlines() if "Fix checks" in line)
+        jira_line = next(line for line in report.splitlines() if "Synthetic linked work" in line)
+        for line in (github_line, jira_line):
+            self.assertIn(pr["url"], line)
+            self.assertIn(issue["url"], line)
+        enriched = copy.deepcopy(data)
+        enriched["analysis"] = {"themes":[{"name":"Linked work", "description":"Investigated behavior",
+            "items":[{"repo":pr["repo"], "number":pr["number"], "url":pr["url"]}]}], "in_progress":[]}
+        source, capture = self.root / "paired-source.json", self.root / "paired.json"
+        source.write_text(json.dumps(data))
+        capture.write_text(json.dumps(enriched))
+        output = self.run_script(RENDER, capture, source).stdout
+        line = next(line for line in output.splitlines() if "Investigated behavior" in line)
+        self.assertIn(pr["url"], line)
+        self.assertIn(issue["url"], line)
+
+    def test_additional_sections_reject_markdown_injection(self):
+        repo = self.repo("validation")
+        data = self.capture(repo)
+        data["unattributed_commits"] = [{"repo":str(repo), "hash":"`\n# Forged", "author_email":"other@example.test"}]
+        capture = self.root / "invalid-lead.json"
+        capture.write_text(json.dumps(data))
+        result = self.run_script(RENDER, capture, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        data["unattributed_commits"] = []
+        site = "jira.example.test) **pwned** ("
+        data["jira"] = {"metadata":{"status":"ok", "site":site}, "issues":[{
+            "key":"EXAMPLE-1", "url":"https://"+site+"/browse/EXAMPLE-1", "title":"Title",
+            "status":"Active", "status_category":"indeterminate", "roles":["assigned"], "sensitive":False}], "activity":[]}
+        capture.write_text(json.dumps(data))
+        result = self.run_script(RENDER, capture, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
+    def test_actor_events_validate_identity_time_and_url(self):
+        data = self.capture()
+        item = data["github"]["prs"][0]
+        event = {"repo":item["repo"], "number":item["number"], "item_url":item["url"],
+                 "url":item["url"]+"#issuecomment-1", "actor":"test-user", "action":"issue_comment",
+                 "at":data["metadata"]["to_at"], "body":"verified"}
+        data["github"]["activity"] = [event]
+        self.assertIn("Verified GitHub Actor Events (1)", self.render(data).stdout)
+        for field, value in (("actor", "someone-else"), ("at", "2000-01-01T00:00:00Z"),
+                             ("url", "https://example.test/forged")):
+            broken = copy.deepcopy(data)
+            broken["github"]["activity"][0][field] = value
+            capture = self.root / "broken.json"
+            capture.write_text(json.dumps(broken))
+            self.assertNotEqual(self.run_script(RENDER, capture, check=False).returncode, 0)
+        data["metadata"]["github_user"] = ""
+        data["github"]["activity"][0]["actor"] = ""
+        capture.write_text(json.dumps(data))
+        self.assertNotEqual(self.run_script(RENDER, capture, check=False).returncode, 0)
 
     def test_collection_does_not_modify_working_tree(self):
         repo = self.repo("read-only")

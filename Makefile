@@ -42,7 +42,7 @@ gitlint:
 	@gitlint --commits origin/main..HEAD
 
 work-summary-test:
-	@python3 skills/work-summary/tests/test_work_summary.py
+	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s skills/work-summary/tests -p 'test_*.py'
 
 work-summary:
 	@set -eu; run_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/work-summary.XXXXXX"); \

@@ -22,6 +22,10 @@ from evidence import (  # noqa: E402
     read_json, require, timestamp, valid_item,
 )
 from local_sources import collect_local  # noqa: E402
+from github_sources import Github  # noqa: E402
+from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
+from work_links import associate_work, referenced_keys, github_items, validate_links  # noqa: E402
+from extended_evidence import validate_github, validate_jira, jira_reference  # noqa: E402
 
 
 def collect(days_text, roots, now=None):
@@ -111,10 +115,13 @@ def collect(days_text, roots, now=None):
                                 require(isinstance(row["pull_request"], dict) and "merged_at" in row["pull_request"],
                                         "Missing PR merge evidence")
                             merged = row["pull_request"]["merged_at"] if is_pr else None
+                            require(row.get("body") is None or isinstance(row["body"], str), "Invalid GitHub body")
                             item = {"repo": "/".join(parts[:2]), "number": row["number"], "title": row["title"],
                                     "state": "merged" if merged else row["state"], "url": url,
                                     "created_at": row["created_at"], "updated_at": row["updated_at"],
-                                    "closed_at": row["closed_at"], "merged_at": merged}
+                                    "closed_at": row["closed_at"], "merged_at": merged,
+                                    "body": row.get("body") or ""}
+                            require(isinstance(item["body"], str), "Invalid GitHub body")
                             valid_item(item, kind, host)
                             require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
                             key = (item["repo"], item["number"])
@@ -144,13 +151,29 @@ def collect(days_text, roots, now=None):
     local_warning_start = len(warnings)
     local = collect_local(roots, start, end, warn, api if github_user else None,
                           identity if github_user else {})
+    local_status = "partial" if len(warnings) > local_warning_start else "ok"
+    jira = collect_jira(start, end, warn)
+    discovery = {}
+    if github_user:
+        ledger = Github(api, host, github_user, start, end, warn)
+        ledger.discover(github, jira["linked_prs"])
+        ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
+        discovery = ledger.coverage
+        if any(info["status"] != "ok" for info in discovery.values()):
+            github_status = "partial"
+    add_referenced_jira(jira, referenced_keys(github, jira["metadata"].get("site")), start, end, warn)
+    if github_user:
+        ledger.add_linked_prs(github, jira["linked_prs"])
+        if any(info["status"] != "ok" for info in ledger.coverage.values()):
+            github_status = "partial"
+    associate_work(jira, github)
     return {
         "metadata": {"days": days, "since_date": start.date().isoformat(), "to_date": end.date().isoformat(),
                      "since_at": iso(start), "to_at": iso(end), **local["metadata"],
-                     "local_status": "partial" if len(warnings) > local_warning_start else "ok",
+                     "local_status": local_status, "github_discovery": discovery,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
-        "github": github, "commits": local["commits"], "branches": local["branches"],
+        "github": github, "jira": jira, "commits": local["commits"], "branches": local["branches"],
         "unattributed_commits": local["unattributed_commits"],
     }
 
@@ -195,6 +218,9 @@ def validate(data, source=None):
             evidence[item["url"]] = item
             if start and item.get("updated_at"):
                 require(start <= timestamp(item["updated_at"]) <= end, "GitHub item outside capture window")
+    validate_github(data, evidence, start, end)
+    jira_items = validate_jira(data, start, end)
+    validate_links(data)
     commits = data.get("commits")
     require(isinstance(commits, dict), "Missing commit evidence")
     require(metadata["repos_with_commits"] == len(commits) <= metadata["repos_searched"], "Repository counts do not match evidence")
@@ -249,10 +275,21 @@ def validate(data, source=None):
             require(branch.get("object_type") in {"commit", "tree", "blob", "tag"}
                     and isinstance(branch.get("refs"), list) and branch["refs"], "Invalid branch refs")
             refs = {ref["name"]: ref for ref in inventory[branch["repo"]].get("refs", [])}
-            require(all(name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")}
+            worktrees = {"worktree:" + tree["path"]: tree.get("head")
+                         for tree in inventory[branch["repo"]].get("worktrees", [])}
+            require(all((name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")})
+                        or (name in worktrees and worktrees[name] == branch["hash"])
                         for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
             require(branch.get("pr_status") in {"unchecked", "not_applicable", "matched", "no_match", "partial", "unsupported"},
                     "Invalid branch PR coverage")
+    if "unattributed_commits" in data:
+        leads = data["unattributed_commits"]
+        require(isinstance(leads, list), "Invalid authorship leads")
+        inventory = {entry["path"] for entry in metadata.get("repositories", [])}
+        for lead in leads:
+            require(isinstance(lead, dict) and lead.get("repo") in inventory
+                    and isinstance(lead.get("hash"), str) and HASH.fullmatch(lead["hash"])
+                    and isinstance(lead.get("author_email"), str) and lead["author_email"], "Invalid authorship lead")
     if "github_searches" in metadata:
         searches = metadata["github_searches"]
         require(isinstance(searches, dict), "Invalid GitHub search coverage")
@@ -295,17 +332,32 @@ def validate(data, source=None):
                 for key in ("name", "description")) and isinstance(theme.get("items"), list), "Invalid theme")
         for item in theme["items"]:
             reference(item)
+        jira_refs = theme.get("jira", [])
+        require(isinstance(jira_refs, list), "Invalid Jira citations")
+        for item in jira_refs:
+            require(isinstance(item, dict) and item.get("key") in jira_items
+                    and item.get("url") == jira_items[item["key"]]["url"], "Jira citation absent from capture")
+        branch_refs = theme.get("branches", [])
+        require(isinstance(branch_refs, list), "Invalid branch citations")
+        for item in branch_refs:
+            require(isinstance(item, dict) and any(item.get("repo") == branch["repo"]
+                    and item.get("hash") == branch["hash"] for branch in data.get("branches", [])),
+                    "Branch citation absent from capture")
         local = theme.get("commits", [])
         require(isinstance(local, list), "Invalid local commit citations")
         for item in local:
             require(isinstance(item, dict) and isinstance(item.get("repo"), str)
                     and any(entry["hash"] == item.get("hash") for entry in commits.get(item["repo"], [])),
                     "Analysis commit is absent from source evidence")
-        require(theme["items"] or local, "A theme needs at least one source citation")
+        require(theme["items"] or local or jira_refs or branch_refs, "A theme needs at least one source citation")
     for item in analysis["in_progress"]:
         require(isinstance(item, dict) and isinstance(item.get("description"), str) and item["description"].strip(),
                 "Invalid in-progress item")
-        require(reference(item)["state"] == "open", "In-progress citation must refer to an open item")
+        if "key" in item:
+            require(item["key"] in jira_items and item.get("url") == jira_items[item["key"]]["url"]
+                    and jira_items[item["key"]].get("status_category", "").casefold() != "done", "In-progress Jira must be active")
+        else:
+            require(reference(item)["state"] == "open", "In-progress citation must refer to an open item")
 
 
 def markdown(text):
@@ -324,8 +376,30 @@ def render(data, source=None):
     validate(data, source)
     m = data["metadata"]
     prs, issues = data["github"]["prs"], data["github"]["issues"]
+    by_url = {item["url"]: item for item in reversed(github_items(data["github"]))}
+    jira_by_key = {item["key"]: item for item in data.get("jira", {}).get("issues", [])}
+
+    def linked(item):
+        original = by_url.get(item["url"], item)
+        related = original.get("jira_links", [])
+        suffix = " · " + ", ".join(jira_reference(entry) for entry in related) if related else (
+            " (Jira: no verified link found)" if "/pull/" in item["url"] else "")
+        return link(item) + suffix
+
+    def jira_work(item):
+        original = jira_by_key.get(item["key"], item)
+        related = original.get("pr_links", [])
+        links = []
+        for entry in related:
+            parts = urlsplit(entry["url"]).path.strip("/").split("/")
+            links.append(link({"repo": "/".join(parts[:2]), "number": int(parts[3]), "url": entry["url"]}))
+        return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
+
     lines = [f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})", "",
-             "GitHub scope: authored PRs/issues updated during this period. Updates may come from other people or automation.",
+             "GitHub scope: recently updated authored items, older open work, role context, and verified personal events.",
+             "Updates and review requests alone do not establish personal work during this period.",
+             "Private report: linked Jira context may include restricted tickets; restricted titles are hidden.",
+             "Comment edits require native editor proof; missing editor data and deleted events remain outside verified activity.",
              "Local scope: configured or account-verified author emails across recorded refs and registered worktrees.", ""]
     if "since_at" in m:
         lines += [f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.", ""]
@@ -335,14 +409,16 @@ def render(data, source=None):
     if "analysis" in data:
         lines += ["### Key Accomplishments", ""]
         for theme in data["analysis"]["themes"]:
-            citations = [link(item) for item in theme["items"]]
-            citations += [f"{markdown(item['repo'])} `{item['hash'][:12]}`" for item in theme.get("commits", [])]
+            citations = [linked(item) for item in theme["items"]]
+            citations += [f"{markdown(item['repo'])} `{item['hash'][:12]}`" for item in theme.get("commits", []) + theme.get("branches", [])]
+            citations += [jira_work(item) for item in theme.get("jira", [])]
             lines.append(f"- **{markdown(theme['name'])}**: {markdown(theme['description'])} ({', '.join(citations)})")
         if not data["analysis"]["themes"]:
             lines.append("No evidence-backed accomplishments identified in this capture.")
         lines += ["", "### In Progress", ""]
         for item in data["analysis"]["in_progress"]:
-            lines.append(f"- {markdown(item['description'])} ({link(item)})")
+            citation = jira_work(item) if "key" in item else linked(item)
+            lines.append(f"- {markdown(item['description'])} ({citation})")
         if not data["analysis"]["in_progress"]:
             lines.append("No open items selected for this summary.")
         lines.append("")
@@ -356,9 +432,41 @@ def render(data, source=None):
               "", "---", "", "## Detailed Work Log", "", "### GitHub Activity", ""]
     for title, entries in (("Pull Requests", prs), ("Issues", issues)):
         lines += [f"#### {title} ({len(entries)} total)", ""]
-        lines += [f"- {link(item)} {markdown(item['title'])} ({item['state']})" for item in entries]
+        lines += [f"- {linked(item)} {markdown(item['title'])} ({item['state']})" for item in entries]
         if not entries:
             lines.append(f"No authored {title.lower()} found in this capture. Coverage gaps, if any, are listed above.")
+        lines.append("")
+    for kind in ("prs", "issues"):
+        entries = data["github"].get("context_" + kind, [])
+        if entries:
+            lines += [f"#### Additional GitHub {kind.title()} Context ({len(entries)})", "",
+                      "Includes older open work and involvement leads; role matches do not establish weekly activity.", ""]
+            for item in entries:
+                roles = ", ".join(markdown(role) for role in item["roles"])
+                lines.append(f"- {linked(item)} {markdown(item['title'])} ({item['state']}; {roles})")
+            lines.append("")
+    if "activity" in data["github"]:
+        events = data["github"]["activity"]
+        lines += [f"#### Verified GitHub Actor Events ({len(events)})", ""]
+        for event in events:
+            action = event['action'] + (": " + event['review_state'] if event.get('review_state') else "")
+            lines.append(f"- {event['at']} [{markdown(event['repo'])}#{event['number']}]({event['url']}) {markdown(action)} — {linked(by_url[event['item_url']])}")
+        if not events:
+            lines.append("No verified personal events captured; check coverage gaps before interpreting absence.")
+        lines.append("")
+    if "jira" in data:
+        jira = data["jira"]
+        entries = jira.get("issues", [])
+        lines += ["### Jira Inventory and Participation", "",
+                  f"Source status: {jira['metadata']['status']}; {len(entries)} tickets captured. Assignment and watcher roles are context, not weekly accomplishments.", ""]
+        for item in entries:
+            active = item.get("status_category", "").casefold() != "done"
+            if active or any(role in {"recent", "updated_by"} for role in item["roles"]):
+                title = "Restricted ticket (details retained in private capture)" if item["sensitive"] else markdown(item['title'])
+                lines.append(f"- {jira_work(item)} {title} ({markdown(item.get('status', 'unknown'))}; {', '.join(markdown(role) for role in item['roles'])})")
+        lines += ["", f"Verified Jira actor events: {len(jira.get('activity', []))}.", ""]
+        for event in jira.get("activity", []):
+            lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}) {markdown(event['kind'])} — {jira_work(jira_by_key[event['key']])}")
         lines.append("")
     lines += ["### Git Commits", "", f"Searched {m['repos_searched']} repositories; found commits in {len(data['commits'])}.", ""]
     for repo, entries in data["commits"].items():
@@ -381,8 +489,10 @@ def render(data, source=None):
                   "Older branch context remains in the saved evidence. Cached default-branch containment does not establish PR or release delivery.", ""]
         for item in selected:
             names = ", ".join(markdown(name) for name in item["refs"])
+            associations = ", ".join(linked(pr) for pr in item.get("prs", []))
             lines.append(f"- {markdown(item['repo'])}: {names} — `{item['hash'][:12]}` "
-                         f"({item['object_type']}; PR association: {item['pr_status']})")
+                         f"({item['object_type']}; PR association: {item['pr_status']})" + (f" {associations}" if associations else ""))
+        lines += ["", "PR no_match means completed exact-snapshot lookups found no association; partial/unchecked/unsupported remain unresolved. It does not prove unpublished work."]
         lines.append("")
     if data.get("unattributed_commits"):
         lines += ["### Unverified Authorship Leads", "",

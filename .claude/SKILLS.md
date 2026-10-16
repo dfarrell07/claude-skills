@@ -2,7 +2,7 @@
 
 ## /work-summary
 
-Build a weekly “what I did” report from local commits and authored GitHub PRs/issues updated in the period.
+Build a weekly “what I did” report from local Git, GitHub/Jira participation, older open work, and backup refs.
 
 ```bash
 /work-summary           # Last 7 days with AI analysis (default)
@@ -12,7 +12,7 @@ make work-summary DAYS=14  # Last 14 days without AI analysis
 make work-summary-test     # Offline regression tests
 ```
 
-Requires Python 3.10+ and Git 2.37+; GitHub collection also needs authenticated `gh`.
+Requires Python 3.10+ and Git 2.37+; GitHub collection also needs authenticated `gh`; Jira needs authenticated `acli`.
 Each run saves its evidence and report in a separate temporary directory and prints
 the report path. Missing sources and capped searches appear as coverage gaps.
 See [the skill](../skills/work-summary/SKILL.md) for scan roots and evidence boundaries.
