@@ -427,8 +427,8 @@ def validate(data, source=None):
             outside = info.get('outside_window_count', 0)
             require(integer(outside) and (not outside or metadata.get('window_kind') == 'explicit'),
                     "Invalid native-query boundary count")
-            if 'outside_window_items' in info:
-                context = info['outside_window_items']
+            if outside or 'outside_window_items' in info:
+                context = info.get('outside_window_items')
                 require(isinstance(context, list) and len(context) == outside,
                         'Native-query context count disagrees with evidence')
                 context_urls = set()

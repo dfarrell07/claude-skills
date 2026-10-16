@@ -268,6 +268,17 @@ print(json.dumps(value))
         bad['metadata']['github_searches']['prs']['outside_window_count'] = True
         with self.assertRaises(ValueError):
             validate(bad)
+        for mutation in ('missing_metadata', 'missing_context', 'missing_both', 'empty_metadata'):
+            with self.subTest(mutation=mutation):
+                bad = copy.deepcopy(data)
+                if mutation in ('missing_metadata', 'missing_both'):
+                    bad['metadata']['github_searches']['prs'].pop('outside_window_items')
+                if mutation in ('missing_context', 'missing_both'):
+                    bad['github']['context_prs'] = []
+                if mutation == 'empty_metadata':
+                    bad['metadata']['github_searches']['prs']['outside_window_items'] = []
+                with self.assertRaises(ValueError):
+                    validate(bad)
 
     def test_initial_incomplete_inventory_recovers_without_false_partial_and_retains_failures(self):
         self.env['GH_ROWS'] = json.dumps([
