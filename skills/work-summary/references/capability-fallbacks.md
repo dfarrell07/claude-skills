@@ -84,6 +84,18 @@ remain explicit limits. Manual evidence is not Python-validated evidence.
 
 ## Connectors and other partial evidence
 
+GitLab API authentication and Git SSH access are separate capabilities. An
+unauthenticated API response or an empty SSH agent does not establish that an
+existing checkout cannot read its remote: SSH may use a configured identity
+directly. For a known GitLab project, a bounded, noninteractive native
+`git ls-remote --refs REMOTE 'refs/merge-requests/*/head'` can retain advertised
+MR numbers and exact head hashes without fetching objects or creating a token.
+Bind the remote's native host/project to the checkout, retain the response, and
+compare full hashes against captured snapshots. Preserve failures and malformed
+rows. A positive proves an advertised head association; it supplies no MR title,
+state, discussion history, actor, or activity timestamp. No advertised match
+cannot establish that an old, rewritten, deleted, or inaccessible MR never existed.
+
 Mobile or cloud sessions may have connectors but no local filesystem, Bash,
 Python or Git. In that case do not offer shell commands as the execution path,
 claim a local scan happened, or fabricate collector JSON to imply validation.

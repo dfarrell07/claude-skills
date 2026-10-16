@@ -16,6 +16,15 @@ import local_sources  # noqa: E402
 
 
 class LocalSourcesTest(unittest.TestCase):
+    def test_nested_remote_projects_preserve_provider_route_without_credentials(self):
+        result = local_sources.remote_info('origin', 'https://user:secret@gitlab.example.test/group/team/project.git',
+                                           'github.com')
+        self.assertEqual(result, {'name': 'origin', 'host': 'gitlab.example.test',
+                                  'repo': 'group/team/project', 'kind': 'other'})
+        for path in ('group/../project', 'group/./project', 'group//project'):
+            self.assertIsNone(local_sources.remote_info('origin', 'git@gitlab.example.test:' + path,
+                                                       'github.com')['repo'])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='work-summary-local-test.')
         self.addCleanup(temporary.cleanup)

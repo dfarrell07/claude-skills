@@ -30,8 +30,10 @@ def remote_info(name, url, host):
         hostname, path = match.groups()
     hostname = hostname.lower() if hostname else None
     path = path.strip('/').removesuffix('.git')
-    return {'name': name, 'host': hostname, 'repo': path if REPO.fullmatch(path) else None,
-            'kind': 'github' if hostname == host and REPO.fullmatch(path) else 'other'}
+    project = (path if re.fullmatch(r'(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+', path)
+               and all(part not in {'.', '..'} for part in path.split('/')) else None)
+    return {'name': name, 'host': hostname, 'repo': project,
+            'kind': 'github' if hostname == host and project is not None and REPO.fullmatch(path) else 'other'}
 
 
 def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, limit=None, no_walk=False):
