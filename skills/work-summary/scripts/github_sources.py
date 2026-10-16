@@ -3,6 +3,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import hashlib
 import json
 import subprocess
 from threading import BoundedSemaphore, RLock
@@ -104,6 +105,9 @@ class Github:
         self.start, self.end, self.warn = start, end, warn
         self.coverage = {}
         self.cache = {}
+        self.search_observations = {}
+        self._index_observations = {}
+        self._context_observation_seen = set()
         self._linked_attempts = set()
         self._activity_items = set()
         self._activity_seen = set()
@@ -140,6 +144,17 @@ class Github:
         info['status'] = 'partial'
         self.warn(f'GitHub {key}: {message}')
 
+    def retain_context_observation(self, github, item, original):
+        """Keep distinct native payloads without duplicating derived role/link data."""
+        derived = {'roles', 'observed_at', 'jira_links', 'jira_seed_urls'}
+        snapshot = {field: value for field, value in item.items() if field not in derived}
+        if all(original.get(field) == value for field, value in snapshot.items()):
+            return
+        fingerprint = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).digest()
+        if fingerprint not in self._context_observation_seen:
+            self._context_observation_seen.add(fingerprint)
+            github.setdefault('context_observations', []).append(snapshot)
+
     def listing(self, endpoint, key):
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0})
         result, fingerprints = [], set()
@@ -174,6 +189,8 @@ class Github:
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0,
                                              'query': query, 'incomplete_results': False})
         found, seen = [], set()
+        observations = self.search_observations[key] = []
+        payloads = set()
         requests = 0
         observed = datetime.now(UTC).replace(microsecond=0)
         epoch = datetime(1970, 1, 1, tzinfo=UTC)
@@ -216,6 +233,10 @@ class Github:
                         try:
                             item = rest_item(row, kind, self.host)
                             identity = (self.host.casefold(), item['repo'].casefold(), item['number'])
+                            fingerprint = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).digest()
+                            if identity in seen and fingerprint not in payloads:
+                                observations.append(item)
+                            payloads.add(fingerprint)
                             require(identity not in local_seen, 'Duplicate item during paging')
                             local_seen.add(identity)
                             if lower is not None and not lower <= timestamp(item['created_at']) <= upper:
@@ -294,13 +315,15 @@ class Github:
             ('recent_issue_involvement', 'issues', f'is:issue involves:{self.login} updated:>={since}'),
         ]
         for key, kind, query in specifications:
-            for item in self.search(query, key, kind):
+            rows = self.search(query, key, kind)
+            for item in rows + self.search_observations.get(key, []):
                 if item['url'] not in all_items:
                     item['roles'] = []
                     item['observed_at'] = iso(datetime.now(UTC))
                     github['context_' + kind].append(item)
                     all_items[item['url']] = item
                 original = all_items[item['url']]
+                self.retain_context_observation(github, item, original)
                 original.setdefault('roles', [])
                 if key not in original['roles']:
                     original['roles'].append(key)
@@ -358,6 +381,8 @@ class Github:
                         all_items[item['url']] = item
                         by_identity[canonical_identity] = original = item
                         new_items.append(item)
+                    else:
+                        self.retain_context_observation(github, item, original)
                     by_identity[identity] = original
                     self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1,
                                           'requested_url': url, 'resolved_url': item['url']}
@@ -870,6 +895,7 @@ class Github:
         query = '''query($q:String!,$after:String){ search(query:$q,type:ISSUE,first:100,after:$after){
           issueCount pageInfo {hasNextPage endCursor} nodes {... on PullRequest {''' + PR_FIELDS + '''}}}}'''
         rows, seen, cursors, cursor, first_total = [], set(), set(), None, None
+        observations = self._index_observations[repo] = []
         for _ in range(LIMIT // PAGE_SIZE):
             try:
                 args = ['graphql', '-f', 'query=' + query, '-f', f'q=is:pr repo:{repo} author:{self.login} sort:created-asc']
@@ -894,6 +920,8 @@ class Github:
                 for row in search['nodes']:
                     try:
                         item = graphql_item(row, self.host)
+                        if item['url'] in seen and item not in rows and item not in observations:
+                            observations.append(item)
                         require(item['url'] not in seen, 'Duplicate indexed PR')
                         seen.add(item['url'])
                         rows.append(item)
@@ -1032,6 +1060,8 @@ class Github:
                     for row in connection['nodes']:
                         try:
                             item = graphql_item(row, self.host)
+                            if item['url'] in state['seen'] and item not in states[key]['observations']:
+                                states[key]['observations'].append(item)
                             require(item['url'] not in state['seen'], 'Duplicate snapshot PR')
                             state['seen'].add(item['url'])
                             if context_only:
@@ -1155,7 +1185,7 @@ class Github:
                     indices[remote] = self.authored_index(remote)
                     for item in indices[remote]:
                         retain_index(item)
-                for item in indices[remote]:
+                for item in indices[remote] + self._index_observations.get(remote, []):
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                               'state': item['state'], 'proof': 'exact_head_or_merge_sha'})
@@ -1237,7 +1267,7 @@ class Github:
             requested, canonical = proof['requested_repo'], proof['canonical_repo']
             if canonical not in indices:
                 indices[canonical] = self.authored_index(canonical)
-                for item in indices[canonical]:
+                for item in indices[canonical] + self._index_observations.get(canonical, []):
                     retain_index(item)
             for branch in branches:
                 if not any(method == 'authored_pr_index:' + requested
@@ -1282,6 +1312,9 @@ class Github:
                 branch['pr_status'] = branch_association_status(branch)
                 branch['prs'] = list({item['url']: item for item in branch['prs']}.values())
                 branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
+        for repo in indices:
+            for item in self._index_observations.get(repo, []):
+                retain_index(item)
         github['pr_index'] = list(all_indexed.values())
         github['pr_index_observations'] = observations
         for _, proof in sorted(self._repository_aliases.items()):

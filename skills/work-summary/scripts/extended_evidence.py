@@ -401,13 +401,15 @@ def validate_github(data, evidence, start, end):
     context_observations = github.get('context_observations', [])
     require(isinstance(context_observations, list), 'Invalid native context observations')
     observed_payloads = set()
+    selected_identities = {url.casefold(): item for url, item in evidence.items()}
     for item in context_observations:
-        require(isinstance(item, dict) and item.get('url') in evidence,
+        require(isinstance(item, dict) and isinstance(item.get('url'), str)
+                and item['url'].casefold() in selected_identities,
                 'Native context observation absent from selected evidence')
-        original = evidence[item['url']]
+        original = selected_identities[item['url'].casefold()]
         kind = 'prs' if is_pr_url(original['url']) else 'issues'
         valid_item(item, kind, host)
-        require(item['repo'] == original['repo'] and item['number'] == original['number'],
+        require(item['repo'].casefold() == original['repo'].casefold() and item['number'] == original['number'],
                 'Native context observation identity disagrees')
         fingerprint = json.dumps(item, sort_keys=True)
         require(fingerprint not in observed_payloads, 'Duplicate native context observation')

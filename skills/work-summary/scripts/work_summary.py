@@ -51,6 +51,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         host = "github.com"
     github = {"prs": [], "issues": []}
     initial_context = {'prs': [], 'issues': []}
+    initial_observations = []
     github_status = "unavailable"
     github_user = ""
     searches = {}
@@ -129,6 +130,8 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                             require(isinstance(item["body"], str), "Invalid GitHub body")
                             valid_item(item, kind, host)
                             key = (item["repo"], item["number"])
+                            if key in seen:
+                                initial_observations.append(item)
                             require(key not in seen, "Duplicate search item")
                             seen.add(key)
                             if explicit and not start <= timestamp(item["updated_at"]) <= end:
@@ -152,6 +155,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                         key = 'initial_' + kind
                         recovered = recovery.search(
                             f'is:{qualifier} author:{github_user} updated:{iso(query_start)}..{iso(query_end)}', key, kind)
+                        initial_observations.extend(recovery.search_observations.get(key, []))
                         native = recovery.coverage[key]
                         info['partition_recovery'] = native
                         info['pages'] += native['pages']
@@ -160,6 +164,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                         for item in recovered:
                             identity_key = (item['repo'], item['number'])
                             if identity_key in seen:
+                                initial_observations.append(item)
                                 continue
                             seen.add(identity_key)
                             if start <= timestamp(item['updated_at']) <= end:
@@ -220,13 +225,11 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                     known[item['url']] = item
                     retained_context.append(item)
                 original = known[item['url']]
-                if any(original.get(field) != value for field, value in item.items()
-                       if field not in {'roles', 'observed_at'}):
-                    # Later role discovery must not replace an earlier native
-                    # body/title observation or sever its reference frontier.
-                    github.setdefault('context_observations', []).append(dict(item))
+                ledger.retain_context_observation(github, item, original)
                 if 'initial_dated_search_context' not in original.setdefault('roles', []):
                     original['roles'].append('initial_dated_search_context')
+        for item in initial_observations:
+            ledger.retain_context_observation(github, item, known[item['url']])
         if retained_context:
             ledger._inspect_activity(github, retained_context)
         ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)

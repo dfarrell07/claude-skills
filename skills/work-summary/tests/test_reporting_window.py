@@ -333,6 +333,29 @@ print(json.dumps(value))
         self.assertEqual([row['number'] for row in partial['github']['prs']], [1])
         self.assertTrue(any('partition recovery' in warning for warning in partial['metadata']['warnings']))
 
+    def test_partition_recovery_retains_changed_native_reference_payload(self):
+        from work_links import referenced_keys
+        item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
+                'title': 'Work', 'body': 'Implements PROJ-123', 'state': 'open',
+                'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-03-01T00:00:00Z',
+                'closed_at': None, 'user': {'login': 'test-user'}, 'pull_request': {'merged_at': None}}
+        gh = self.bin / 'gh'
+        gh.write_text(gh.read_text().replace(
+            "value = {'total_count': len(rows)",
+            "if 'created:' in query:\n"
+            "        rows = [{**row, 'body': 'Implements TASK-124'} for row in rows]\n"
+            "    value = {'total_count': len(rows)"))
+        self.env.update(GH_ROWS=json.dumps([item]), GH_RECOVERY='1')
+        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
+                                  '--root', str(self.home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        validate(data)
+        self.assertEqual(set(referenced_keys(data['github'])), {'PROJ-123', 'TASK-124'})
+        self.assertEqual(len(data['github']['prs']), 1)
+        self.assertEqual(len(data['github']['context_observations']), 1)
+        self.assertEqual(data['metadata']['github_searches']['prs']['status'], 'ok')
+
     def test_conflicting_initial_native_observations_keep_both_payloads_and_reference_frontier(self):
         from work_links import associate_work, complete_references, github_items, referenced_keys, validate_links
         gh = self.bin / 'gh'

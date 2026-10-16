@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from evidence import HOST, require
 from extended_evidence import github_reference_comments, jira_key_aliases
 from work_links import (URL, classify_reference_failures, complete_references, confirmed_keys, discovery_keys,
-                        github_items, native_review_links)
+                        github_selected_observations, native_review_links)
 
 
 def gitlab_texts(gitlab):
@@ -45,8 +45,7 @@ def gitlab_seed_urls(jira, github, branches):
     urls.update(link['url'] for issue in jira.get('issues', [])
                 for link in issue.get('history_review_links', []) if link['provider'] == 'gitlab')
     urls.update(link['url'] for branch in branches for link in branch.get('merge_requests', []))
-    selected = {item['url'] for item in github_items(github, include_index=False)}
-    observations = [item for item in github_items(github) if item['url'] in selected]
+    observations = github_selected_observations(github)
     texts = [item.get(field) or '' for item in observations
              for field in ('title', 'body')]
     texts.extend(comment['body'] for comment in github_reference_comments(github))

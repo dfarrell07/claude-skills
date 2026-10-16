@@ -149,13 +149,23 @@ def github_items(github, include_index=True):
     return [item for bucket in buckets for item in github.get(bucket, [])]
 
 
+def github_selected_observations(github):
+    """Include index snapshots of selected identities, including verified redirects."""
+    selected = github_items(github, include_index=False)
+    records = github.get('repository_aliases', [])
+    host = (records[0]['host'] if records else
+            urlsplit(selected[0]['url']).netloc if selected else 'github.com')
+    aliases = repository_aliases(github, host)
+    identities = {pr_identity(item['url'], aliases) for item in selected}
+    return selected + [item for bucket in ('pr_index', 'pr_index_observations')
+                       for item in github.get(bucket, [])
+                       if pr_identity(item['url'], aliases) in identities]
+
+
 def _github_reference_texts(github):
     # Old indexed snapshots are association context, not a reason to retrieve
     # every historical ticket mentioned across an account's entire PR history.
-    selected = github_items(github, include_index=False)
-    selected_urls = {item['url'] for item in selected}
-    selected += [item for item in github.get('pr_index', []) if item['url'] in selected_urls]
-    selected += [item for item in github.get('pr_index_observations', []) if item['url'] in selected_urls]
+    selected = github_selected_observations(github)
 
     for item in selected:
         for field in ('title', 'body', 'head_ref'):

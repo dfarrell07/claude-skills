@@ -90,6 +90,103 @@ class GithubSourcesTest(unittest.TestCase):
         client.calls, client.warnings = calls, warnings
         return client
 
+    def test_role_snapshots_keep_pr_and_issue_reference_frontiers_without_duplicate_activity(self):
+        from work_links import associate_work, complete_references, referenced_keys, validate_links
+        from provider_references import gitlab_seed_urls
+        reads = []
+        def api(args):
+            if 'search/issues' in args:
+                query = next(arg[2:] for arg in args if arg.startswith('q='))
+                kind = 'pr' if query.startswith('is:pr ') else 'issue'
+                # Several roles return the same later observation; retain it once.
+                later = 'updated:' in query
+                key = ('TASK-124' if kind == 'pr' else 'TASK-126') if later else (
+                    'PROJ-123' if kind == 'pr' else 'PROJ-125')
+                item = {**rest(), 'body': f'Implements {key}; https://gitlab.example.test/team/app/-/merge_requests/7',
+                        'created_at': '2026-10-10T00:00:00Z', 'user': {'login': 'me'}}
+                if kind == 'issue':
+                    item.pop('pull_request')
+                    item['number'] = 2
+                    item['html_url'] = 'https://github.com/org/repo/issues/2'
+                return {'total_count': 1, 'incomplete_results': False, 'items': [item]}
+            if len(args) > 2:
+                reads.append(args[2])
+            return []
+        client = self.client(api)
+        github = {'prs': [], 'issues': []}
+        client.discover(github)
+        github['pr_index'] = [{**github['context_prs'][0], 'repo': 'ORG/REPO',
+            'url': 'https://github.com/ORG/REPO/pull/1',
+            'body': 'Implements INDEX-127; https://gitlab.example.test/team/app/-/merge_requests/8'}]
+        self.assertEqual(len(github['context_observations']), 2)
+        self.assertEqual(set(referenced_keys(github)),
+                         {'PROJ-123', 'PROJ-125', 'TASK-124', 'TASK-126', 'INDEX-127'})
+        self.assertEqual(len(github['activity']), 2)
+        self.assertEqual(len(reads), len(set(reads)))
+        self.assertEqual(set(github['context_prs'][0]['roles']),
+                         {'open_authored_prs', 'open_assigned_prs', 'requested_reviews',
+                          'recent_authored_prs', 'recent_reviews', 'recent_comments', 'recent_involvement'})
+        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []),
+                         {'https://gitlab.example.test/team/app/-/merge_requests/7',
+                          'https://gitlab.example.test/team/app/-/merge_requests/8'})
+        jira = {'metadata': {'site': 'jira.example.test'}, 'issues': []}
+        attempted = []
+        def tickets(keys):
+            attempted.extend(keys)
+            jira['issues'].extend({'key': key, 'url': 'https://jira.example.test/browse/' + key,
+                                   'sensitive': False, 'detail': {'fields': {}}} for key in keys)
+        complete_references(jira, github, tickets)
+        self.assertEqual(set(attempted), {'PROJ-123', 'PROJ-125', 'TASK-124', 'TASK-126', 'INDEX-127'})
+        associate_work(jira, github)
+        validate_links({'metadata': {'github_host': 'github.com'}, 'jira': jira, 'github': github})
+        self.assertEqual({issue['key'] for issue in jira['issues'] if issue['pr_links']},
+                         {'PROJ-123', 'TASK-124', 'INDEX-127'})
+
+    def test_jira_redirect_retains_new_canonical_payload_without_rereading_activity(self):
+        from work_links import referenced_keys
+        from extended_evidence import validate_github
+        current = rest_item({**rest(repo='org/Repo'), 'body': 'Implements PROJ-123'}, 'prs', 'github.com')
+        def api(args):
+            route = args[2]
+            if route == 'repos/old/repo/issues/1':
+                return {**rest(), 'body': 'Implements TASK-124'}
+            if route in {'repos/old/repo', 'repos/org/repo'}:
+                return {'id': 7, 'full_name': 'org/repo', 'html_url': 'https://github.com/org/repo'}
+            self.fail('An already inspected canonical PR must not reread activity: ' + route)
+        client = self.client(api)
+        github = {'prs': [current], 'issues': []}
+        client.add_linked_prs(github, ['https://github.com/old/repo/pull/1'])
+        self.assertEqual(set(referenced_keys(github)), {'PROJ-123', 'TASK-124'})
+        self.assertEqual(len(github['context_observations']), 1)
+        self.assertEqual(current['roles'], ['jira_link'])
+        self.assertEqual(github['repository_aliases'][0]['requested_repo'], 'old/repo')
+        github['pr_index'] = [{**current, 'repo': 'old/repo',
+                               'url': 'https://github.com/old/repo/pull/1',
+                               'body': 'Implements INDEX-127'}]
+        self.assertEqual(set(referenced_keys(github)), {'PROJ-123', 'TASK-124', 'INDEX-127'})
+        # Native repository capitalization can differ between observations;
+        # retain its exact URL while binding the same host/repository/number.
+        validate_github({'metadata': {'github_host': 'github.com'}, 'github': github},
+                        {current['url']: current}, START, END)
+
+    def test_index_duplicate_page_preserves_changed_body_and_head_with_partial_coverage(self):
+        first = {**gql(sha='b' * 40), 'body': 'Implements PROJ-123'}
+        later = {**gql(sha=SHA), 'body': 'Implements TASK-124'}
+        def api(args):
+            if 'q=is:pr repo:org/repo author:me sort:created-asc' in args:
+                after = 'after=next' in args
+                return {'data': {'search': connection([later] if after else [first], total=2,
+                                                      more=not after, cursor=None if after else 'next')}}
+            return snapshot_data(args)
+        client = self.client(api)
+        github = {'prs': [], 'issues': [], 'activity': []}
+        branches = [branch()]
+        client.associate_branches(branches, [repository()], github)
+        self.assertEqual(github['pr_index'][0]['body'], 'Implements PROJ-123')
+        self.assertEqual(github['pr_index_observations'][0]['body'], 'Implements TASK-124')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'exact_head_or_merge_sha')
+        self.assertEqual(client.coverage['pr_index:org/repo']['status'], 'partial')
+
     def test_native_api_callable_collects_without_any_cli_or_shell(self):
         native = rest()
         native['body'] = 'Native API body retained without a local CLI.'
