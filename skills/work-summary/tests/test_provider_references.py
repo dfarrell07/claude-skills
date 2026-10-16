@@ -10,9 +10,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from provider_references import (  # noqa: E402
     associate_gitlab, complete_provider_references, gitlab_seed_urls, validate_gitlab_links, verified_aliases,
 )
+from reference_scope import ReferenceScope  # noqa: E402
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_resumed_provider_keeps_native_positives_and_recovers_unread_github(self):
+        for persisted in (False, True):
+            with self.subTest(persisted=persisted):
+                mr = 'https://gitlab.example.test/group/project/-/merge_requests/7'
+                pr = 'https://github.com/org/project/pull/9'
+                jira = {'metadata': {'site': 'jira.example.test'}, 'issues': []}
+                github = {'prs': [], 'issues': []}
+                branches = [{'merge_requests': [{'url': mr}]}]
+                scope = ReferenceScope(jira, github, branches)
+                native_reads = []
+                def gitlab(urls):
+                    native_reads.append(list(urls))
+                    return {'items': [{'url': url, 'source': {'description': pr}} for url in urls]}
+                captured, first = complete_provider_references(jira, github, branches,
+                    lambda keys: None, None, gitlab, scope=scope)
+                self.assertEqual([row['url'] for row in captured['items']], [mr])
+                self.assertEqual(first['unread_pr_urls'], [pr])
+                calls = []
+                captured, second = complete_provider_references(jira, github, branches,
+                    lambda keys: None, calls.extend, gitlab,
+                    scope=first['scope'] if persisted else scope)
+                self.assertEqual([row['url'] for row in captured['items']], [mr])
+                self.assertEqual(calls, [pr])
+                self.assertEqual(second['unread_pr_urls'], [])
+                self.assertEqual(second['attempted_gitlab_urls'], [mr])
+                self.assertEqual(len(second['scope']['nodes']), 2)
+                captured, third = complete_provider_references(jira, github, branches,
+                    lambda keys: None, calls.extend, gitlab,
+                    scope=second['scope'] if persisted else scope)
+                self.assertEqual([row['url'] for row in captured['items']], [mr])
+                self.assertEqual(calls, [pr])
+                self.assertEqual(third['unread_pr_urls'], [])
+
     def test_native_graphql_note_keeps_its_url_and_global_id(self):
         mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
         jira = {'metadata': {'site': 'jira.example.test'}, 'issues': [{

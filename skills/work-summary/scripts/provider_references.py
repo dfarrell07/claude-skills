@@ -71,7 +71,9 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
     scope = (ReferenceScope(jira, github, branches, state=scope, since=since, until=until,
                             github_host=github_host)
              if not isinstance(scope, ReferenceScope) else scope)
-    gitlab = read_gitlab([])
+    # A resumed frontier still needs its previously captured native positives.
+    # The collector's reader cache avoids duplicate requests within one run.
+    gitlab = read_gitlab(sorted(scope.attempted_gitlab))
     site = jira.get('metadata', {}).get('site')
     while True:
         before = (scope.revision, len(scope.attempted_keys), len(scope.attempted_prs),
@@ -101,7 +103,9 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
                 if scope.allow('review', item['url'], 'review', url, evidence_url):
                     (targets if provider == 'gitlab' else prs).add(url)
         keys -= scope.attempted_keys
-        prs -= scope.attempted_prs | scope.unread_prs
+        prs -= scope.attempted_prs
+        if read_prs is None:
+            prs -= scope.unread_prs
         new_targets = targets - scope.attempted_gitlab
         if keys:
             scope.attempted_keys.update(keys)
@@ -111,6 +115,7 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
                 scope.unread_prs.update(prs)
             else:
                 scope.attempted_prs.update(prs)
+                scope.unread_prs.difference_update(prs)
                 read_prs(sorted(prs))
         if new_targets:
             scope.attempted_gitlab.update(new_targets)

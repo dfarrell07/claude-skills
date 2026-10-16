@@ -239,3 +239,8 @@ final-code validation and offline replay are separate from its older collector
 version. Native visibility limits remain specific source boundaries, not proof
 that unavailable history is empty. This finding starts a further qualification
 cycle; earlier clean reviews do not establish the new expansion scope's result.
+Further critical review found mutable saved-state aliases, suppression of
+previously unread PRs after a reader became available, and lost GitLab positives
+on resume. Saved state now owns its nested data; resumed reads recover eligible
+unattempted targets and reload previously captured GitLab scope through the
+cache-backed reader. Focused regressions cover each observed failure.

@@ -1,6 +1,7 @@
 """Reference scope follows personal work counterparts without a graph-size cap."""
 
 import copy
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -23,6 +24,48 @@ def capture():
 
 
 class ReferenceScopeTest(unittest.TestCase):
+    def test_snapshot_and_restore_own_nested_state(self):
+        jira, github = capture()
+        scope = ReferenceScope(jira, github)
+        scope.allow('review', CONTEXT, 'ticket', 'TEST-2')
+        saved = scope.snapshot()
+        encoded = json.dumps(saved, sort_keys=True)
+        scope.root('ticket', 'TEST-2', 'later_promotion')
+        scope.allow('review', CONTEXT, 'ticket', 'TEST-2')
+        self.assertEqual(json.dumps(saved, sort_keys=True), encoded)
+        restored = ReferenceScope(jira, github, state=saved)
+        restored.root('review', ROOT, 'restored_reason')
+        restored.root('ticket', 'TEST-2', 'restored_promotion')
+        self.assertEqual(json.dumps(saved, sort_keys=True), encoded)
+
+    def test_reader_recovery_retries_unread_but_preserves_real_failed_attempts(self):
+        for persisted in (False, True):
+            with self.subTest(persisted=persisted):
+                jira, github = capture()
+                github['prs'] = []
+                jira['issues'] = [{'key': 'TEST-1', 'url': 'https://jira.example.test/browse/TEST-1',
+                                   'pr_links': [{'url': CONTEXT}]}]
+                scope = ReferenceScope(jira, github)
+                first = complete_references(jira, github, lambda keys: None, scope=scope)
+                self.assertEqual(first['unread_pr_urls'], [CONTEXT])
+                calls = []
+                # Returning no positive simulates a native read failure. It was
+                # nevertheless attempted, so a later resume must not loop it.
+                recovered = complete_references(jira, github, lambda keys: None, calls.extend,
+                    scope=first['scope'] if persisted else scope)
+                self.assertEqual(calls, [CONTEXT])
+                self.assertEqual(recovered['unread_pr_urls'], [])
+                complete_references(jira, github, lambda keys: None, calls.extend,
+                    scope=recovered['scope'] if persisted else scope)
+                self.assertEqual(calls, [CONTEXT])
+
+    def test_already_observed_pr_is_removed_from_unread_on_resume(self):
+        jira, github = capture()
+        scope = ReferenceScope(jira, github)
+        scope.unread_prs.add(ROOT)
+        resumed = complete_references(jira, github, lambda keys: None, scope=scope)
+        self.assertEqual(resumed['unread_pr_urls'], [])
+
     def test_pair_completion_stops_at_terminal_ticket(self):
         jira, github = capture()
         scope = ReferenceScope(jira, github)

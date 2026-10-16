@@ -291,6 +291,7 @@ def complete_references(jira, github, read_tickets, read_prs=None, *, scope=None
     scope = (scope if isinstance(scope, ReferenceScope)
              else ReferenceScope(jira, github, state=scope))
     scope.attempted_prs.update(item['url'] for item in github_items(github, include_index=False))
+    scope.unread_prs.difference_update(scope.attempted_prs)
     while True:
         scope.refresh(jira, github)
         before = scope.revision
@@ -299,12 +300,15 @@ def complete_references(jira, github, read_tickets, read_prs=None, *, scope=None
             scope.attempted_keys.update(keys)
             read_tickets(sorted(keys))
         scope.refresh(jira, github)
-        urls = scoped_jira_reviews(jira, scope, 'github') - scope.attempted_prs - scope.unread_prs
+        urls = scoped_jira_reviews(jira, scope, 'github') - scope.attempted_prs
+        if read_prs is None:
+            urls -= scope.unread_prs
         if urls:
             if read_prs is None:
                 scope.unread_prs.update(urls)
             else:
                 scope.attempted_prs.update(urls)
+                scope.unread_prs.difference_update(urls)
                 read_prs(sorted(urls))
         if not keys and not urls and before == scope.revision:
             break

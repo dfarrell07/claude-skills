@@ -5,6 +5,7 @@ may resolve their own tickets, but those final tickets do not start another craw
 Existing attributed activity can promote any context node to an independent root.
 """
 
+from copy import deepcopy
 from urllib.parse import urlsplit
 
 from evidence import timestamp
@@ -34,9 +35,9 @@ class ReferenceScope:
         self.unread_prs, self.attempted_gitlab = set(), set()
         if state:
             for node in state.get('nodes', []):
-                self.nodes[(node['kind'], node['identity'])] = dict(node)
+                self.nodes[(node['kind'], node['identity'])] = deepcopy(node)
             for edge in state.get('edges', []):
-                self.edges[self._edge_key(edge)] = dict(edge)
+                self.edges[self._edge_key(edge)] = deepcopy(edge)
             for name in ('attempted_keys', 'attempted_prs', 'unread_prs', 'attempted_gitlab'):
                 getattr(self, name).update(state.get(name, []))
         self.refresh(jira, github)
@@ -230,12 +231,12 @@ class ReferenceScope:
         return allowed
 
     def snapshot(self):
-        edges = sorted(self.edges.values(), key=self._edge_key)
+        edges = deepcopy(sorted(self.edges.values(), key=self._edge_key))
         return {'policy': 'personal_work_and_direct_counterpart_pairs',
                 'since': self.since.isoformat() if hasattr(self.since, 'isoformat') else self.since,
                 'until': self.until.isoformat() if hasattr(self.until, 'isoformat') else self.until,
                 'github_host': self.github_host,
-                'nodes': sorted(self.nodes.values(), key=lambda n: (n['kind'], n['identity'])),
+                'nodes': deepcopy(sorted(self.nodes.values(), key=lambda n: (n['kind'], n['identity']))),
                 'edges': edges, 'deferred_targets': [row for row in edges if row['disposition'] == 'deferred'],
                 **{name: sorted(getattr(self, name)) for name in
                    ('attempted_keys', 'attempted_prs', 'unread_prs', 'attempted_gitlab')}}
