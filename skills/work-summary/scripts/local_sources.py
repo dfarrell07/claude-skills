@@ -111,7 +111,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                         path = Path(fields[0][9:])
                         record = {'path': str(path), 'exists': path.is_dir(),
                                   'head': next((field[5:] for field in fields if field.startswith('HEAD ')), None),
-                                  'branch': next((field[7:] for field in fields if field.startswith('branch ')), None)}
+                                  'branch': next((field[7:] for field in fields if field.startswith('branch ')), None),
+                                  'detached': 'detached' in fields}
                         entry['worktrees'].append(record)
                         if record['exists'] and 'bare' not in fields:
                             queue.append(path)
@@ -124,6 +125,13 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 warn(f'Cannot inspect Git repository at {directory}; local coverage is incomplete.')
 
     scan_roots = [Path(root).expanduser() for root in roots] if roots else [Path.home(), Path.cwd()]
+    dependency_roots = []
+    for relative in ('go/pkg', 'go/.cache-go-build-container'):
+        candidate = Path.home() / relative
+        try:
+            dependency_roots.append(candidate.resolve())
+        except (OSError, RuntimeError):
+            dependency_roots.append(candidate.absolute())
     exclusions = []
     visited = set()
     for root in dict.fromkeys(scan_roots):
@@ -137,9 +145,17 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             warn(f'Cannot access scan root {root}; local coverage is incomplete.')
             continue
         add_repo(root, marked=any(os.path.lexists(parent / '.git') for parent in (root, *root.parents)))
+        walk_targets = {root: root}
         for directory, dirs, files in os.walk(root, followlinks=True, onerror=lambda error: warn(f'Cannot scan {error.filename}; local coverage is incomplete.')):
             current = Path(directory)
-            real = current.resolve()
+            real = walk_targets.pop(current, None)
+            if real is None:
+                try:
+                    real = current.resolve()
+                except (OSError, RuntimeError):
+                    warn(f'Cannot resolve scan directory {current}; local coverage is incomplete.')
+                    dirs[:] = []
+                    continue
             if real in visited:
                 dirs[:] = []
                 continue
@@ -156,7 +172,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             for name in sorted(dirs):
                 child = current / name
                 try:
-                    target = child.resolve()
+                    target = child.resolve() if child.is_symlink() else real / name
                 except (OSError, RuntimeError):
                     warn(f'Cannot resolve scan directory {child}; local coverage is incomplete.')
                     exclusions.append(str(child))
@@ -164,9 +180,9 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 # Apply exclusions to symlink destinations before os.walk enters
                 # them. An innocuously named alias must not expose tool state.
                 parts = target.relative_to(root).parts if target.is_relative_to(root) else target.parts
-                dependency_root = Path.home() / 'go/pkg'
-                dependency_cache = (target.is_relative_to(dependency_root)
-                                    and not root.is_relative_to(dependency_root))
+                dependency_cache = any(target.is_relative_to(dependency_root)
+                                       and not root.is_relative_to(dependency_root)
+                                       for dependency_root in dependency_roots)
                 hidden_state = name in STATE_DIRS or any(part in STATE_DIRS for part in parts)
                 excluded_target = any(part in PRUNED or part.startswith('pytest-of-') for part in parts)
                 if name in PRUNED or name.startswith('pytest-of-') or dependency_cache or hidden_state or excluded_target:
@@ -174,6 +190,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                         exclusions.append(str(child))
                 else:
                     keep.append(name)
+                    walk_targets[child] = target
             dirs[:] = keep
     while queue:
         add_repo(queue.pop(), marked=True)
@@ -202,8 +219,15 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                                       'upstream_remote': remote or None, 'upstream_ref': remote_ref or None})
             entry['remotes'] = []
             for name in git(entry['path'], 'remote').splitlines():
-                for url in git(entry['path'], 'remote', 'get-url', '--all', name).splitlines():
-                    entry['remotes'].append(remote_info(name, url, host))
+                routing = {}
+                for direction, options in (('fetch', []), ('push', ['--push'])):
+                    for url in git(entry['path'], 'remote', 'get-url', *options, '--all', name).splitlines():
+                        remote = remote_info(name, url, host)
+                        key = tuple(remote.values())
+                        record = routing.setdefault(key, {**remote, 'directions': []})
+                        if direction not in record['directions']:
+                            record['directions'].append(direction)
+                entry['remotes'].extend(routing.values())
             entry['default_ref'] = None
             for candidate in ('refs/remotes/upstream/HEAD', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main',
                               'refs/remotes/origin/master', 'refs/remotes/origin/devel', 'refs/heads/main', 'refs/heads/master', 'refs/heads/devel'):
@@ -213,11 +237,14 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                     break
                 except subprocess.SubprocessError:
                     continue
-            records[entry['path']] = log_records(entry['path'], entry['tips'], start, end)
+            recent_records = log_records(entry['path'], entry['tips'], start, end)
             heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
                             for ref in entry['refs']
-                            if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'})
+                            if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'}
+                           | {tree['head'] for tree in entry['worktrees']
+                              if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])})
             tip_records[entry['path']] = log_records(entry['path'], heads, no_walk=True)
+            records[entry['path']] = recent_records
             entry['status'] = 'ok'
         except (subprocess.SubprocessError, OSError, ValueError, OverflowError):
             skipped += 1
@@ -256,16 +283,30 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         found = [record for record in records.get(entry['path'], []) if record['author_email'] in entry['identities']]
         if found:
             commits[entry['path']] = found
-        for record in records.get(entry['path'], []):
+        snapshot_refs = list(entry.get('refs', [])) + [
+            {'name': 'worktree:' + tree['path'], 'hash': tree['head'],
+             'object_type': 'commit', 'peeled_type': None}
+            for tree in entry['worktrees']
+            if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])]
+        leads_seen = set()
+        for record in records.get(entry['path'], []) + tip_records.get(entry['path'], []):
             if record['author_email'] in unknown and record['author_email'] not in entry['identities']:
-                unattributed.append({'repo': entry['path'], **record, 'reason': 'name_match_only; account attribution unverified'})
+                if record['hash'] in leads_seen:
+                    continue
+                leads_seen.add(record['hash'])
+                in_window = start <= datetime.fromisoformat(record['committed_at'].replace('Z', '+00:00')) <= end
+                unattributed.append({'repo': entry['path'], **record,
+                                     'scope': 'recent_commit' if in_window else 'historical_snapshot',
+                                     'refs': [ref['name'] for ref in snapshot_refs
+                                              if record['hash'] in (ref['hash'], ref.get('peeled_hash'))],
+                                     'reason': 'name_match_only; account attribution unverified'})
         if entry.get('status') != 'ok':
             continue
         try:
             info = {record['hash']: record for record in tip_records.get(entry['path'], [])}
             grouped = {}
             base = entry.get('default_ref')
-            for ref in entry['refs']:
+            for ref in snapshot_refs:
                 if ref['object_type'] != 'commit' and ref['peeled_type'] != 'commit':
                     if ref['object_type'] != 'tag':
                         branches.append({'repo': entry['path'], 'refs': [ref['name']], 'hash': ref['hash'],
@@ -312,6 +353,9 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                           'attribution': ('contains_configured_or_verified_author' if proof
                                           else 'configured_or_verified_author'),
                           'pr_status': 'unchecked', 'prs': []}
+                if any(ref['name'].startswith('worktree:') for ref in refs):
+                    record['detached'] = True
+                    record['snapshot_reason'] = 'detached_worktree_head'
                 if proof:
                     record['attribution_commit'] = proof
                 branches.append(record)

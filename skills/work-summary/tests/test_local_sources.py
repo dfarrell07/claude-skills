@@ -78,6 +78,20 @@ class LocalSourcesTest(unittest.TestCase):
                              for call in calls.call_args_list))
         self.assertFalse(any(branch['hash'] == foreign for branch in data['branches']))
 
+    def test_precise_go_build_cache_exclusion_preserves_backups_and_explicit_roots(self):
+        home = self.home
+        cache = home / 'go' / '.cache-go-build-container'
+        cached_repo = self.repo(cache / 'fixture')
+        backup = self.repo(home / '.cache-project-backup' / 'repository')
+        (home / 'cache-alias').symlink_to(cache, target_is_directory=True)
+        with patch.object(local_sources.Path, 'home', return_value=home):
+            data = self.capture(home)
+            explicit = self.capture(cache)
+        self.assertEqual(set(data['commits']), {str(backup)})
+        self.assertIn(str(cache), data['metadata']['scan_exclusions'])
+        self.assertIn(str(home / 'cache-alias'), data['metadata']['scan_exclusions'])
+        self.assertEqual(set(explicit['commits']), {str(cached_repo)})
+
     def test_foreign_tip_retains_own_history_proof_and_backup_ref(self):
         repo = self.repo(self.root / 'repository')
         self.git(repo, 'update-ref', 'refs/remotes/origin/main', self.git(repo, 'rev-parse', 'HEAD'))
@@ -122,6 +136,67 @@ class LocalSourcesTest(unittest.TestCase):
         backup = next(branch for branch in data['branches'] if branch['hash'] == historical)
         self.assertFalse(backup['recent_tip'])
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
+
+    def test_distinct_push_fork_and_fetch_upstream_are_both_retained(self):
+        repo = self.repo(self.root / 'repository')
+        self.git(repo, 'remote', 'add', 'origin', 'https://github.com/upstream/repository.git')
+        self.git(repo, 'remote', 'set-url', '--push', 'origin', 'git@github.com:own-user/repository.git')
+        data = self.capture(repo)
+        remotes = {remote['repo']: remote for remote in data['metadata']['repositories'][0]['remotes']}
+        self.assertEqual(set(remotes), {'upstream/repository', 'own-user/repository'})
+        self.assertEqual(remotes['upstream/repository']['directions'], ['fetch'])
+        self.assertEqual(remotes['own-user/repository']['directions'], ['push'])
+
+    def test_old_unverified_backup_alias_remains_a_historical_lead(self):
+        repo = self.repo(self.root / 'repository')
+        self.git(repo, 'checkout', '-qb', 'backup/historical')
+        with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
+                                  'GIT_COMMITTER_DATE': '2000-01-01T00:00:00Z'}):
+            self.git(repo, '-c', 'user.email=unverified@example.test', 'commit',
+                     '--allow-empty', '-qm', 'Unverified historical backup')
+        historical = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-q', 'main')
+        data = self.capture(repo)
+        lead = next(lead for lead in data['unattributed_commits'] if lead['hash'] == historical)
+        self.assertEqual(lead['scope'], 'historical_snapshot')
+        self.assertEqual(lead['committed_at'], '2000-01-01T00:00:00Z')
+        self.assertEqual(lead['refs'], ['refs/heads/backup/historical'])
+        self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))
+        self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
+
+    def test_old_detached_head_is_a_snapshot_without_creating_named_refs(self):
+        repo = self.repo(self.root / 'repository')
+        worktree = self.root / 'detached-worktree'
+        self.git(repo, 'worktree', 'add', '--detach', str(worktree))
+        with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
+                                  'GIT_COMMITTER_DATE': '2000-01-01T00:00:00Z'}):
+            self.git(worktree, 'commit', '--allow-empty', '-qm', 'Old detached work')
+        historical = self.git(repo, 'rev-parse', 'HEAD')
+        detached = self.git(worktree, 'rev-parse', 'HEAD')
+        refs_before = self.git(repo, 'for-each-ref', '--format=%(refname):%(objectname)')
+        data = self.capture(repo)
+        self.assertEqual(self.git(repo, 'for-each-ref', '--format=%(refname):%(objectname)'), refs_before)
+        snapshot = next(branch for branch in data['branches'] if branch['hash'] == detached)
+        self.assertEqual(snapshot['refs'], ['worktree:' + str(worktree)])
+        self.assertTrue(snapshot['detached'])
+        self.assertTrue(snapshot['backup'])
+        self.assertFalse(snapshot['recent_tip'])
+        self.assertEqual({commit['hash'] for commit in data['commits'][str(repo)]}, {historical})
+
+    def test_regular_walk_directories_reuse_canonical_parent(self):
+        root = self.root / 'workspace'
+        repo = self.repo(root / 'one' / 'two' / 'three' / 'repository')
+        original = local_sources.Path.resolve
+        calls = []
+        def resolve(path, *args, **kwargs):
+            calls.append(path)
+            return original(path, *args, **kwargs)
+        with patch.object(local_sources.Path, 'resolve', resolve):
+            data = self.capture(root)
+        self.assertEqual(set(data['commits']), {str(repo)})
+        self.assertNotIn(root / 'one', calls)
+        self.assertNotIn(root / 'one' / 'two', calls)
+        self.assertNotIn(root / 'one' / 'two' / 'three', calls)
 
 
 if __name__ == '__main__':
