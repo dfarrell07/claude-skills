@@ -2,32 +2,32 @@
 
 ## /work-summary
 
-Build a weekly “what I did” report from local Git, GitHub/Jira participation, older open work, and backup refs.
+Create a ranked weekly work list from the sources available in this session.
+Each bullet has a one-line work summary with indented raw Jira and PR URLs when
+available. Related changes/backports share a work topic; importance determines order.
 
 ```bash
-/work-summary           # Last 7 days with AI analysis (default)
-/work-summary 14        # Last 14 days with AI analysis
-make work-summary       # Last 7 days without AI analysis
-make work-summary DAYS=14  # Last 14 days without AI analysis
-make work-summary-test     # Offline regression tests
+/work-summary
+/work-summary 14
+make work-summary
+make work-summary DAYS=14
+make work-summary-test
 ```
 
-Requires Python 3.10+ and Git 2.37+; GitHub collection also needs authenticated `gh`; Jira needs authenticated `acli`.
-Each run saves its evidence and report in a separate temporary directory and prints
-the report path. Missing sources and capped searches appear as coverage gaps.
-See [the skill](../skills/work-summary/SKILL.md) for scan roots and evidence boundaries.
+Use authenticated Git/GitHub/Jira connectors or available CLIs. Missing tools,
+authentication, home directories, or local repositories reduce coverage instead
+of blocking other sources. Mobile/cloud sessions can use connector evidence
+without a shell. The scripted workflow needs Python 3.10+; full local collection
+needs Git 2.37+, GitHub uses authenticated `gh`, and Jira uses authenticated `acli`.
+Git is optional for remote-only collection, and remote CLIs are optional for Git-only use.
 
-**With skill (AI analysis):**
-
-- Executive Summary with themed accomplishments
-- In Progress section
-- Activity Stats
-- Detailed Work Log
-
-**With make target (no AI):**
-
-- Activity Stats
-- Detailed Work Log only
+The primary output is the concise work list. A short source note identifies
+material missing/partial sources. Captures preserve all collected evidence;
+`render-report.sh --detailed` produces the optional private inventory and full
+diagnostics. Each scripted run uses its own temporary directory. Without agent
+analysis, `make work-summary` provides a conservative evidence-based fallback.
+See [the skill](../skills/work-summary/SKILL.md) for capability fallbacks,
+source boundaries, link provenance, and analysis/ranking instructions.
 
 ## /jira
 

@@ -11,7 +11,7 @@ Claude Code marketplace for work tracking and session notes.
 
 ## Skills
 
-- `/work-summary` - Summarize local Git, GitHub/Jira participation, open work, and backup refs
+- `/work-summary` - Rank recent work as concise bullets with Jira/PR links, using available Git, GitHub, or Jira tools/connectors
 - `/notes` - Take persistent markdown notes organized by topic
 
 See [.claude/SKILLS.md](.claude/SKILLS.md) for details.
