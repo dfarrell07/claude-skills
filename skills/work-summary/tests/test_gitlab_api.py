@@ -82,7 +82,8 @@ class GitLabApiTest(unittest.TestCase):
         result, _, _ = self.collect(read, emails=['own@example.test'])
         self.assertEqual(len(result['items']), 1)
         self.assertFalse(result['metadata']['identities'])
-        self.assertEqual(result['metadata']['status'], 'partial')
+        self.assertEqual(result['metadata']['status'], 'ok')
+        self.assertEqual(len(result['metadata']['identity_leads']), 1)
 
     def test_failed_sibling_keeps_valid_detail_and_notes(self):
         def read(url):
@@ -245,6 +246,18 @@ class GitLabApiTest(unittest.TestCase):
                 api.validate_gitlab_api({'gitlab': result, 'metadata': {'author_aliases': rows}})
         api.validate_gitlab_api({'gitlab': result, 'metadata': {}, 'jira': {'metadata': {
             'identity_verified': True, 'account_id': 'native-account', 'user': 'own@example.test'}}})
+
+    def test_nonmatching_native_public_email_does_not_probe_irrelevant_user_profile(self):
+        def read(url):
+            self.assertNotIn('/users/', url)
+            if '/notes?' in url:
+                return response(url, [])
+            value = mr(); value['author']['public_email'] = 'someone-else@example.test'
+            return response(url, value)
+        result, _, _ = self.collect(read, emails=['own@example.test'])
+        self.assertEqual(result['metadata']['status'], 'ok')
+        self.assertFalse(result['metadata']['identities'])
+        self.assertFalse(result['metadata']['identity_leads'])
 
 
 if __name__ == '__main__':

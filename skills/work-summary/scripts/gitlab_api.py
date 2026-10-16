@@ -231,7 +231,7 @@ class PublicReader:
 def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
     verified_emails = tuple(verified_emails)
     result = {'items': [], 'metadata': {'status': 'not_applicable', 'scope': SCOPE,
-              'queries': [], 'failures': [], 'identities': [],
+              'queries': [], 'failures': [], 'identities': [], 'identity_leads': [],
               'inventories': [], 'verified_aliases': sorted({email.casefold() for email in verified_emails
                                           if isinstance(email, str) and email})}}
     reader = PublicReader(result, read or public_get)
@@ -269,7 +269,10 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                 item['notes'], item['notes_status'], item['notes_sources'] = read_notes(reader, host, native_repo, source)
             author = source.get('author') or {}
             actor = author.get('id')
-            if actor and aliases and (host, actor) not in users_read:
+            public_email = author.get('public_email')
+            foreign_email = (isinstance(public_email, str) and public_email
+                             and public_email.casefold() not in aliases)
+            if actor and aliases and not foreign_email and (host, actor) not in users_read:
                 users_read.add((host, actor))
                 try:
                     email = author.get('public_email')
@@ -283,7 +286,9 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                             else 'native_public_email_matches_verified_alias'), 'matched_email': email})
                         actors.add((host, actor))
                 except (OSError, URLError, ValueError, TypeError, KeyError, AttributeError) as error:
-                    reader.fail(f'https://{host}/api/v4/users/{actor}', type(error).__name__)
+                    result['metadata']['identity_leads'].append({'host': host, 'user_id': actor,
+                        'endpoint': f'https://{host}/api/v4/users/{actor}', 'status': 'unavailable',
+                        'reason': type(error).__name__})
         except (OSError, URLError, ValueError, TypeError, KeyError, AttributeError) as error:
             # Never save a rejected URL that could contain userinfo or tokens.
             reader.fail(original if isinstance(original, str) and re.fullmatch(r'https://[A-Za-z0-9./_-]+', original) else '',
@@ -343,6 +348,7 @@ def validate_gitlab_api(data):
     require(meta.get('scope') == SCOPE and meta.get('status') in {'ok', 'partial', 'not_applicable'}
             and isinstance(meta.get('queries'), list) and isinstance(meta.get('failures'), list)
             and isinstance(meta.get('identities'), list) and isinstance(meta.get('inventories'), list)
+            and isinstance(meta.get('identity_leads'), list)
             and isinstance(meta.get('verified_aliases'), list)
             and all(isinstance(value, str) and value for value in meta['verified_aliases']),
             'Invalid GitLab API coverage')
@@ -428,3 +434,11 @@ def validate_gitlab_api(data):
                 and inventory.get('status') in {'ok', 'partial'}
                 and any(identity['host'] == inventory.get('host') and identity['user_id'] == inventory.get('user_id')
                         for identity in meta['identities']), 'Unbound GitLab inventory identity')
+    for lead in meta['identity_leads']:
+        require(isinstance(lead, dict) and lead.get('status') == 'unavailable'
+                and integer(lead.get('user_id'), 1)
+                and lead.get('endpoint') == f'https://{lead.get("host")}/api/v4/users/{lead["user_id"]}'
+                and any(item['host'] == lead.get('host')
+                        and (item['source'].get('author') or {}).get('id') == lead['user_id']
+                        and not (item['source'].get('author') or {}).get('public_email')
+                        for item in capture['items']), 'Unbound GitLab public identity lead')
