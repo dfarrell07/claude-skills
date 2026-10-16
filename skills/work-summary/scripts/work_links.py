@@ -10,6 +10,7 @@ KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
 URL = re.compile(r'https?://[^\s<>"\[\]()]+')
 MARKDOWN_LINK = re.compile(r'\[[^\]\n]*\]\((https?://[^\s<>"()]+)\)')
+UUID = re.compile(r'(?<![0-9a-f])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}(?![0-9a-f])', re.I)
 
 
 def _url_keys(text, site, confirmed=False):
@@ -35,7 +36,7 @@ def _key_mentions(text, site, confirmed):
     """Separate discovery syntax from stronger native reference evidence."""
     text = text or ''
     explicit = _url_keys(text, site, confirmed)
-    bare = URL.sub(' ', MARKDOWN_LINK.sub(' ', text))
+    bare = UUID.sub(' ', URL.sub(' ', MARKDOWN_LINK.sub(' ', text)))
     for match in KEY.finditer(bare):
         key = match.group(1)
         if confirmed and (key != key.upper() or re.match(r'[.-][0-9]', bare[match.end():])):

@@ -8,11 +8,34 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from provider_references import (  # noqa: E402
-    complete_provider_references, gitlab_seed_urls, validate_gitlab_links, verified_aliases,
+    associate_gitlab, complete_provider_references, gitlab_seed_urls, validate_gitlab_links, verified_aliases,
 )
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_moved_ticket_in_native_gitlab_description_keeps_original_key_provenance(self):
+        native = {'key': 'NEW-3', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',
+                  'fields': {'summary': 'Canonical ticket', 'status': {'name': 'Active',
+                             'statusCategory': {'key': 'indeterminate'}}}}
+        jira = {'metadata': {'site': 'jira.example.test'}, 'issues': [{
+            'key': 'NEW-3', 'url': 'https://jira.example.test/browse/NEW-3',
+            'sensitive': False, 'source': native}], 'key_aliases': [{
+                'requested_key': 'OLD-2', 'canonical_key': 'NEW-3',
+                'requested': copy.deepcopy(native), 'canonical': copy.deepcopy(native)}]}
+        gitlab = {'items': [{'url': 'https://gitlab.example.test/team/repo/-/merge_requests/7',
+                            'source': {'description': 'Fixes OLD-2'}}]}
+        associate_gitlab(jira, gitlab)
+        data = {'jira': jira, 'gitlab': gitlab}
+        validate_gitlab_links(data)
+        relation = gitlab['items'][0]['jira_links'][0]
+        self.assertEqual(relation['url'], 'https://jira.example.test/browse/NEW-3')
+        self.assertEqual(relation['source_key'], 'OLD-2')
+        self.assertEqual(relation['jira_source_url'], 'https://jira.example.test/browse/OLD-2')
+        broken = copy.deepcopy(data)
+        broken['gitlab']['items'][0]['jira_links'][0]['source_key'] = 'UNMENTIONED-9'
+        with self.assertRaises(ValueError):
+            validate_gitlab_links(broken)
+
     def test_selected_native_alternate_bodies_supply_mr_leads_without_historical_index_crawl(self):
         selected = 'https://github.com/org/project/pull/42'
         root = 'https://gitlab.example.test/team/project/-/merge_requests/'

@@ -72,6 +72,17 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['CVE-123', 'ISO-9001'])
         self.assertEqual(referenced_keys(data['github'], 'other.example.test'), [])
 
+    def test_complete_uuid_fragments_are_not_ticket_mentions_but_explicit_tickets_survive(self):
+        data = self.capture()
+        data['github']['prs'][0].update(
+            title='Trace 8a0ba0b1-4636-4f0a-b3e3-411612345678',
+            body='Uppercase 8A0BA0B1-4636-4F0A-B3E3-411612345678; '
+                 'https://jira.example.test/browse/A0B1-4636 and TEST-123.')
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['A0B1-4636', 'TEST-123'])
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        self.assertEqual([i['key'] for i in data['github']['prs'][0]['jira_links']], ['TEST-123'])
+
     def test_comment_only_ticket_is_discovered_and_bound_without_crediting_its_author(self):
         data = self.capture()
         pr = data['github']['prs'][0]
