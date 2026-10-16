@@ -1599,6 +1599,32 @@ class ReviewContextTest(unittest.TestCase):
         validate_github({'github': data, 'metadata': {'github_user': 'me'}}, {}, START, END)
         self.assertEqual(client.warnings, [])
 
+    def test_ordinary_timeline_retains_distinct_review_snapshot_without_actor_credit(self):
+        from extended_evidence import github_reference_comments, validate_github
+        from work_links import referenced_keys
+        listing = self.native_review('Current review body')
+        timeline = self.native_review('https://jira.example/browse/CORE-321')
+        timeline.update(event='reviewed', state='commented', updated_at='2026-10-12T00:00:00Z')
+        item = rest_item(rest(), 'prs', 'github.com')
+
+        def handler(args):
+            if args[2].endswith('/timeline'):
+                return [timeline, copy.deepcopy(timeline)]
+            if args[2].endswith('/reviews'):
+                return [listing]
+            return []
+
+        client = self.client(handler)
+        data = {'prs': [item], 'issues': [], 'activity': []}
+        client._inspect_activity(data, [item])
+        self.assertEqual([row['source'] for row in data['reference_reviews']], [timeline, listing])
+        self.assertEqual([row['body'] for row in github_reference_comments(data)],
+                         [timeline['body'], listing['body']])
+        self.assertEqual(referenced_keys(data, 'jira.example'), ['CORE-321'])
+        self.assertEqual(data['activity'], [])
+        validate_github({'github': data, 'metadata': {'github_user': 'me'}}, {item['url']: item}, START, END)
+        self.assertEqual(client.warnings, [])
+
 
 class RestHeadRecoveryTest(unittest.TestCase):
     client = GithubSourcesTest.client

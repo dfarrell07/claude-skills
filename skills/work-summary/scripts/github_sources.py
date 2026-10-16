@@ -723,7 +723,7 @@ class Github:
                         self._retain_head_event(github, item, event, 'rest_force_push', key, endpoint)
                     if category in {'issue_comment', 'review_comment'}:
                         self._retain_comment(github, item, event, category, key)
-                    elif category == 'review':
+                    elif category == 'review' or category == 'timeline' and event.get('event') == 'reviewed':
                         self._retain_review(github, item, event, key)
                     try:
                         actor = (event.get('actor') or event.get('user') or {}).get('login', '')
