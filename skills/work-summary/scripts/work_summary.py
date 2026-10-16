@@ -2,7 +2,7 @@
 """Collect read-only work evidence and render validated, source-linked reports."""
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -14,92 +14,14 @@ import unicodedata
 from urllib.parse import urlsplit
 
 
-UTC = timezone.utc
-LIMIT = 1000
-PAGE_SIZE = 100
-HASH = re.compile(r"[0-9a-f]{7,64}\Z")
-REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
-HOST = re.compile(r"[A-Za-z0-9.-]+(?::[0-9]+)?\Z")
-GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
-for _key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
-             "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
-    GIT_ENV.pop(_key, None)
+# Collection must not write bytecode into the installed skill or a scanned checkout.
+sys.dont_write_bytecode = True
 
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def integer(value, minimum=0):
-    return type(value) is int and value >= minimum
-
-
-def timestamp(value):
-    require(isinstance(value, str), "Timestamp must be a string")
-    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    require(result.tzinfo is not None, "Timestamp needs a timezone")
-    return result.astimezone(UTC)
-
-
-def iso(value):
-    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        require(key not in result, f"Duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def decode_json(raw):
-    def invalid_number(value):
-        raise ValueError(f"Invalid JSON number: {value}")
-
-    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_number)
-
-
-def read_json(filename):
-    return decode_json(Path(filename).read_text(encoding="utf-8"))
-
-
-def command(args, timeout=120, env=None, stdin=None):
-    return subprocess.run(args, capture_output=True, check=True, timeout=timeout,
-                          env=env, encoding="utf-8", input=stdin).stdout
-
-
-def git(repo, *args, stdin=None):
-    return command(["git", "--no-optional-locks", "-C", str(repo), *args], env=GIT_ENV, stdin=stdin)
-
-
-def valid_item(item, kind, host):
-    require(isinstance(item, dict), "GitHub item must be an object")
-    repo = item.get("repo")
-    require(isinstance(repo, str) and REPO.fullmatch(repo)
-            and all(part not in (".", "..") for part in repo.split("/")), "Invalid GitHub repository")
-    require(integer(item.get("number"), 1), "Invalid GitHub item number")
-    require(isinstance(item.get("title"), str), "Missing GitHub item title")
-    require(item.get("state") in ({"open", "closed", "merged"} if kind == "prs" else {"open", "closed"}),
-            "Invalid GitHub state")
-    route = "pull" if kind == "prs" else "issues"
-    expected = f"https://{host}/{repo}/{route}/{item['number']}"
-    require(item.get("url") == expected, "GitHub citation does not match repository, number, and host")
-    for field in ("created_at", "updated_at"):
-        if field in item:
-            require(item[field] is not None, f"Missing {field}")
-    for field in ("created_at", "updated_at", "closed_at", "merged_at"):
-        if item.get(field) is not None:
-            timestamp(item[field])
-    if "merged_at" in item:
-        require(bool(item["merged_at"]) == (item["state"] == "merged"), "Merge state and timestamp disagree")
-    if "closed_at" in item:
-        require(bool(item["closed_at"]) == (item["state"] != "open"), "Closed state and timestamp disagree")
-    if item.get("updated_at"):
-        for field in ("created_at", "closed_at", "merged_at"):
-            if item.get(field):
-                require(timestamp(item[field]) <= timestamp(item["updated_at"]), "Inconsistent GitHub timestamps")
+from evidence import (  # noqa: E402
+    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
+    read_json, require, timestamp, valid_item,
+)
+from local_sources import collect_local  # noqa: E402
 
 
 def collect(days_text, roots, now=None):
@@ -220,105 +142,16 @@ def collect(days_text, roots, now=None):
                 github_status = "partial"
 
     local_warning_start = len(warnings)
-    repositories = {}
-    inspected_paths = set()
-
-    def add_repo(directory, marked=False):
-        if directory in inspected_paths:
-            return
-        inspected_paths.add(directory)
-        try:
-            canonical = Path(git(directory, "rev-parse", "--show-toplevel").removesuffix("\n")).resolve()
-            common = Path(git(canonical, "rev-parse", "--git-common-dir").removesuffix("\n"))
-            common = (common if common.is_absolute() else canonical / common).resolve()
-            entry = repositories.setdefault(str(common), {"path": str(canonical), "common_dir": str(common),
-                                                           "identities": set(), "paths": set()})
-            if str(canonical) in entry["paths"]:
-                return
-            entry["paths"].add(str(canonical))
-            try:
-                email = git(canonical, "config", "--get", "user.email").strip()
-                require(email and "\n" not in email, "Missing author email")
-                entry["identities"].add(email)
-            except (subprocess.SubprocessError, ValueError):
-                warn(f"No Git author email configured for {canonical}; that worktree's identity is unavailable.")
-        except (subprocess.SubprocessError, OSError, UnicodeError):
-            if marked:
-                warn(f"Cannot inspect Git repository at {directory}; local coverage is incomplete.")
-
-    scan_roots = [Path(root).expanduser() for root in roots] if roots else [
-        Path.home() / relative for relative in ("go/src", "konflux", "projects", "repos")
-    ] + [Path.cwd()]
-    for root in scan_roots:
-        try:
-            if not root.is_dir():
-                if roots:
-                    warn(f"Requested scan root is missing or not a directory: {root}")
-                continue
-            root = root.resolve()
-        except (OSError, RuntimeError):
-            warn(f"Cannot access scan root {root}; local coverage is incomplete.")
-            continue
-        # A failed probe inside an enclosing repository is a coverage gap too;
-        # walking below the requested subdirectory cannot find its ancestor marker.
-        marked = any(os.path.lexists(ancestor / ".git") for ancestor in (root, *root.parents))
-        add_repo(root, marked=marked)
-        for directory, dirs, files in os.walk(root, onerror=lambda error: warn(
-                f"Cannot scan {error.filename}; local coverage is incomplete.")):
-            current = Path(directory)
-            if ".git" in dirs or ".git" in files:
-                add_repo(current, marked=True)
-            dirs[:] = sorted(name for name in dirs if name not in (".git", "node_modules", "vendor"))
-            if len(current.relative_to(root).parts) >= 4:
-                dirs[:] = []
-
-    commits = {}
-    skipped = 0
-    for entry in repositories.values():
-        entry["identities"] = sorted(entry["identities"])
-        entry["paths"] = sorted(entry["paths"])
-        if not entry["identities"]:
-            skipped += 1
-            entry["status"] = "skipped"
-            continue
-        try:
-            tips = sorted(set(git(entry["path"], "rev-list", "--all", "--no-walk=unsorted").splitlines()))
-            require(all(HASH.fullmatch(tip) for tip in tips), "Invalid reference tip")
-            entry["tips"] = tips
-            # Disable human log presentation and mailmap rewriting: %ae and the
-            # configured identities describe raw authors, and the stream is UTF-8.
-            raw = git(entry["path"], "log", "--stdin", "--fixed-strings", "--no-use-mailmap",
-                      "--no-show-signature", "--no-color", "--encoding=UTF-8",
-                      *[f"--author=<{email}>" for email in entry["identities"]],
-                      f"--since-as-filter={iso(start)}", f"--until={iso(end)}", "-z",
-                      "--format=%H%x00%ct%x00%ae%x00%s", stdin="\n".join(tips) + "\n") if tips else ""
-            fields = raw.split("\0")
-            require(fields.pop() == "" and len(fields) % 4 == 0, "Malformed Git log output")
-            found = []
-            for index in range(0, len(fields), 4):
-                commit_hash, epoch, email, subject = fields[index:index + 4]
-                require(HASH.fullmatch(commit_hash), "Invalid commit hash")
-                committed_at = datetime.fromtimestamp(int(epoch), UTC)
-                require(start <= committed_at <= end and email in entry["identities"], "Unexpected Git commit")
-                found.append({"hash": commit_hash, "message": subject, "author_email": email,
-                              "committed_at": iso(committed_at)})
-            if found:
-                commits[entry["path"]] = found
-            entry["status"] = "ok"
-        except (subprocess.SubprocessError, OSError, ValueError, OverflowError):
-            skipped += 1
-            entry["status"] = "skipped"
-            warn(f"Git log failed for {entry['path']}; commits were not collected.")
+    local = collect_local(roots, start, end, warn, api if github_user else None,
+                          identity if github_user else {})
     return {
         "metadata": {"days": days, "since_date": start.date().isoformat(), "to_date": end.date().isoformat(),
-                     "since_at": iso(start), "to_at": iso(end), "repos_searched": len(repositories),
-                     "repos_skipped": skipped, "repos_with_commits": len(commits),
+                     "since_at": iso(start), "to_at": iso(end), **local["metadata"],
                      "local_status": "partial" if len(warnings) > local_warning_start else "ok",
-                     "scan_roots": [str(root.absolute()) for root in scan_roots],
-                     "repositories": list(repositories.values()), "github_status": github_status,
-                     "github_user": github_user, "github_host": host, "github_searches": searches,
-                     "search_limit": LIMIT, "warnings": warnings},
-        "github": github, "commits": commits,
+                     "github_status": github_status, "github_user": github_user, "github_host": host,
+                     "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
+        "github": github, "commits": local["commits"], "branches": local["branches"],
+        "unattributed_commits": local["unattributed_commits"],
     }
 
 
@@ -374,6 +207,8 @@ def validate(data, source=None):
                     and isinstance(entry.get("message"), str), "Invalid commit evidence")
             require(entry["hash"] not in seen, "Duplicate commit in repository")
             seen.add(entry["hash"])
+            if entry.get("authored_at") is not None:
+                timestamp(entry["authored_at"])
             if entry.get("committed_at") is not None:
                 when = timestamp(entry["committed_at"])
                 if start:
@@ -405,6 +240,19 @@ def validate(data, source=None):
         require(set(commits).issubset(paths), "Commit repository is absent from inventory")
         require(sum(entry["status"] == "skipped" for entry in entries) == metadata.get("repos_skipped", 0),
                 "Skipped repository count disagrees with inventory")
+    if "branches" in data:
+        require(isinstance(data["branches"], list), "Invalid branch inventory")
+        inventory = {entry["path"]: entry for entry in metadata.get("repositories", [])}
+        for branch in data["branches"]:
+            require(isinstance(branch, dict) and branch.get("repo") in inventory
+                    and isinstance(branch.get("hash"), str) and HASH.fullmatch(branch["hash"]), "Invalid branch snapshot")
+            require(branch.get("object_type") in {"commit", "tree", "blob", "tag"}
+                    and isinstance(branch.get("refs"), list) and branch["refs"], "Invalid branch refs")
+            refs = {ref["name"]: ref for ref in inventory[branch["repo"]].get("refs", [])}
+            require(all(name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")}
+                        for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
+            require(branch.get("pr_status") in {"unchecked", "not_applicable", "matched", "no_match", "partial", "unsupported"},
+                    "Invalid branch PR coverage")
     if "github_searches" in metadata:
         searches = metadata["github_searches"]
         require(isinstance(searches, dict), "Invalid GitHub search coverage")
@@ -427,8 +275,9 @@ def validate(data, source=None):
         return
     require(source is not None, "An enriched capture requires its original source capture")
     validate(source)
-    for key in ("metadata", "github", "commits"):
-        require(data.get(key) == source.get(key), f"Enrichment changed source {key}")
+    require(set(data) == set(source) | {"analysis"}, "Enrichment changed capture sections")
+    for key, original in source.items():
+        require(data.get(key) == original, f"Enrichment changed source {key}")
     analysis = data["analysis"]
     require(isinstance(analysis, dict) and isinstance(analysis.get("themes"), list)
             and isinstance(analysis.get("in_progress"), list), "Invalid analysis")
@@ -477,7 +326,7 @@ def render(data, source=None):
     prs, issues = data["github"]["prs"], data["github"]["issues"]
     lines = [f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})", "",
              "GitHub scope: authored PRs/issues updated during this period. Updates may come from other people or automation.",
-             "Local scope: commits matching configured author emails across all local refs, grouped once per common Git directory.", ""]
+             "Local scope: configured or account-verified author emails across recorded refs and registered worktrees.", ""]
     if "since_at" in m:
         lines += [f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.", ""]
     if m.get("warnings"):
@@ -514,10 +363,33 @@ def render(data, source=None):
     lines += ["### Git Commits", "", f"Searched {m['repos_searched']} repositories; found commits in {len(data['commits'])}.", ""]
     for repo, entries in data["commits"].items():
         lines += [f"#### {markdown(repo)}", ""]
-        lines += [f"- `{entry['hash'][:12]}` {markdown(entry['message'])}" for entry in entries]
+        for entry in entries:
+            dates = ""
+            if entry.get("authored_at", m.get("since_at", "")) < m.get("since_at", ""):
+                dates = f" (authored {entry['authored_at']}; committed {entry['committed_at']})"
+            lines.append(f"- `{entry['hash'][:12]}` {markdown(entry['message'])}{dates}")
         lines.append("")
     if not data["commits"]:
         lines += ["No matching local commits found.", ""]
+    if "branches" in data:
+        branches = data["branches"]
+        ref_count = sum(len(entry.get("refs", [])) for entry in m.get("repositories", []))
+        selected = [item for item in branches if item["object_type"] != "commit" or item.get("backup")
+                    or (item.get("recent_tip") and item.get("contained_in_cached_default") is not True)]
+        lines += ["### Local Branch and Backup Inventory", "",
+                  f"Recorded {ref_count} named refs and {len(branches)} relevant snapshots; {len(selected)} backup/recent snapshots are listed below.",
+                  "Older branch context remains in the saved evidence. Cached default-branch containment does not establish PR or release delivery.", ""]
+        for item in selected:
+            names = ", ".join(markdown(name) for name in item["refs"])
+            lines.append(f"- {markdown(item['repo'])}: {names} — `{item['hash'][:12]}` "
+                         f"({item['object_type']}; PR association: {item['pr_status']})")
+        lines.append("")
+    if data.get("unattributed_commits"):
+        lines += ["### Unverified Authorship Leads", "",
+                  "These name-matching commits are not credited as your work without identity evidence.", ""]
+        for item in data["unattributed_commits"]:
+            lines.append(f"- {markdown(item['repo'])} `{item['hash'][:12]}` {markdown(item['author_email'])}")
+        lines.append("")
     return "\n".join(lines)
 
 

@@ -47,6 +47,13 @@ if args[-1] == "user":
         sys.exit(1)
     print(json.dumps({"login": os.environ.get("GH_LOGIN", "test-user")}))
     sys.exit(0)
+if "search/commits" in args:
+    email=os.environ.get("GH_ALIAS_EMAIL")
+    items=[] if not email else [{"sha":"a"*40,"html_url":"https://github.com/org/project/commit/"+"a"*40,
+                                "author":{"login":os.environ.get("GH_ALIAS_LOGIN","test-user")},
+                                "commit":{"author":{"email":email}}}]
+    print(json.dumps({"total_count":len(items),"incomplete_results":False,"items":items}))
+    sys.exit(0)
 query = next(value[2:] for value in args if value.startswith("q="))
 kind = "prs" if "is:pr " in query else "issues"
 page = int(next(value[5:] for value in args if value.startswith("page=")))
@@ -571,6 +578,107 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["metadata"]["local_status"], "ok")
         self.assertEqual(len(data["commits"][str(repo)][0]["hash"]), 64)
         self.assertEqual(data["commits"][str(repo)][0]["hash"], self.git(repo, "rev-parse", "HEAD"))
+
+    def test_top_level_and_deep_workspace_clones_are_discovered(self):
+        top = self.repo("laptop-setup", "Top-level work")
+        deep = self.repo("backup/a/b/c/d/e/f/project", "Deep backup work")
+        data = self.capture()
+        self.assertEqual(set(data["commits"]), {str(top), str(deep)})
+
+    def test_registered_worktree_outside_explicit_roots_supplies_identity(self):
+        repo = self.repo("workspace/main", "Main work")
+        tree = self.root / "external-worktree"
+        self.git(repo, "config", "extensions.worktreeConfig", "true")
+        self.git(repo, "worktree", "add", "--detach", str(tree))
+        self.git(tree, "config", "--worktree", "user.email", "second@example.test")
+        self.git(tree, "commit", "--allow-empty", "-qm", "External work")
+        data = self.capture(repo)
+        self.assertEqual({item["message"] for item in data["commits"][str(repo)]}, {"Main work", "External work"})
+        self.assertIn(str(tree), data["metadata"]["repositories"][0]["paths"])
+
+    def test_missing_registered_worktree_is_visible(self):
+        repo = self.repo("registered")
+        tree = self.root / "removed-tree"
+        self.git(repo, "worktree", "add", "--detach", str(tree))
+        shutil.rmtree(tree)
+        data = self.capture(repo)
+        self.assertEqual(data["metadata"]["local_status"], "partial")
+        self.assertTrue(any("Registered worktree is missing" in warning for warning in data["metadata"]["warnings"]))
+        self.assertTrue(any(not item["exists"] for item in data["metadata"]["repositories"][0]["worktrees"]))
+
+    def test_hidden_backup_and_symlink_workspace_cycles(self):
+        repo = self.repo(".backups/project", "Hidden backup work")
+        (self.home / "cycle").symlink_to(self.home, target_is_directory=True)
+        alias = self.home / "external-link"
+        external = self.root / "outside"
+        external.mkdir()
+        alias.symlink_to(external, target_is_directory=True)
+        self.git(external, "init", "-q")
+        self.git(external, "config", "user.name", "Test User")
+        self.git(external, "config", "user.email", "me@example.test")
+        self.git(external, "commit", "--allow-empty", "-qm", "Linked work")
+        data = self.capture()
+        self.assertEqual(set(data["commits"]), {str(repo), str(external)})
+
+    def test_bare_backup_is_discovered(self):
+        source = self.repo("source", "Bare backup work")
+        bare = self.home / "backup.git"
+        subprocess.run(["git", "clone", "--bare", str(source), str(bare)], env=self.env, check=True, capture_output=True)
+        self.git(bare, "config", "user.email", "me@example.test")
+        data = self.capture(bare)
+        self.assertEqual(data["commits"][str(bare)][0]["message"], "Bare backup work")
+        self.assertTrue(data["metadata"]["repositories"][0]["bare"])
+
+    def test_backup_ref_and_noncommit_tree_are_retained(self):
+        repo = self.repo("ref-backup", "Snapshot work")
+        sha = self.git(repo, "rev-parse", "HEAD")
+        tree = self.git(repo, "rev-parse", "HEAD^{tree}")
+        self.git(repo, "update-ref", "refs/heads/summary-bak0", sha)
+        self.git(repo, "update-ref", "refs/codex/reviewed-tree", tree)
+        data = self.capture(repo)
+        self.assertTrue(any("refs/heads/summary-bak0" in item["refs"] for item in data["branches"]))
+        snapshot = next(item for item in data["branches"] if "refs/codex/reviewed-tree" in item["refs"])
+        self.assertEqual(snapshot["object_type"], "tree")
+        self.assertEqual(snapshot["attribution"], "undated_noncommit_snapshot")
+        self.assertEqual(snapshot["pr_status"], "not_applicable")
+
+    def test_remote_credentials_are_not_captured(self):
+        repo = self.repo("remote")
+        self.git(repo, "remote", "add", "origin", "https://secret-token:password@github.com/org/project.git")
+        data = self.capture(repo)
+        self.assertNotIn("secret-token", json.dumps(data))
+        self.assertNotIn("password", json.dumps(data))
+        self.assertEqual(data["metadata"]["repositories"][0]["remotes"][0]["repo"], "org/project")
+
+    def test_alias_needs_native_account_attribution(self):
+        repo = self.repo("alias", "Configured work")
+        self.git(repo, "-c", "user.email=historical@example.test", "commit", "--allow-empty", "-qm", "Historical alias")
+        unverified = self.capture(repo)
+        self.assertEqual(len(unverified["commits"][str(repo)]), 1)
+        self.assertEqual(len(unverified["unattributed_commits"]), 1)
+        self.env["GH_ALIAS_EMAIL"] = "historical@example.test"
+        verified = self.capture(repo)
+        self.assertEqual(len(verified["commits"][str(repo)]), 2)
+        self.assertTrue(any(item["source"] == "github_commit_account" for item in verified["metadata"]["author_aliases"]))
+        self.env["GH_ALIAS_LOGIN"] = "someone-else"
+        wrong_actor = self.capture(repo)
+        self.assertEqual(len(wrong_actor["commits"][str(repo)]), 1)
+
+    def test_author_and_committer_dates_are_retained_separately(self):
+        repo = self.repo("rebase", "Initial")
+        self.env["GIT_AUTHOR_DATE"] = "2000-01-01T00:00:00Z"
+        self.git(repo, "commit", "--allow-empty", "-qm", "Rebased old change")
+        data = self.capture(repo)
+        item = next(item for item in data["commits"][str(repo)] if item["message"] == "Rebased old change")
+        self.assertEqual(item["authored_at"], "2000-01-01T00:00:00Z")
+        self.assertNotEqual(item["committed_at"], item["authored_at"])
+
+    def test_collection_does_not_write_skill_bytecode(self):
+        copied = self.root / "installed-scripts"
+        shutil.copytree(SKILL / "scripts", copied, ignore=shutil.ignore_patterns("__pycache__"))
+        repo = self.repo("no-bytecode")
+        self.run_script(copied / "work-summary.sh", "7", repo)
+        self.assertEqual(list(copied.rglob("__pycache__")), [])
 
     def test_collection_does_not_modify_working_tree(self):
         repo = self.repo("read-only")

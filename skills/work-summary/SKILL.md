@@ -43,29 +43,32 @@ Read `data.json` from that exact directory. Stop if collection fails; do not reu
 older capture. Shell variables may not persist between tool calls, so retain the
 absolute paths rather than assuming they remain set.
 
-Default local scan roots: `~/go/src`, `~/konflux`, `~/projects`, `~/repos`, and the current
-directory, up to five levels deep. The enclosing repository is included when invoked
-from a subdirectory. Clones and worktrees are supported; worktrees sharing a common Git directory are
-counted once, using the configured author emails from their discovered worktree paths.
-Scan roots are followed if symlinked; nested symlink directories are not traversed.
-For different locations, pass explicit roots after days; these replace the defaults:
+By default scan the home directory and current directory, including top-level clones,
+backups, bare repositories, deep workspaces, and directory symlinks with cycle detection.
+Skip dependency caches, credential/tool-state directories, and pytest fixtures; record
+the actual excluded paths. Follow registered worktrees, including those outside scan
+roots, and report stale/inaccessible registrations. Explicit roots replace defaults:
 
 ```bash
 bash "$SKILL_DIR/scripts/work-summary.sh" "$DAYS" /path/to/work /path/to/another/repo > "$RUN_DIR/data.json"
 ```
 
-Local commits match raw author emails against discovered worktrees' configured
-`user.email` values across all refs (including detached worktree heads), filtered by
-committer time in the exact
-inclusive UTC window. They are grouped by absolute repository path; the metadata
-records common Git directories, discovered paths, author emails, and the exact commit
-tips used for collection. Commits are read from those tips so later branch movement
-does not change the captured revision scope. Other author emails, clones outside scan roots,
-uncommitted changes, reviews, Jira, and other work sources are outside this capture.
-Read the metadata warnings and report skipped sources, inaccessible scan roots,
-result caps, incomplete GitHub searches, or paging changes. GitHub collection reads
-at most 1,000 PRs and 1,000 issues, warning when the server reports more. It preserves
-successful pages if a later request fails. An absent source is not evidence of no work.
+Local ownership uses configured author emails and aliases independently attributed to
+the authenticated GitHub account. Names are discovery leads, never ownership proof.
+Keep unresolved identity candidates separate. Record both author and committer dates:
+old changes recommitted this week are not necessarily new work.
+
+The capture retains exact ref names/object types, revision tips, remotes without
+credentials, cached default refs, registered worktrees, and branch/backup snapshots.
+Undated tree/blob refs are backup state, not authored commits. A branch absent from
+cached default history is not automatically unpublished: it may have been squashed,
+rebased, merged into a release branch, or delivered without a PR. Preserve association
+coverage explicitly; unchecked never means no PR.
+
+Read metadata warnings and report missing sources or limits. Current GitHub queries
+capture authored PRs/issues updated in the window, at most 1,000 each, preserving
+successful pages on later failure. Reviews, Jira, uncommitted changes, excluded paths,
+and inaccessible or unknown author identities are not yet exhaustive evidence.
 
 ## Analyze the Evidence
 
