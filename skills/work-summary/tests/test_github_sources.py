@@ -1654,6 +1654,31 @@ class SnapshotConcurrencyTest(unittest.TestCase):
                 self.assertTrue(client.warnings)
                 self.assertFalse(data.get('repository_aliases'))
 
+    def test_unverified_alias_cannot_gain_branch_credit_from_later_partial_metadata(self):
+        def api(args):
+            if args[0] != 'graphql':
+                raise OSError('native alias identity unavailable')
+            query = query_text(args)
+            if 'query:"is:pr ' in query:
+                return {'data': {'s0': connection()}}
+            result = snapshot_data(args)
+            if 'after:"next"' in query:
+                # A readable association page survives errors in sibling repo metadata.
+                result['data']['c0'] = {'object': {'associatedPullRequests':
+                    connection([gql(8, repo='example/canonical')])}}
+                result['errors'] = [{'path': ['c0', 'nameWithOwner'], 'message': 'partial metadata'}]
+            else:
+                result['data']['c0'] = {'id': 'NATIVE_REPO', 'nameWithOwner': 'example/canonical',
+                    'object': {'associatedPullRequests': connection([gql(7, repo='example/canonical')],
+                                                                   more=True, cursor='next')}}
+            return result
+        client, branches, data = self.associate(api, repos=[repository(remotes=('example/previous',))])
+        self.assertEqual([row['number'] for row in data['pr_index']], [7, 8])
+        self.assertEqual(branches[0]['prs'], [])
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertTrue(client.warnings)
+        self.assertFalse(data.get('repository_aliases'))
+
     def test_partial_graphql_canonical_connection_requires_independent_alias_proof(self):
         reads = []
         def api(args):

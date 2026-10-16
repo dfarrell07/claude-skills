@@ -794,7 +794,7 @@ class Github:
                     if affected:
                         self.problem(coverage_key, method + ' returned GraphQL errors; retaining readable results')
                     connection = result['data'][alias]
-                    context_only = False
+                    context_only = bool(state.get('alias_unverified')) if method == 'commit' else False
                     if method == 'commit':
                         if (isinstance(connection, dict)
                                 and isinstance(connection.get('nameWithOwner'), str)
@@ -808,8 +808,12 @@ class Github:
                                 # PRs. Preserve them without asserting that this
                                 # local remote is the returned repository.
                                 context_only = True
+                                state['alias_unverified'] = True
                                 state['failed'] = True
                                 self.problem(coverage_key, 'repository alias unverified; associated PRs retained as context')
+                            else:
+                                context_only = False
+                                state['alias_unverified'] = False
                             if not context_only and states[key].get('search_repo') != canonical:
                                 # Search does not follow repository redirects. A
                                 # valid zero for the historical name proves nothing
