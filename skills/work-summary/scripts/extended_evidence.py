@@ -345,7 +345,7 @@ def validated_timeline_events(github, known, host='github.com'):
     from github_timeline import validate_timeline
     timelines = github.get('timeline_html', [])
     require(isinstance(timelines, list), 'Invalid native HTML timeline observations')
-    native, opaque = {}, {}
+    native, opaque, complete = {}, {}, {}
     for record in github.get('head_events', []):
         require(isinstance(record, dict), 'Invalid native head event')
         if record.get('kind') == 'html_force_push':
@@ -356,6 +356,8 @@ def validated_timeline_events(github, known, host='github.com'):
             native.setdefault(record['item_url'], []).append(source)
         elif source['beforeCommit'] is None or source['afterCommit'] is None:
             opaque.setdefault(record['item_url'], set()).add(source['id'])
+        else:
+            complete.setdefault(record['item_url'], set()).add(source['id'])
     events, seen = {}, set()
     for record in timelines:
         require(isinstance(record, dict), 'Invalid native HTML timeline')
@@ -365,9 +367,15 @@ def validated_timeline_events(github, known, host='github.com'):
                 'Native HTML timeline PR mismatch')
         seen.add(item['url'])
         sources = native.get(item['url'], [])
-        targets = sorted({source['id'] for source in sources
-                          if source['node_id'] in opaque.get(item['url'], set())})
-        require(bool(targets), 'Native HTML timeline lacks unresolved API event targets')
+        possible = {source['id'] for source in sources
+                    if source['node_id'] in opaque.get(item['url'], set())}
+        required = {source['id'] for source in sources if source['id'] in possible
+                    and source['node_id'] not in complete.get(item['url'], set())}
+        targets = record.get('target_event_ids')
+        require(isinstance(targets, list) and bool(targets) and all(integer(value, 1) for value in targets)
+                and required <= set(targets) <= possible, 'Native HTML timeline lacks unresolved API event targets')
+        # Preserve an earlier native HTML observation when a later complete
+        # GraphQL view resolves one of its original targets.
         validate_timeline(record, item, sources, targets)
         events.update({(item['url'], event['id']): event for event in record['events']})
     return events

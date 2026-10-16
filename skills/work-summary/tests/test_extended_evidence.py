@@ -50,6 +50,10 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
         forged['source']['before_sha'] = 'c' * 40
         with self.assertRaises(ValueError):
             historical_head_hashes(forged, known, html_events=events)
+        later = copy.deepcopy(github)
+        later['head_events'].append({**api_heads[1], 'source': {
+            **graph, 'beforeCommit': {'oid': before}, 'afterCommit': {'oid': after}}})
+        self.assertEqual(validated_timeline_events(later, known), events)
         for mutation in ('no_rest', 'different_graph_id', 'forged_pair', 'hidden_target'):
             broken = copy.deepcopy(github)
             if mutation == 'no_rest':
