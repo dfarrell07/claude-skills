@@ -27,10 +27,12 @@ needs Git 2.37+, GitHub uses authenticated `gh`, and Jira uses authenticated `ac
 Git is optional for remote-only collection, and remote CLIs are optional for Git-only use.
 
 The primary output is the concise work list. A short source note identifies
-material missing/partial sources. Captures preserve all collected evidence;
-`render-report.sh --detailed` produces the optional private inventory and full
-diagnostics. Each scripted run uses its own temporary directory. Without agent
-analysis, `make work-summary` provides a conservative evidence-based fallback.
+material missing/partial sources. Collection takes several minutes and writes a
+large private capture; `render-report.sh --candidates` lists the personal window
+work an agent needs for its analysis, `--analysis` renders that analysis, and
+`--detailed` produces the full private inventory and diagnostics. Each scripted
+run uses its own temporary directory. Without agent analysis, `make work-summary`
+provides a conservative evidence-based fallback.
 See [the skill](../skills/work-summary/SKILL.md) for capability fallbacks,
 source boundaries, link provenance, and analysis/ranking instructions.
 

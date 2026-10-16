@@ -61,16 +61,20 @@ specified for the confirmed local calendar boundaries; `--until` is exclusive:
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarterly-review.XXXXXX")
 bash "$SKILL_DIR/scripts/work-summary.sh" \
   --since 2026-07-01T00:00:00-04:00 \
-  --until 2026-10-01T00:00:00-04:00 > "$RUN_DIR/data.json"
+  --until 2026-10-01T00:00:00-04:00 \
+  --output "$RUN_DIR/data.json" 2> "$RUN_DIR/collect.log"
+bash "$SKILL_DIR/scripts/render-report.sh" --candidates "$RUN_DIR/data.json" > "$RUN_DIR/candidates.md"
 ```
 
-Those dates are an illustration, not a default. Add repeated `--root /path`
-options to narrow local discovery when requested. Do not mix positional days
-with explicit dates. Capture metadata preserves the exact exclusive endpoint;
-existing inclusive provider filters use the immediately preceding microsecond.
-Read `since_at`, `to_at`, `until_exclusive`, source warnings and actual coverage.
-UTC date labels and the rounded duration in `days` are not the user's local
-calendar or a substitute for the exact endpoints.
+Those dates are an illustration, not a default. A quarter takes considerably
+longer to collect than a week, so run it in the background and keep preparing
+questions and supplied material meanwhile; `collect.log` shows progress. Add
+repeated `--root /path` options to narrow local discovery when requested. Do not
+mix positional days with explicit dates. Work from `candidates.md`, the compact
+list of personal activity in the interval, and read specific items from the
+providers or `data.json` when a theme needs more detail. The capture records the
+exact `since_at`, `to_at` and `until_exclusive`; its UTC date labels and rounded
+`days` are not the user's local calendar.
 
 Gather a longer feedback window separately when the question needs it, reusing
 valid captured evidence where possible. Missing optional tools or authentication
@@ -85,12 +89,6 @@ follow available native alternatives when feasible. Keep failed slices and
 unresolved limits visible in the private evidence. A successful command does
 not establish a complete quarterly inventory. Do not mistake the current state
 of a PR or ticket for its state at the reporting cutoff.
-
-Keep independent work discovery broad while scoping reference enrichment to
-that work and its ticket/review counterparts. Fetched third-party context must
-not recursively become a new work inventory. Preserve deferred outbound links;
-new native personal activity can promote context and reopen its frontier.
-Partial actor reads do not disqualify initial account/role or user-selected leads.
 
 Use earlier reviews, weekly summaries, and 1:1 notes to find continuity and
 relevant work. They are leads, not a complete inventory or independent duplicate
@@ -187,11 +185,33 @@ mode. Do not require a Jira/PR pair or include incidental trackers. Non-code wor
 can cite its actual source. Without file storage, supply evidence separately in
 the conversation when requested; do not claim to have saved a private companion.
 
-The weekly `analysis` schema and renderer remain for weekly bullets. Write
-quarterly answers directly from the source capture and supplemental input; do
-not modify native capture fields or invent a new validator result for prose.
-Keep personal references, raw captures and generated answers in private storage
+The weekly `analysis` schema and renderer are for weekly bullets. Write the
+quarterly briefing and answers directly from the digest, the items you read and
+supplemental input; do not claim a validator checked prose it never saw. Keep
+personal references, raw captures and generated answers in private storage
 outside tracked files. Public tests/examples must use synthetic people and work.
+
+A briefing theme names the effort, says what changed and how the user did it,
+and keeps a few core links. For example (synthetic):
+
+```text
+- Made release verification trustworthy enough that QE now signs off from its output.
+  - Replaced manual stage checks with automated evidence gates for components and catalogs.
+    - https://jira.example.test/browse/REL-200
+    - https://github.com/example/release-tools/pull/114
+  - Taught two teammates to run the stage process; they ran the 0.23.4 stage release.
+- Led the CVE-response rework across six repositories, from triage tooling to merged fixes.
+  - https://github.com/example/automation/pull/41
+- Reviewed and unblocked the CNI migration: design review, two rounds on the controller split.
+```
+
+Answer starters are shorter, first person, and usually link-free:
+
+```text
+What accomplishments are you most proud of last quarter, and how did you accomplish them?
+- I automated release verification so QE could sign off from evidence instead of manual checks,
+  and taught two teammates to run stage releases themselves.
+```
 
 ## Check the result
 
