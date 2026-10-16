@@ -271,23 +271,29 @@ class GithubSourcesTest(unittest.TestCase):
                 self.assertEqual(data['activity'][0]['url'], item['url'] + '#issuecomment-1')
                 self.assertEqual(client.warnings, [])
 
-    def test_comment_edit_requires_editor_identity(self):
-        for editor, expected in [(None, 0), ({'login': 'other'}, 0), ({'login': 'me'}, 1)]:
-            with self.subTest(editor=editor):
+    def test_rest_editor_does_not_replace_native_last_edit_identity_or_time(self):
+        for native_editor, expected in [(None, 0), ({'login': 'other'}, 0), ({'login': 'me'}, 1)]:
+            with self.subTest(native_editor=native_editor):
+                event = {'id': 1, 'node_id': 'native1', 'user': {'login': 'me'}, 'editor': {'login': 'me'},
+                         'html_url': 'https://github.com/org/repo/pull/1#issuecomment-1',
+                         'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z'}
+                proof = {'id': 'native1', 'databaseId': 1, 'url': event['html_url'], 'author': {'login': 'me'},
+                         'editor': native_editor, 'createdAt': event['created_at'], 'updatedAt': event['updated_at'],
+                         'lastEditedAt': '2026-10-11T23:59:59Z'}
                 def api(args):
-                    if 'search/issues' in args:
-                        return {'total_count': 0, 'incomplete_results': False, 'items': []}
-                    if args[2].endswith('/issues/1/comments'):
-                        return [{'id': 1, 'user': {'login': 'me'}, 'editor': editor,
-                                 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-1',
-                                 'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z'}]
-                    return []
+                    if args[0] == 'graphql':
+                        return {'data': {'node': proof}}
+                    return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
                 client = self.client(api)
                 item = {'url': 'https://github.com/org/repo/pull/1', 'repo': 'org/repo', 'number': 1}
-                data = {'prs': [item], 'issues': []}
-                client.discover(data)
+                data = {'activity': []}
+                client._inspect_activity(data, [item])
                 self.assertEqual(len(data['activity']), expected)
-                if editor is None:
+                self.assertTrue(any(args[0] == 'graphql' for args in client.calls))
+                if expected:
+                    self.assertEqual(data['activity'][0]['at'], proof['lastEditedAt'])
+                    self.assertEqual(data['activity'][0]['editor_evidence'], proof)
+                if native_editor is None:
                     self.assertTrue(any('editor' in x for x in client.warnings))
                 elif not expected:
                     self.assertEqual(client.warnings, [])
@@ -321,7 +327,7 @@ class GithubSourcesTest(unittest.TestCase):
                     self.assertEqual(client.warnings, [])
 
     def test_native_unedited_comment_does_not_confuse_updated_time_with_edit(self):
-        event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': 'me'},
+        event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': 'me'}, 'editor': {'login': 'me'},
                  'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:01Z',
                  'html_url': 'https://github.com/org/repo/pull/1#discussion_r51'}
         native = {'id': event['node_id'], 'databaseId': 51, 'url': event['html_url'],
@@ -632,6 +638,59 @@ class GithubSourcesTest(unittest.TestCase):
         native['author'] = {'login': 'another-user'}
         self.assertIsNone(client._comment_edit(event, 'issue_comment', 'edited'))
         self.assertEqual(client.coverage['edited']['status'], 'partial')
+
+    def test_later_canonical_index_does_not_upgrade_earlier_sha_search_proof(self):
+        snapshot = gql(repo='canonical/repo', sha='c' * 40)
+        indexed = graphql_item(gql(repo='canonical/repo', sha=SHA), 'github.com')
+        def api(args):
+            if args[0] != 'graphql':
+                return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
+            def change(i, repo, data):
+                if repo == 'org/repo':
+                    data['c' + i] = {'id': 'native-repository', 'nameWithOwner': 'canonical/repo', 'object': None}
+                else:
+                    data.pop('c' + i)
+                    data['s' + i] = connection([snapshot])
+            return snapshot_data(args, change)
+        client, branches, data = self.associate(api, index={'canonical/repo': [indexed]})
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'any_author_sha_search')
+        self.assertEqual(data['pr_index'][0]['head_sha'], 'c' * 40)
+        self.assertEqual(client.warnings, [])
+
+    def test_native_context_author_node_is_retained_and_malformed_identity_rejected(self):
+        item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}
+        event = {'id': 30, 'node_id': 'comment-id', 'html_url': item['url'] + '#issuecomment-30',
+                 'body': 'Native TEST-88', 'user': {'login': 'helper[bot]', 'node_id': 'bot-id'},
+                 'created_at': '2020-01-01T00:00:00Z', 'updated_at': '2020-01-01T00:00:00Z'}
+        client = self.client(lambda args: [])
+        data = {}
+        client._retain_comment(data, item, event, 'issue_comment', 'context')
+        self.assertEqual(data['reference_comments'][0]['author_node_id'], 'bot-id')
+        self.assertEqual(data['reference_comments'][0]['author_login'], 'helper[bot]')
+        event['id'] = 31
+        event['html_url'] = item['url'] + '#issuecomment-31'
+        event['user']['node_id'] = 42
+        client._retain_comment(data, item, event, 'issue_comment', 'context')
+        self.assertEqual(len(data['reference_comments']), 1)
+        self.assertEqual(client.coverage['context']['status'], 'partial')
+
+    def test_rest_editor_cannot_credit_a_native_edit_outside_window(self):
+        event = {'id': 30, 'node_id': 'comment-id', 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-30',
+                 'user': {'login': 'me'}, 'editor': {'login': 'me'},
+                 'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z'}
+        node = {'id': 'comment-id', 'databaseId': 30, 'url': event['html_url'],
+                'author': {'login': 'me'}, 'editor': {'login': 'me'},
+                'createdAt': event['created_at'], 'updatedAt': event['updated_at'], 'lastEditedAt': '2026-10-02T00:00:00Z'}
+        def api(args):
+            if args[0] == 'graphql':
+                return {'data': {'node': node}}
+            return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
+        client = self.client(api)
+        data = {'activity': []}
+        client._inspect_activity(data, [{'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}])
+        self.assertEqual(data['activity'], [])
+        self.assertEqual(client.warnings, [])
 
     def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
         first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',

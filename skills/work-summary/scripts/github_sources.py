@@ -348,9 +348,12 @@ class Github:
             created, updated = event['created_at'], event['updated_at']
             require(timestamp(created) <= timestamp(updated), 'Invalid comment dates')
             author = (event.get('user') or {}).get('login')
+            author_node_id = (event.get('user') or {}).get('node_id')
             node_id = event.get('node_id')
             require(author is None or isinstance(author, str) and author, 'Invalid comment author')
             require(node_id is None or isinstance(node_id, str) and node_id, 'Invalid comment node ID')
+            require(author_node_id is None or isinstance(author_node_id, str) and author_node_id,
+                    'Invalid native comment author ID')
             identity = item['url'], category, event['id']
             if identity in self._comment_seen:
                 return
@@ -358,7 +361,7 @@ class Github:
             github.setdefault('reference_comments', []).append({
                 'item_url': item['url'], 'repo': item['repo'], 'number': item['number'], 'kind': category,
                 'id': event['id'], 'node_id': node_id, 'url': url, 'body': '' if body is None else body,
-                'author_login': author, 'created_at': created, 'updated_at': updated})
+                'author_login': author, 'author_node_id': author_node_id, 'created_at': created, 'updated_at': updated})
         except ERRORS:
             self.problem(key, 'invalid native comment reference skipped; discussion coverage is incomplete')
 
@@ -402,13 +405,9 @@ class Github:
                             # after this window. Same-second edits are possible too.
                             if (edited and event.get('created_at') and timestamp(event['created_at']) <= self.end
                                     and timestamp(edited) >= self.start):
-                                editor = (event.get('editor') or {}).get('login', '')
-                                if editor.casefold() == self.login.casefold():
-                                    dates.append(('updated_at', category + '_edited', editor, None))
-                                elif not editor:
-                                    proof = self._comment_edit(event, category, key)
-                                    if proof is not None:
-                                        dates.append(('updated_at', category + '_edited', proof['editor']['login'], proof))
+                                proof = self._comment_edit(event, category, key)
+                                if proof is not None:
+                                    dates.append(('updated_at', category + '_edited', proof['editor']['login'], proof))
                         for field, action, event_actor, editor_evidence in dates:
                             if event.get(field) is None:
                                 continue
@@ -733,6 +732,10 @@ class Github:
                              if ref.startswith('refs/remotes/') and '/' in ref[len('refs/remotes/'):])
                 for item in indices[canonical]:
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
+                        if any(pr['url'] == item['url'] for pr in branch['prs']):
+                            # An earlier SHA-search observation already proves the
+                            # relation; do not upgrade it using a later head value.
+                            continue
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                               'state': item['state'], 'proof': 'exact_head_or_merge_sha'})
                     elif item['head_ref'] in names:
