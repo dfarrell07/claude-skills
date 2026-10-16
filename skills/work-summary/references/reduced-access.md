@@ -113,9 +113,10 @@ refs or scan unreachable objects.
   Jira when GitHub is unavailable.
 - **GitLab:** API authentication and Git SSH access are independent. For a known
   project, a bounded `git ls-remote --refs REMOTE 'refs/merge-requests/*/head'`
-  can match MR heads to local commits without fetching. Do not run it in a
-  checkout whose own config sets credential helpers, proxies, URL rewrites or SSH
-  commands. A match supplies an MR link, not its state, author or activity.
+  can match MR heads to local commits without fetching. Run it with the remote's
+  URL from an empty directory rather than inside the checkout, so the checkout's
+  own config (credential helpers, proxies, SSH commands) cannot take part. A match
+  supplies an MR link, not its state, author or activity.
   Anonymous public MR and note reads can work without login, but only for hosts
   the user already works with.
 - **Per-operation access:** a denied user endpoint does not make public item,

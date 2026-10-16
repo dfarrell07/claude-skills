@@ -166,10 +166,11 @@ native Git access. API authentication and Git SSH access are independent: an emp
 SSH agent does not rule out a configured identity. Bind the actual remote route,
 retain native ref responses and match full hashes across captured snapshots.
 These proofs can supply MR links; they cannot establish MR state or activity.
-Skip that read for a checkout whose own config sets credential helpers, proxies,
-URL rewrites or SSH commands: copied checkouts carry config that can run commands.
+Run that read with the verified URL from an empty directory, never inside the
+checkout: copied checkouts carry config that can run commands or redirect credentials.
 Read anonymous MR details only from gitlab.com, configured remote hosts and hosts
-named in Jira review fields; a host named only in someone's comment stays unread context.
+named in Jira review fields or your own PR descriptions; a host named only in someone
+else's comment stays unread context.
 Try native public item and history endpoints independently of authentication
 status endpoints. Collect readable GitLab MR details, notes and public role
 inventories; match native public email to a previously verified alias before
