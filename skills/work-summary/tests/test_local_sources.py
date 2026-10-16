@@ -141,6 +141,17 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertEqual(proof['refs'], [])
         self.assertNotIn(saved, local_sources.private_ref_pointers(entry).values())
 
+    def test_private_ref_route_recovers_worktree_removed_after_inventory(self):
+        repo, tree, saved = self.private_fixture()
+        entry = self.capture(repo)['metadata']['repositories'][0]
+        record = next(row for row in entry['worktrees'] if row['path'] == str(tree))
+        self.assertTrue(record['exists'])
+        shutil.rmtree(tree)
+        record['private_refs'] = local_sources.capture_private_refs(entry, record)
+        self.assertEqual(record['private_refs']['status'], 'ok')
+        self.assertEqual(record['private_refs']['route'], 'retained_admin')
+        self.assertIn(saved, local_sources.private_ref_pointers(entry).values())
+
     def test_symlink_cannot_bypass_state_directory_exclusions(self):
         home = self.root / 'home'
         for name in ('.ssh', '.aws', '.docker'):

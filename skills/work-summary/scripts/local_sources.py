@@ -49,8 +49,18 @@ def capture_private_refs(entry, tree):
              'refs': [], 'parse_errors': [], 'errors': []}
     try:
         options = ()
-        if not tree['exists']:
+        if not Path(tree['path']).is_dir():
             admin = tree.get('recovery', {}).get('admin_dir')
+            if admin is None:
+                # A worktree may disappear after worktree-list was captured.
+                for candidate in (Path(entry['common_dir']) / 'worktrees').iterdir():
+                    try:
+                        target = (candidate / 'gitdir').read_text(encoding='utf-8').removesuffix('\n')
+                        if Path(target).resolve() == (Path(tree['path']) / '.git').resolve():
+                            admin = str(candidate)
+                            break
+                    except OSError:
+                        continue
             require(isinstance(admin, str), 'Missing retained worktree admin route')
             proof.update(route='retained_admin', command_path=entry['path'], admin_dir=admin)
             require(Path(admin).resolve().parent == (Path(entry['common_dir']) / 'worktrees').resolve(),
@@ -109,7 +119,8 @@ def private_ref_pointers(entry):
             require(proof['route'] == 'retained_admin' and proof['command_path'] == entry['path'],
                     'Invalid private admin route')
             admin = proof['admin_dir']
-            require(admin == tree.get('recovery', {}).get('admin_dir')
+            recorded_admin = tree.get('recovery', {}).get('admin_dir')
+            require((recorded_admin is None or admin == recorded_admin)
                     and Path(admin).resolve().parent == (Path(entry['common_dir']) / 'worktrees').resolve(),
                     'Private admin route differs')
             require(isinstance(proof['gitdir_output'], str) and
