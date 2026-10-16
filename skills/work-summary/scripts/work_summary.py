@@ -559,11 +559,15 @@ def fallback_topics(data, limit=12):
                'review_comment': (3, 'Discussed'), 'issue_comment': (3, 'Discussed'),
                'review_comment_edited': (3, 'Updated discussion on'),
                'issue_comment_edited': (3, 'Updated discussion on'),
-               'cross-referenced': (4, 'Referenced'), 'closed': (4, 'Closed'),
+               'closed': (4, 'Closed'),
                'reopened': (4, 'Reopened')}
     for event in data['github'].get('activity', []):
+        # Actor/time proof establishes participation, not substantive work.
+        # Passive notifications and unknown timeline actions stay in the audit.
+        if event['action'] not in actions:
+            continue
         item = items[event['item_url']]
-        priority, verb = actions.get(event['action'], (4, 'Updated'))
+        priority, verb = actions[event['action']]
         add(item['url'], priority, timestamp(event['at']), github_topic(item, verb + ': ' + item['title']))
     for event in data.get('jira', {}).get('activity', []):
         item = jira[event['key']]

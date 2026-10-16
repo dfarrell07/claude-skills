@@ -180,6 +180,32 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn(issue['url'],ws.work_urls(source,ws.fallback_topics(source)[0]))
         self.assertNotIn('Merged:',report)
 
+    def test_passive_native_actor_events_are_context_until_substantive_work_exists(self):
+        source=self.capture()
+        pr=source['github']['prs'][0]
+        pr.update(state='open',created_at='2025-01-01T00:00:00Z',merged_at=None,closed_at=None)
+        passive=['mentioned','subscribed','unsubscribed','assigned','unassigned',
+                 'review_requested','review_request_removed','cross-referenced','labeled','unknown_action']
+        for action in passive:
+            with self.subTest(action=action):
+                source['github']['activity']=[{'item_url':pr['url'],'repo':pr['repo'],
+                    'number':pr['number'],'actor':'person','action':action,
+                    'at':'2026-01-12T12:00:00Z','url':pr['url'],'id':1,'body':''}]
+                original=copy.deepcopy(source)
+                self.assertEqual(ws.render(source),'No supported work found in the available evidence.')
+                audit=ws.render(source,detailed=True)
+                self.assertIn('Verified GitHub Actor Events (1)',audit)
+                self.assertIn(ws.markdown(action),audit)
+                self.assertIn(pr['url'],audit)
+                self.assertEqual(source,original)
+        source['github']['activity'].append({'item_url':pr['url'],'repo':pr['repo'],
+            'number':pr['number'],'actor':'person','action':'issue_comment',
+            'at':'2026-01-12T13:00:00Z','url':pr['url']+'#issuecomment-2',
+            'id':2,'body':'Explained the proposed implementation'})
+        report=ws.render(source)
+        self.assertEqual(report,'- Discussed: '+pr['title']+'\n  - '+pr['url'])
+        self.assertEqual(len(source['github']['activity']),2)
+
     def test_curated_ongoing_work_is_kept_without_duplicate_topic(self):
         source=self.capture()
         pr=source['github']['prs'][0]
