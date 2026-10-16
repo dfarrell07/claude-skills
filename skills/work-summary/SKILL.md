@@ -113,8 +113,10 @@ alone does not make a passive event an accomplishment.
 For branch PR associations check all states, saved authored indexes, independent
 any-author SHA search, and commit associations. A commit association alone can
 miss closed unmerged PRs. Preserve positives even when sibling reads fail.
-If a saved remote is inaccessible, a global SHA search can recover associations
-in other readable repositories. Retain the original remote access gap. Verify
+If a saved remote is inaccessible, local-only or missing, a global SHA search
+can recover associations in readable repositories. Retain the original remote
+access or provider gap; a global negative cannot prove every private repository
+or another provider was searched. Verify
 renamed repository IDs and repeat searches under the canonical name: a successful
 zero-result search for an old name may omit the current repository entirely.
 Distinguish a successful lookup of an explicitly absent commit object in a
@@ -126,6 +128,13 @@ history can hide past associations. It does not prove unpublished work.
 Preserve distinct native PR observations when heads or bodies change during
 collection; an exact-SHA proof must match the particular captured observation
 that supplied it, rather than assuming every response observed the same head.
+For related PRs with matching branch names or captured native timeline leads,
+read paginated force-push history and compare native before/after commit hashes
+against all captured local snapshots. Keep the full native event and PR identity
+with each historical-head proof. A matching name is only a lead; a native former
+head proves an association, not authorship or new work during the requested week.
+Follow the filtered connection's cursors to completion: its reported total may
+describe the unfiltered timeline and must not be treated as a filtered event count.
 
 Jira uses the authenticated tenant/account. Retain all-status assigned,
 reported, created, watched and formerly assigned inventories plus recent
