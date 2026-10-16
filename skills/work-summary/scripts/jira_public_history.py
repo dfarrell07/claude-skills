@@ -85,9 +85,21 @@ def read_json(url, receipt=None):
 
 
 def native_basis(issue, site):
+    bases = native_bases(issue, site)
+    require(bool(bases), 'missing_authenticated_issue_identity')
+    return bases[0]
+
+
+def native_bases(issue, site):
+    """Every authenticated identity for an issue, detail first.
+
+    A ticket read only through search can gain a detail read later in the same
+    run; public history bound to its search identity stays valid.
+    """
     require(isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold(), 'missing_canonical_site')
     require(isinstance(issue.get('key'), str) and KEY.fullmatch(issue['key'])
             and issue.get('url') == f"https://{site}/browse/{issue['key']}", 'invalid_authenticated_issue')
+    bases = []
     for name in ('detail', 'source'):
         value = issue.get(name)
         if not isinstance(value, dict) or value.get('key') != issue['key']:
@@ -104,8 +116,8 @@ def native_basis(issue, site):
                     and (parts.netloc.casefold() == site or backend)
                     and re.fullmatch(r'/rest/api/(?:2|3)/issue/' + re.escape(str(issue_id)), parts.path),
                     'invalid_authenticated_issue_route')
-        return name, str(issue_id)
-    raise ValueError('missing_authenticated_issue_identity')
+        bases.append((name, str(issue_id)))
+    return bases
 
 
 def public_identity(identity, issue, site, issue_id):
@@ -392,9 +404,11 @@ def validate_public_history(data):
                 and isinstance(record.get('pages'), list) and isinstance(record.get('page_requests'), list)
                 and isinstance(record.get('errors'), list), 'Invalid public history scope')
         try:
-            basis, issue_id = native_basis(issue, site)
+            bases = native_bases(issue, site)
         except (ValueError, TypeError):
-            basis, issue_id = None, None
+            bases = []
+        basis, issue_id = next((row for row in bases if row[0] == record.get('identity_basis')),
+                               bases[0] if bases else (None, None))
         if basis is not None:
             require(record.get('identity_basis') == basis
                     and record.get('identity_url') == f'https://{site}/rest/api/3/issue/{issue_id}?fields=summary',

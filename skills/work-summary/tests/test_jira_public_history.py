@@ -187,6 +187,17 @@ class JiraPublicHistoryTest(unittest.TestCase):
         ph.validate_public_history({'jira': jira})
         return jira
 
+    def test_history_bound_to_search_identity_survives_a_later_detail_read(self):
+        searched = issue()
+        detail = searched.pop('detail')
+        jira = self.collect(jira={'metadata': {'site': SITE}, 'issues': [searched],
+                                 'activity': [{'native': 'unchanged'}]})
+        self.assertEqual(jira['issues'][0]['public_history']['identity_basis'], 'source')
+        jira['issues'][0]['detail'] = detail
+        ph.validate_public_history({'jira': jira})
+        ph.collect_public_history(jira, self.warnings.append, workers=1, reuse=True,
+                                  reader=lambda url, receipt=None: self.fail('retained history must be reused'))
+
     def test_backend_identity_and_native_precision_preserve_authenticated_evidence(self):
         original = issue()
         jira = self.collect(jira={'metadata': {'site': SITE}, 'issues': [copy.deepcopy(original)],
