@@ -1,0 +1,447 @@
+"""Offline Jira collection tests; a disposable acli executable never uses credentials."""
+
+import copy
+from datetime import datetime, timezone
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+sys.dont_write_bytecode = True
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+SPEC = importlib.util.spec_from_file_location("work_summary_jira", SCRIPTS / "jira_sources.py")
+jira = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(jira)
+START = datetime(2026, 1, 8, 12, tzinfo=timezone.utc)
+END = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
+ME = {"accountId": "self-id", "emailAddress": "person@example.test"}
+OTHER = {"accountId": "other-id", "emailAddress": "other@example.test"}
+
+
+def issue(key="TEST-1", category="indeterminate", author=None):
+    return {"key": key, "id": key.split("-")[1],
+            "self": "https://jira.example.test/rest/api/3/issue/" + key.split("-")[1],
+            "fields": {"summary": "Synthetic work " + key, "assignee": copy.deepcopy(author or ME),
+                       "reporter": copy.deepcopy(OTHER), "status": {"name": "Closed" if category == "done" else "Active",
+                       "statusCategory": {"key": category}}, "labels": []}}
+
+
+def comment(ident="c1", author=None, created="2026-01-10T12:00:00Z", **extra):
+    return {"id": ident, "author": copy.deepcopy(author or ME), "created": created,
+            "updated": created, "body": {"type": "doc", "content": [{"type": "text", "text": "Prepared change"}]},
+            **extra}
+
+
+def detail(row, comments=(), total=None):
+    result = copy.deepcopy(row)
+    result["fields"].update(updated="2026-01-12T12:00:00Z", created="2025-01-01T00:00:00Z",
+                            security=None, description={"type": "doc", "content": []}, issuelinks=[],
+                            comment={"comments": list(comments), "startAt": 0, "maxResults": 100,
+                                     "total": len(comments) if total is None else total})
+    return result
+
+
+class JiraSourcesTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="work-summary-jira-test.")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.fixture = self.root / "fixture.json"
+        self.log = self.root / "calls.jsonl"
+        self.data = {"auth": "✓ Authenticated\n  Site: jira.example.test\n  Email: person@example.test\n",
+                     "searches": {"assigned": [issue()], "updated_by": [], "recent": [],
+                                  "reporter": [], "creator": [], "former_assignee": [], "watcher": []},
+                     "counts": [1, 1], "details": {"TEST-1": detail(issue(), [comment()])}}
+        executable = self.bin / "acli"
+        executable.write_text(f"#!{sys.executable}\n" + r'''
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+data = json.loads(Path(os.environ["JIRA_FIXTURE"]).read_text())
+log = Path(os.environ["JIRA_LOG"])
+calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+with log.open("a") as stream:
+    stream.write(json.dumps(args) + "\n")
+def emit(value):
+    if isinstance(value, dict) and "_exit" in value:
+        sys.stdout.write(value.get("_stdout", ""))
+        sys.exit(value["_exit"])
+    print(json.dumps(value))
+if args == ["jira", "auth", "status"]:
+    if data.get("auth_exit"):
+        sys.exit(1)
+    print(data["auth"])
+elif args[:3] == ["jira", "workitem", "search"]:
+    query = args[args.index("--jql") + 1]
+    if "--count" in args:
+        index = sum("--count" in call for call in calls)
+        counts = data["counts"]
+        count = counts[min(index, len(counts)-1)]
+        if count is None:
+            sys.exit(1)
+        print("✓ Number of work items in the search: " + str(count))
+    else:
+        assert "--paginate" in args and "--json" in args
+        assert args[args.index("--fields")+1] == "key,summary,status,assignee,reporter,labels"
+        if query == "assignee = currentUser() ORDER BY key":
+            role = "assigned"
+        elif "updatedBy(" in query:
+            role = "updated_by"
+        elif query.startswith("("):
+            role = "recent"
+        elif query.startswith("reporter"):
+            role = "reporter"
+        elif query.startswith("creator"):
+            role = "creator"
+        elif query.startswith("assignee WAS"):
+            role = "former_assignee"
+        elif query.startswith("watcher"):
+            role = "watcher"
+        else:
+            sys.exit(99)
+        emit(data["searches"][role])
+elif args[:3] == ["jira", "workitem", "view"]:
+    emit(data["details"].get(args[3], {"_exit": 1}))
+elif args[:4] == ["jira", "workitem", "comment", "list"]:
+    assert "--paginate" in args
+    value = data.get("comment_pages", {"_exit": 1})
+    if isinstance(value, dict):
+        emit(value)
+    else:
+        for page in value:
+            print(json.dumps(page))
+else:
+    sys.exit(99)
+''')
+        executable.chmod(0o755)
+        environment = patch.dict(os.environ, {"PATH": f"{self.bin}:{os.environ['PATH']}",
+                                             "JIRA_FIXTURE": str(self.fixture), "JIRA_LOG": str(self.log),
+                                             "GH_HOST": "github.com",
+                                             "PYTHONDONTWRITEBYTECODE": "1"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def collect(self):
+        self.fixture.write_text(json.dumps(self.data))
+        self.warnings = []
+        return jira.collect_jira(START, END, self.warnings.append)
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_read_only_identity_and_native_activity_with_explicit_scope_gap(self):
+        result = self.collect()
+        self.assertTrue(result["metadata"]["identity_verified"])
+        self.assertEqual(result["metadata"]["account_id"], "self-id")
+        self.assertEqual(result["metadata"]["site"], "jira.example.test")
+        self.assertEqual(result["issues"][0]["source"], issue())
+        self.assertEqual(result["activity"][0]["actor_account_id"], "self-id")
+        self.assertEqual(result["activity"][0]["comment_id"], "c1")
+        self.assertEqual(result["metadata"]["coverage"]["assigned"]["count_after"], 1)
+        self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "unavailable")
+        self.assertEqual(result["metadata"]["status"], "partial")
+        for call in self.calls():
+            self.assertIn(call[:3], [["jira", "auth", "status"], ["jira", "workitem", "search"],
+                                    ["jira", "workitem", "view"]])
+
+    def test_all_projects_and_completed_inventory_retained_but_old_closed_not_detailed(self):
+        old = issue("OTHER-2", "done")
+        self.data["searches"]["assigned"].append(old)
+        self.data["counts"] = [2, 2]
+        result = self.collect()
+        self.assertEqual([row["key"] for row in result["issues"]], ["OTHER-2", "TEST-1"])
+        self.assertEqual(result["issues"][0]["detail_status"], "not_selected")
+        self.assertTrue(result["issues"][0]["sensitive"])
+        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 1)
+
+    def test_nonassigned_activity_lead_and_old_active_context_are_detailed(self):
+        for role, key in [("updated_by", "SIDE-2"), ("reporter", "SIDE-3"),
+                          ("former_assignee", "SIDE-4"), ("watcher", "SIDE-5"), ("recent", "SIDE-6")]:
+            row = issue(key, "done" if role == "recent" else "indeterminate", OTHER)
+            self.data["searches"][role] = [row]
+            self.data["details"][key] = detail(row, [comment(key, ME)])
+        result = self.collect()
+        self.assertEqual(len(result["issues"]), 6)
+        self.assertEqual(len(result["activity"]), 6)
+        self.assertTrue(all(row["detail_status"] == "ok" for row in result["issues"]))
+        self.assertEqual(result["metadata"]["account_id"], "self-id")
+
+    def test_query_dates_are_widened_and_identity_is_quoted(self):
+        self.collect()
+        queries = [call[call.index("--jql") + 1] for call in self.calls() if "--jql" in call]
+        updated = next(query for query in queries if "updatedBy(" in query)
+        self.assertIn('updatedBy("person@example.test", "2026-01-07", "2026-01-16")', updated)
+        self.assertTrue(any("assignee WAS currentUser()" in query for query in queries))
+
+    def test_missing_cli_and_failed_auth_are_unavailable(self):
+        with patch.object(jira.shutil, "which", return_value=None):
+            result = self.collect()
+        self.assertEqual(result["metadata"]["status"], "unavailable")
+        self.assertTrue(self.warnings)
+        self.data["auth_exit"] = True
+        self.assertEqual(self.collect()["metadata"]["status"], "unavailable")
+
+    def test_auth_site_injection_is_rejected(self):
+        self.data["auth"] = "Site: https://jira.example.test@evil.example\nEmail: person@example.test\n"
+        result = self.collect()
+        self.assertEqual(result["metadata"]["status"], "unavailable")
+        self.assertFalse(any("search" in call for call in self.calls()))
+
+    def test_account_conflict_or_missing_email_never_guesses_activity_actor(self):
+        for author in [OTHER, {"accountId": "   "}, {"accountId": "self-id", "emailAddress": ""}]:
+            with self.subTest(author=author):
+                self.data["searches"]["assigned"] = [issue(author=author)]
+                result = self.collect()
+                self.assertFalse(result["metadata"]["identity_verified"])
+                self.assertEqual(result["activity"], [])
+        # No owned assignments must not make a reporter or comment the principal.
+        self.data["searches"]["assigned"] = []
+        self.data["counts"] = [0, 0]
+        self.data["searches"]["reporter"] = [issue(author=OTHER)]
+        self.assertFalse(self.collect()["metadata"]["identity_verified"])
+
+    def test_hidden_assignee_email_keeps_current_user_native_identity_proof(self):
+        self.data["searches"]["assigned"][0]["fields"]["assignee"].pop("emailAddress")
+        result = self.collect()
+        self.assertTrue(result["metadata"]["identity_verified"])
+        self.assertEqual(result["metadata"]["account_id"], "self-id")
+        self.assertEqual(len(result["activity"]), 1)
+
+    def test_all_status_role_inventory_preserves_more_than_one_page(self):
+        for role, prefix in [("reporter", "REPORTED"), ("creator", "CREATED"),
+                             ("former_assignee", "FORMER"), ("watcher", "WATCHED")]:
+            self.data["searches"][role] = [issue(f"{prefix}-{n}", "done", OTHER) for n in range(1, 102)]
+        result = self.collect()
+        self.assertEqual(len(result["issues"]), 405)
+        for role in ["reporter", "creator", "former_assignee", "watcher"]:
+            self.assertEqual(result["metadata"]["coverage"][role]["returned_count"], 101)
+            query = result["metadata"]["coverage"][role]["query"]
+            self.assertNotIn("statusCategory", query)
+            self.assertNotIn("assignee !=", query)
+        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 1)
+        recent = result["metadata"]["coverage"]["recent"]["query"]
+        self.assertIn("creator = currentUser()", recent)
+
+    def test_count_drift_or_failure_preserves_inventory_and_blocks_identity_proof(self):
+        for counts in [[1, 2], [None, 1], [1, None], ["not-a-count", 1]]:
+            with self.subTest(counts=counts):
+                self.log.unlink(missing_ok=True)
+                self.data["counts"] = counts
+                result = self.collect()
+                self.assertEqual(len(result["issues"]), 1)
+                self.assertFalse(result["metadata"]["identity_verified"])
+                self.assertEqual(result["metadata"]["coverage"]["assigned"]["status"], "partial")
+
+    def test_failed_search_retains_valid_stdout_as_partial_evidence(self):
+        self.data["searches"]["watcher"] = {"_exit": 1, "_stdout": json.dumps([issue("SIDE-2", author=OTHER)])}
+        self.data["details"]["SIDE-2"] = detail(issue("SIDE-2", author=OTHER))
+        result = self.collect()
+        self.assertEqual(len(result["issues"]), 2)
+        self.assertEqual(result["metadata"]["coverage"]["watcher"]["status"], "partial")
+
+    def test_invalid_duplicate_and_wrong_tenant_rows_are_skipped_without_losing_good_rows(self):
+        wrong_site = issue("BAD-3")
+        wrong_site["self"] = "https://other.example/rest/api/3/issue/3"
+        self.data["searches"]["assigned"] += [None, issue(), wrong_site]
+        result = self.collect()
+        self.assertEqual(len(result["issues"]), 1)
+        self.assertEqual(result["metadata"]["coverage"]["assigned"]["status"], "partial")
+
+    def test_bad_detail_retains_private_inventory_lead_and_other_sources(self):
+        self.data["details"]["TEST-1"] = detail(issue("WRONG-1"))
+        result = self.collect()
+        self.assertEqual(result["issues"][0]["detail_status"], "failed")
+        self.assertTrue(result["issues"][0]["sensitive"])
+        self.assertEqual(result["activity"], [])
+        self.assertTrue(any("inventory lead" in warning for warning in self.warnings))
+
+    def test_activity_is_exact_inclusive_utc_window_and_requires_native_actor(self):
+        comments = [comment("start", created="2026-01-08T07:00:00-05:00"),
+                    comment("end", created="2026-01-15T12:00:00Z"),
+                    comment("old", created="2026-01-08T11:59:59Z"),
+                    comment("future", created="2026-01-15T12:00:01Z"),
+                    comment("other", OTHER),
+                    comment("projection", author="Person")]
+        self.data["details"]["TEST-1"] = detail(issue(), comments)
+        result = self.collect()
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["start", "end"])
+        self.assertFalse(result["issues"][0]["comment_coverage"]["native_fidelity"])
+
+    def test_native_jira_compact_timezone_offsets_preserve_details_and_activity(self):
+        self.data["details"]["TEST-1"]["fields"]["updated"] = "2026-01-12T12:00:00.123+0000"
+        self.data["details"]["TEST-1"]["fields"]["comment"] = {
+            "comments": [comment("native", created="2026-01-08T07:00:00.123-0500")],
+            "total": 1, "startAt": 0, "maxResults": 100}
+        result = self.collect()
+        self.assertEqual(result["issues"][0]["detail_status"], "ok")
+        self.assertEqual(len(result["activity"]), 1)
+        self.assertEqual(result["activity"][0]["occurred_at"], "2026-01-08T12:00:00Z")
+
+    def test_edits_credit_update_author_and_missing_editor_is_a_gap(self):
+        old = "2026-01-01T00:00:00Z"
+        comments = [comment("edited-by-me", OTHER, old, updated="2026-01-10T00:00:00Z", updateAuthor=ME),
+                    comment("edited-by-other", ME, old, updated="2026-01-10T00:00:00Z", updateAuthor=OTHER),
+                    comment("editor-missing", ME, old, updated="2026-01-10T00:00:00Z")]
+        self.data["details"]["TEST-1"] = detail(issue(), comments)
+        result = self.collect()
+        self.assertEqual([(event["comment_id"], event["kind"]) for event in result["activity"]],
+                         [("edited-by-me", "comment_edited")])
+        self.assertFalse(result["issues"][0]["comment_coverage"]["native_fidelity"])
+
+    def test_sensitive_issue_and_comment_visibility_keep_private_link_proofs(self):
+        private = comment("private", body="https://github.com/example/private/pull/88", visibility={"type": "group", "value": "private"})
+        public = comment("public", body="https://github.com/example/public/pull/22")
+        self.data["details"]["TEST-1"] = detail(issue(), [private, public])
+        result = self.collect()
+        self.assertEqual(result["linked_prs"], ["https://github.com/example/private/pull/88",
+                                              "https://github.com/example/public/pull/22"])
+        self.assertEqual([event["sensitive"] for event in result["activity"]], [True, False])
+        self.assertEqual([relation["sensitive"] for relation in result["issues"][0]["pr_links"]], [True, False])
+        self.log.unlink()
+        self.data["details"]["TEST-1"]["fields"]["security"] = {"id": "1", "name": "Private"}
+        result = self.collect()
+        self.assertTrue(all(event["sensitive"] for event in result["activity"]))
+        self.assertEqual(len(result["linked_prs"]), 2)
+        self.assertTrue(all(relation["sensitive"] for relation in result["issues"][0]["pr_links"]))
+
+    def test_security_labels_and_unknown_sensitivity_never_become_public(self):
+        for label in ["SecurityTracking", "CVE-2099-1234"]:
+            self.log.unlink(missing_ok=True)
+            self.data["details"]["TEST-1"]["fields"]["labels"] = [label]
+            self.assertTrue(self.collect()["issues"][0]["sensitive"])
+        self.data["details"]["TEST-1"]["fields"].pop("security")
+        self.assertEqual(self.collect()["issues"][0]["detail_status"], "failed")
+
+    def test_paginated_native_comments_add_activity_and_validate_terminal_page(self):
+        first, second = comment(), comment("c2", created="2026-01-11T00:00:00Z")
+        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
+        self.data["comment_pages"] = [
+            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
+            {"comments": [second], "startAt": 1, "maxResults": 1, "total": 2, "isLast": True}]
+        result = self.collect()
+        self.assertEqual(len(result["activity"]), 2)
+        self.assertTrue(result["issues"][0]["comment_coverage"]["complete"])
+        self.assertTrue(result["issues"][0]["comment_coverage"]["native_fidelity"])
+
+    def test_rendered_comment_projection_does_not_invent_timestamps_or_account_ids(self):
+        first = comment()
+        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
+        projection = [{"id": "c1", "author": "Person", "body": "older native comment"},
+                      {"id": "c2", "author": "Person", "body": "2026-01-11: Completed work"}]
+        self.data["comment_pages"] = [{"comments": projection, "startAt": 0, "maxResults": 50,
+                                      "total": 2, "isLast": True}]
+        result = self.collect()
+        self.assertEqual(len(result["activity"]), 1)
+        coverage = result["issues"][0]["comment_coverage"]
+        self.assertTrue(coverage["complete"])
+        self.assertFalse(coverage["native_fidelity"])
+        self.assertTrue(any("cannot prove" in warning for warning in self.warnings))
+
+    def test_duplicate_or_changed_comment_pages_keep_available_native_activity(self):
+        first = comment()
+        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
+        self.data["comment_pages"] = [
+            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
+            {"comments": [first], "startAt": 1, "maxResults": 1, "total": 2, "isLast": True}]
+        result = self.collect()
+        self.assertEqual(len(result["activity"]), 1)
+        self.assertFalse(result["issues"][0]["comment_coverage"]["complete"])
+
+    def test_later_failed_or_malformed_comment_page_retains_prefix_positive(self):
+        original = comment("1", OTHER)
+        positive = comment("2", ME)
+        page = {"comments": [original, positive], "startAt": 0, "maxResults": 2,
+                "total": 3, "isLast": False}
+        for following in [{"_exit": 1, "_stdout": json.dumps(page) + "\n"},
+                          [page, {"malformed": "page"}],
+                          {"_exit": 0, "_stdout": json.dumps(page) + "\n{truncated"}]:
+            with self.subTest(following=following):
+                self.log.unlink(missing_ok=True)
+                self.data["details"]["TEST-1"] = detail(issue(), [original], total=3)
+                self.data["comment_pages"] = following
+                result = self.collect()
+                self.assertEqual([event["comment_id"] for event in result["activity"]], ["2"])
+                coverage = result["issues"][0]["comment_coverage"]
+                self.assertEqual(coverage["captured_count"], 2)
+                self.assertFalse(coverage["complete"])
+                self.assertEqual(len(result["issues"][0]["comment_pages"]), 1)
+
+    def test_pr_links_come_from_source_not_titles_and_malformed_suffix_is_not_cited(self):
+        self.data["details"]["TEST-1"]["fields"]["description"] = {
+            "type": "doc", "content": [{"text": "https://github.com/org/repo/pull/12evil"},
+            {"attrs": {"href": "https://github.com/org/repo/pull/13?tab=files"}}]}
+        self.data["details"]["TEST-1"]["fields"]["summary"] = "https://github.com/org/title/pull/99"
+        self.assertEqual(self.collect()["linked_prs"], ["https://github.com/org/repo/pull/13"])
+
+    def test_per_issue_pr_proofs_preserve_description_comment_and_issue_link_sources(self):
+        fields = self.data["details"]["TEST-1"]["fields"]
+        fields["description"] = {"content": [{"attrs": {"href": "https://github.com/org/repo/pull/1"}}]}
+        fields["issuelinks"] = [{"outwardIssue": {"fields": {"summary": "Related https://github.com/org/repo/pull/2"}}}]
+        fields["issuelinks"].append({"outwardIssue": {"fields": {"security": {"id": "private"},
+                                    "summary": "Restricted https://github.com/org/private/pull/66"}}})
+        fields["comment"] = {"comments": [comment("7", body="https://github.com/org/repo/pull/3"),
+                                              comment("8", body="https://github.com/org/private/pull/4", visibility={"type": "group"})],
+                             "total": 2, "startAt": 0, "maxResults": 100}
+        result = self.collect()
+        self.assertEqual(result["linked_prs"], ["https://github.com/org/private/pull/4", "https://github.com/org/private/pull/66"]
+                         + [f"https://github.com/org/repo/pull/{n}" for n in (1, 2, 3)])
+        self.assertEqual(result["issues"][0]["pr_links"], [
+            {"url": "https://github.com/org/private/pull/4", "proof": "comment", "evidence_url": "https://jira.example.test/browse/TEST-1?focusedCommentId=8", "sensitive": True},
+            {"url": "https://github.com/org/private/pull/66", "proof": "issue_link", "evidence_url": "https://jira.example.test/browse/TEST-1", "sensitive": True},
+            {"url": "https://github.com/org/repo/pull/1", "proof": "description", "evidence_url": "https://jira.example.test/browse/TEST-1", "sensitive": False},
+            {"url": "https://github.com/org/repo/pull/2", "proof": "issue_link", "evidence_url": "https://jira.example.test/browse/TEST-1", "sensitive": False},
+            {"url": "https://github.com/org/repo/pull/3", "proof": "comment", "evidence_url": "https://jira.example.test/browse/TEST-1?focusedCommentId=7", "sensitive": False}])
+
+    def test_enterprise_github_links_use_configured_host_and_reject_other_hosts(self):
+        self.data["details"]["TEST-1"]["fields"]["description"] = {
+            "text": "https://git.example.test/team/repo/pull/7 https://github.com/team/repo/pull/8 "
+                    "https://evil.example/team/repo/pull/9 https://git.example.test/../repo/pull/10"}
+        with patch.dict(os.environ, {"GH_HOST": "git.example.test"}):
+            result = self.collect()
+        self.assertEqual(result["linked_prs"], ["https://git.example.test/team/repo/pull/7"])
+        self.assertEqual(result["issues"][0]["pr_links"][0]["proof"], "description")
+
+    def test_referenced_key_targeted_capture_reuses_inventory_and_adds_native_proof(self):
+        row = issue("MENTIONED-2", "done", OTHER)
+        self.data["details"]["MENTIONED-2"] = detail(row, [comment("77", ME)])
+        result = self.collect()
+        before = len(self.calls())
+        jira.add_referenced_jira(result, ["MENTIONED-2", "TEST-1"], START, END, self.warnings.append)
+        extra_calls = self.calls()[before:]
+        self.assertFalse(any("search" in call for call in extra_calls))
+        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in extra_calls), 1)
+        item = next(item for item in result["issues"] if item["key"] == "MENTIONED-2")
+        self.assertEqual(item["roles"], ["referenced_by_github"])
+        self.assertEqual(item["detail_status"], "ok")
+        self.assertEqual(len(result["activity"]), 2)
+        self.assertEqual(result["metadata"]["inventory_count"], 1)
+        self.assertEqual(result["metadata"]["issue_count"], 2)
+        before = len(self.calls())
+        jira.add_referenced_jira(result, ["MENTIONED-2"], START, END, self.warnings.append)
+        self.assertEqual(self.calls()[before:], [["jira", "auth", "status"]])
+        self.assertEqual(len(result["activity"]), 2)
+
+    def test_referenced_key_failure_and_account_switch_are_named_gaps(self):
+        result = self.collect()
+        jira.add_referenced_jira(result, ["MISSING-2"], START, END, self.warnings.append)
+        self.assertEqual(len(result["issues"]), 1)
+        self.assertEqual(result["metadata"]["coverage"]["referenced_by_github"]["status"], "partial")
+        self.data["auth"] = "Site: other.example.test\nEmail: person@example.test\n"
+        self.fixture.write_text(json.dumps(self.data))
+        before = len(self.calls())
+        jira.add_referenced_jira(result, ["MISSING-3"], START, END, self.warnings.append)
+        self.assertEqual(self.calls()[before:], [["jira", "auth", "status"]])
+        self.assertTrue(any("site/account changed" in warning for warning in self.warnings))
+
+
+if __name__ == "__main__":
+    unittest.main()
