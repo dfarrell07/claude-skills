@@ -52,6 +52,13 @@ class ConciseReportTest(unittest.TestCase):
                 bad['metadata']['repositories'][0]['worktrees'][0]['recovery'][field] = value
                 with self.assertRaises(ValueError):
                     ws.validate(bad)
+        recovery = data['metadata']['repositories'][0]['worktrees'][0]['recovery']
+        recovery.update(reflog_output='', reflog_file='0' * 40 + ' ' + head + ' Native actor\n')
+        ws.validate(data)  # Git may omit unreadable objects; the raw admin log still proves their identity.
+        recovery['reflog_file'] = 'malformed row'
+        with self.assertRaises(ValueError):
+            ws.validate(data)
+        recovery['reflog_file'] = '0' * 40 + ' ' + head + ' Native actor\n'
         data['branches'][0]['hash'] = 'd' * 40
         with self.assertRaises(ValueError):
             ws.validate(data)

@@ -287,8 +287,17 @@ def validate(data, source=None):
                 require(isinstance(heads, list) and all(isinstance(head, str) and HASH.fullmatch(head)
                         for head in heads), 'Invalid recovered worktree reflog heads')
                 if heads:
-                    require(isinstance(recovery.get('reflog_output'), str)
-                            and set(heads) == set(recovery['reflog_output'].splitlines()),
+                    require(isinstance(recovery.get('reflog_output'), str),
+                            'Missing native worktree reflog output')
+                    native_heads = set(recovery['reflog_output'].splitlines())
+                    if 'reflog_file' in recovery:
+                        require(isinstance(recovery['reflog_file'], str), 'Invalid native worktree reflog file')
+                        for line in recovery['reflog_file'].splitlines():
+                            fields = line.split()
+                            require(len(fields) >= 2 and all(HASH.fullmatch(head) for head in fields[:2]),
+                                    'Invalid native worktree reflog row')
+                            native_heads.update(head for head in fields[:2] if set(head) != {'0'})
+                    require(set(heads) == native_heads,
                             'Worktree reflog heads lack native output')
                 for head in heads:
                     worktrees['worktree-reflog:' + tree['path'] + ':' + head] = head
