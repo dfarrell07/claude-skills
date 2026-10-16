@@ -249,6 +249,35 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertIn("**CI**: Fix checks", report)
         self.assertIn("No matching local commits found.", report)
 
+    def test_output_file_and_separate_analysis_need_no_capture_copy(self):
+        output = self.root / "data.json"
+        result = self.run_script(COLLECT, "7", "--output", output)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("[work-summary", result.stderr)
+        data = json.loads(output.read_text())
+        self.assertFalse((self.root / "data.json.partial").exists())
+        pr = data["github"]["prs"][0]
+        analysis = self.root / "analysis.json"
+        analysis.write_text(json.dumps({"themes": [{"name": "CI", "description": "Fixed the checks.",
+            "items": [{key: pr[key] for key in ("repo", "number", "url")}], "links": [pr["url"]]}],
+            "in_progress": []}))
+        report = subprocess.run(["bash", str(RENDER), "--analysis", str(analysis), str(output)],
+                                env=self.env, text=True, capture_output=True, check=True).stdout
+        self.assertTrue(report.startswith(f"- Fixed the checks.\n  - {pr['url']}\n"))
+        analysis.write_text(json.dumps({"themes": [{"name": "CI", "description": "Fixed the checks.",
+            "items": [], "links": ["https://github.com/org/project/pull/999"]}], "in_progress": []}))
+        failed = subprocess.run(["bash", str(RENDER), "--analysis", str(analysis), str(output)],
+                                env=self.env, text=True, capture_output=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Theme 'CI'", failed.stderr)
+
+    def test_capture_marked_invalid_by_collection_is_not_rendered(self):
+        data = self.capture()
+        data["metadata"]["validation_error"] = "Invalid GitHub discovery coverage"
+        result = self.render_result(data)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed collection validation", result.stderr)
+
     def test_renderer_requires_explicit_valid_capture(self):
         result = self.run_script(RENDER, check=False)
         self.assertNotEqual(result.returncode, 0)

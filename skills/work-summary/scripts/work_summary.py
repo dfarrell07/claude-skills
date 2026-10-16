@@ -18,8 +18,8 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
-    read_json, require, timestamp, valid_item, is_pr_url,
+    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso, network_calls, progress,
+    read_json, require, reset_network_state, timestamp, valid_item, is_pr_url,
 )
 from local_sources import collect_local, private_ref_pointers  # noqa: E402
 from capabilities import collect_local_safely  # noqa: E402
@@ -37,12 +37,20 @@ from reporting_window import resolve_window, search_bounds, validate_window  # n
 def collect(days_text, roots, now=None, *, since=None, until=None):
     start, end, window = resolve_window(days_text, now, since=since, until=until)
     explicit = window.get('window_kind') == 'explicit'
+    reset_network_state()
+    progress(f"collecting {iso(start)} to {iso(end)}")
     query_start, query_end = search_bounds(start, end) if explicit else (start, end)
     warnings = []
 
+    printed = set()
+
     def warn(message):
+        # The capture keeps every warning; stderr shows each distinct one once, bounded,
+        # so per-item failures cannot flood the agent's context.
         warnings.append(message)
-        print(f"Warning: {message}", file=sys.stderr)
+        if message not in printed and len(printed) < 40:
+            printed.add(message)
+            print(f"Warning: {message}", file=sys.stderr)
 
     host = os.environ.get("GH_HOST", "github.com").lower()
     github_host_valid = HOST.fullmatch(host) is not None
@@ -199,6 +207,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
             if info["status"] != "ok":
                 github_status = "partial"
 
+    progress("GitHub: authored searches done; scanning local repositories")
     local, local_status, local_capability = collect_local_safely(
         collect_local, roots, start, end, warn, api=api if github_user else None,
         identity=identity if github_user else {})
@@ -209,8 +218,12 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                             if (selected := [row for row in rows
                                              if start <= timestamp(row['committed_at']) <= end])}
         local['metadata']['repos_with_commits'] = len(local['commits'])
+    progress(f"local: {local['metadata']['repos_searched']} repositories, "
+             f"{local['metadata']['repos_with_commits']} with commits in the window")
     gitlab_discovery = collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn)
+    progress("Jira: reading inventories and active tickets")
     jira = collect_jira(start, end, warn)
+    progress(f"Jira: {len(jira.get('issues', []))} tickets; GitHub: reading reviews, comments and branch PRs")
     discovery = {}
     if github_user:
         ledger = Github(api, host, github_user, start, end, warn)
@@ -236,6 +249,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         discovery = ledger.coverage
         if any(info["status"] == "partial" for info in discovery.values()):
             github_status = "partial"
+    progress("following links between tickets, PRs and MRs")
     public_cache = {}
     def read_public(url):
         if url not in public_cache:
@@ -261,8 +275,9 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         if any(info["status"] == "partial" for info in ledger.coverage.values()):
             github_status = "partial"
     associate_work(jira, github)
+    progress(f"done; {len(warnings)} coverage warnings ({len(set(warnings))} distinct) are in metadata.warnings")
     return {
-        "metadata": {**window, **local["metadata"],
+        "metadata": {**window, **local["metadata"], "network_requests": network_calls(),
                      "local_status": local_status, "capabilities": {"local_git": local_capability},
                      "github_discovery": discovery, "reference_expansion": expansion,
                      "gitlab_discovery": gitlab_discovery,
@@ -290,6 +305,8 @@ def validate(data, source=None):
     require(isinstance(data, dict), "Capture must be an object")
     metadata = data.get("metadata")
     require(isinstance(metadata, dict), "Missing metadata")
+    require("validation_error" not in metadata, "Capture failed collection validation: "
+            + str(metadata.get("validation_error")))
     for key in ("days", "repos_searched", "repos_with_commits"):
         require(integer(metadata.get(key), 1 if key == "days" else 0), f"Invalid metadata.{key}")
     for key in ("since_date", "to_date"):
@@ -497,6 +514,15 @@ def validate(data, source=None):
         return original
 
     def theme_node(theme):
+        try:
+            check_theme(theme)
+        except (ValueError, KeyError, TypeError) as error:
+            name = theme.get('name') if isinstance(theme, dict) else None
+            raise ValueError(f"Theme {name!r}: {error}") from error
+
+    def check_theme(theme):
+        if isinstance(theme, dict):
+            theme.setdefault("items", [])
         require(isinstance(theme, dict) and all(isinstance(theme.get(key), str) and theme[key].strip()
                 for key in ("name", "description")) and isinstance(theme.get("items"), list), "Invalid theme")
         for item in theme["items"]:
@@ -681,8 +707,9 @@ def validate_selected_links(data, topic):
     require(isinstance(selected, list) and all(isinstance(url, str) for url in selected),
             "Invalid selected links")
     candidates = set(work_urls(data, topic))
-    require(all(url in candidates for url in selected),
-            "Selected link is absent from this topic's source evidence")
+    missing = [url for url in selected if url not in candidates]
+    require(not missing, f"Selected link {missing[0] if missing else ''} is not among this topic's cited "
+            f"evidence; cite its item, ticket, MR or commit in the same topic (candidates: {sorted(candidates)})")
 
 
 def ongoing_topic(item, prefix='Ongoing: '):
@@ -1122,6 +1149,13 @@ def render_detailed(data, source=None):
     return "\n".join(lines)
 
 
+def write_atomic(filename, text):
+    partial = filename + ".partial"
+    with open(partial, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(partial, filename)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -1132,8 +1166,10 @@ def main():
     collector.add_argument("--until", help="Exclusive RFC3339 reporting end; requires --since")
     collector.add_argument("--root", action="append", default=[], dest="explicit_roots",
                            help="Repository scan root (repeatable; use with explicit dates)")
+    collector.add_argument("--output", help="Write the capture atomically to this file instead of stdout")
     renderer = modes.add_parser("render", help="Validate evidence and render Markdown")
     renderer.add_argument("--detailed", action="store_true", help="Include the complete evidence and coverage audit")
+    renderer.add_argument("--analysis", help="Analysis JSON to apply to the unchanged capture")
     renderer.add_argument("capture")
     renderer.add_argument("source", nargs="?", help="Original capture; required for enriched input")
     args = parser.parse_args()
@@ -1144,8 +1180,26 @@ def main():
             require(explicit or not args.explicit_roots, "--root requires --since and --until; rolling roots are positional")
             data = collect(args.days, args.explicit_roots if explicit else args.roots,
                            since=args.since, until=args.until)
-            validate(data)
+            try:
+                validate(data)
+            except (ValueError, KeyError, TypeError, OverflowError) as error:
+                # Keep a long collection's evidence for diagnosis; rendering still rejects it.
+                data["metadata"]["validation_error"] = str(error)
+                if args.output:
+                    write_atomic(args.output, json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+                raise
             output = json.dumps(data, indent=2, ensure_ascii=True) + "\n"
+            if args.output:
+                write_atomic(args.output, output)
+                return 0
+        elif args.analysis:
+            require(args.source is None, "--analysis takes only the original capture")
+            analysis = read_json(args.analysis)
+            if isinstance(analysis, dict) and set(analysis) == {"analysis"}:
+                analysis = analysis["analysis"]
+            data = read_json(args.capture)
+            data["analysis"] = analysis
+            output = render(data, read_json(args.capture), detailed=args.detailed) + "\n"
         else:
             output = render(read_json(args.capture), read_json(args.source) if args.source else None,
                             detailed=args.detailed) + "\n"
