@@ -103,6 +103,8 @@ class ConciseReportTest(unittest.TestCase):
                    'https://jira.example/browse/TEST-1oops', 'https://jira.example/browse/TEST-1.20',
                    'https://jira.example/browse/TEST-1/extra', 'https://jira.example/../browse/TEST-1',
                    'https://jira.example/browse/%54EST-1', 'https://jira.example:999999/browse/TEST-1',
+                   'https://jira.example／evil/browse/TEST-1',
+                   'https://jira.example：443/browse/TEST-1',
                    'TEST-1', 'release-4.20']
         for body in invalid:
             with self.subTest(body=body):
@@ -204,6 +206,68 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('GitHub partial; local Git unavailable',report)
         self.assertNotIn('Private failure',report)
         self.assertLess(len(report.splitlines()),8)
+
+    def local_capture(self):
+        source=self.capture()
+        source['github']['prs']=[]
+        source['metadata'].update(github_status='unavailable',warnings=['No remote tools'],
+            repos_searched=1,repos_with_commits=1,repositories=[{
+                'path':'/private/checker','common_dir':'/private/checker/.git',
+                'paths':['/private/checker'],'status':'ok','identities':['me@example.test']}])
+        source['jira']={'metadata':{'status':'unavailable','site':''},'issues':[],'activity':[]}
+        source['commits']={'/private/checker':[{'hash':'b'*40,'message':'Fix local behavior',
+            'author_email':'me@example.test','committed_at':'2026-01-12T12:00:00Z'}]}
+        return source
+
+    def test_local_native_subject_retains_explicit_links_without_remote_auth_or_join(self):
+        source=self.local_capture()
+        entry=source['commits']['/private/checker'][0]
+        entry['message']='Fix https://JIRA.EXAMPLE/browse/test-123 and https://github.com/org/repo/pull/8#note'
+        original=copy.deepcopy(source)
+        topic=ws.fallback_topics(source)[0]
+        report=ws.render(source)
+        self.assertIn('  - https://jira.example/browse/TEST-123',report)
+        self.assertIn('  - https://github.com/org/repo/pull/8',report)
+        self.assertIn('Jira state is unverified',report)
+        self.assertIn('GitHub state is unverified',report)
+        self.assertIn('GitHub unavailable; Jira unavailable',report)
+        self.assertEqual(source,original)
+        proofs=ws.local_context_links(source,topic)
+        self.assertEqual({proof['hash'] for proof in proofs},{entry['hash']})
+        self.assertTrue(all(proof['proof']=='local_commit_subject_url' for proof in proofs))
+        self.assertTrue(any(proof['source_url'].endswith('#note') for proof in proofs))
+
+    def test_local_context_requires_exact_selected_author_verified_subject(self):
+        source=self.local_capture()
+        entry=source['commits']['/private/checker'][0]
+        entry['message']='Context https://jira.example/browse/TEST-1'
+        topic={'commits':[{'repo':'/private/checker','hash':'c'*40}]}
+        self.assertEqual(ws.local_context_links(source,topic),[])
+        topic['commits'][0]['hash']=entry['hash']
+        source['metadata']['repositories'][0]['identities']=[]
+        self.assertEqual(ws.local_context_links(source,topic),[])
+
+    def test_local_context_rejects_unsafe_or_unsupported_urls_and_honors_enterprise_host(self):
+        source=self.local_capture()
+        source['metadata']['github_host']='git.example:8443'
+        entry=source['commits']['/private/checker'][0]
+        topic={'commits':[{'repo':'/private/checker','hash':entry['hash']}]}
+        invalid=['https://git.example:8443/../repo/pull/1',
+            'https://other.example/org/repo/pull/1','https://github.com/org/repo/pull/1',
+            'https://git.example:8443/org/repo/pull/1/extra',
+            'https://git.example:8443/org/repo/pull/1oops',
+            'https://user:secret@git.example:8443/org/repo/pull/1',
+            'https://git.example:999999/org/repo/pull/1',
+            'https://git.example／evil/org/repo/pull/1',
+            'https://git.example：8443/org/repo/pull/1',
+            'http://jira.example/browse/TEST-1','https://jira.example/browse/TEST-1.20',
+            'https://jira.example/browse/%54EST-1','TEST-1']
+        for value in invalid:
+            with self.subTest(value=value):
+                entry['message']=value
+                self.assertEqual(ws.local_context_links(source,topic),[])
+        entry['message']='https://GIT.EXAMPLE:8443/org/repo/pull/8'
+        self.assertEqual(ws.work_urls(source,topic),['https://git.example:8443/org/repo/pull/8'])
 
     def test_native_mr_context_is_raw_and_markdown_sensitive_url_stays_literal(self):
         source=self.capture()
