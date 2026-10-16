@@ -198,7 +198,7 @@ def read_graphql_notes(reader, host, repo, source):
                     'GraphQL response scope changed')
             result = response['source']
             require(isinstance(result, dict), 'Invalid native GraphQL response')
-            errors = result.get('errors') or []
+            errors = result.get('errors', [])
             require(isinstance(errors, list), 'Invalid native GraphQL errors')
             if errors:
                 partial = True

@@ -434,6 +434,12 @@ class GraphqlNotesTest(unittest.TestCase):
             result, _, _ = self.graph_capture(graph)
             self.assertEqual(result['items'][0]['notes_status'], 'partial', kind)
 
+    def test_malformed_native_errors_field_cannot_claim_complete(self):
+        graph = self.graph([self.native_note()])
+        graph['errors'] = {}
+        result, _, _ = self.graph_capture(lambda variables: graph)
+        self.assertEqual(result['items'][0]['notes_status'], 'partial')
+
     def test_same_host_other_mr_graphql_failure_is_not_recovered_by_success(self):
         result, _, _ = self.graph_capture(lambda variables: self.graph([self.native_note()]))
         failure = {'url': api.graphql_notes_url(HOST, 'group/project', 8, 'second-page'), 'reason': 'native_http_403'}
