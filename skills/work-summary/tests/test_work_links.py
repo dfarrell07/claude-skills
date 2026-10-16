@@ -389,6 +389,19 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(discovery_keys('https://jira.example.test/browse/GO-2026',
                                         'jira.example.test'), {'GO-2026'})
 
+    def test_older_numeric_fragment_attempts_keep_lexical_failure_provenance(self):
+        data = self.capture()
+        data['github']['prs'][0].update(title='', body='GO-2026-6354 and source.go-89-91')
+        coverage = {'status': 'partial', 'requested_keys': ['GO-2026', 'GO-89'],
+                    'returned_keys': [], 'failures': {}}
+        data['jira']['metadata']['coverage'] = {'referenced_by_github': coverage}
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), [])
+        classify_reference_failures(data['jira'], data['github'])
+        self.assertEqual(coverage['failure_classification'], {
+            key: {'kind': 'lexical_candidate', 'evidence_urls': [data['github']['prs'][0]['url']]}
+            for key in ('GO-2026', 'GO-89')})
+        validate_links(data)
+
     def test_conventional_uppercase_and_explicit_browse_references_confirm_pairing(self):
         for field, text in [('title', 'ACM-123: fix checks'), ('head_ref', 'fix/ACM-123-checks'),
                             ('body', 'See https://jira.example.test/browse/acm-123')]:

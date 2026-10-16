@@ -33,7 +33,7 @@ def _url_keys(text, site, confirmed=False):
     return explicit
 
 
-def _key_mentions(text, site, confirmed):
+def _key_mentions(text, site, confirmed, *, numeric_fragments=False):
     """Separate discovery syntax from stronger native reference evidence."""
     text = text or ''
     explicit = _url_keys(text, site, confirmed)
@@ -42,7 +42,8 @@ def _key_mentions(text, site, confirmed):
         key = match.group(1)
         # A numeric continuation belongs to the original identifier, such as
         # GO-2026-6354 or product-5-0; its truncated prefix is not a ticket lead.
-        if re.match(r'[.-][0-9]', bare[match.end():]) or (confirmed and key != key.upper()):
+        if ((not numeric_fragments and re.match(r'[.-][0-9]', bare[match.end():]))
+                or (confirmed and key != key.upper())):
             continue
         explicit.add(key.upper())
     return explicit
@@ -58,10 +59,11 @@ def confirmed_keys(text, site):
     return _key_mentions(text, site, confirmed=True)
 
 
-def discovery_keys(text, site):
+def discovery_keys(text, site, *, include_numeric_fragments=False):
     """Keep broad ticket leads while recognizing explicit native URL authorities."""
     explicit = _url_keys(text, site)
-    return {key for key in mentioned_keys(text, site)
+    mentions = _key_mentions(text, site, confirmed=False, numeric_fragments=include_numeric_fragments)
+    return {key for key in mentions
             if key.rsplit('-', 1)[0].upper() not in NON_JIRA or key in explicit}
 
 
@@ -201,7 +203,9 @@ def reference_failure_classification(jira, github, gitlab=None):
     for url, text in texts:
         for key in _url_keys(text, site) & unresolved:
             explicit.setdefault(key, set()).add(url)
-        for key in discovery_keys(text, site) & unresolved:
+        # Older captures attempted numeric fragments. Preserve their lexical
+        # failure provenance without making those fragments new read targets.
+        for key in discovery_keys(text, site, include_numeric_fragments=True) & unresolved:
             lexical.setdefault(key, set()).add(url)
     for issue in jira.get('issues', []):
         for source_kind in ('source', 'detail', 'full_detail'):
