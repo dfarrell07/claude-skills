@@ -21,7 +21,7 @@ from evidence import (  # noqa: E402
     HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
     read_json, require, timestamp, valid_item, is_pr_url,
 )
-from local_sources import collect_local  # noqa: E402
+from local_sources import collect_local, private_ref_pointers  # noqa: E402
 from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
@@ -291,6 +291,7 @@ def validate(data, source=None):
     if "branches" in data:
         require(isinstance(data["branches"], list), "Invalid branch inventory")
         inventory = {entry["path"]: entry for entry in metadata.get("repositories", [])}
+        private_pointers = {path: private_ref_pointers(entry) for path, entry in inventory.items()}
         for branch in data["branches"]:
             require(isinstance(branch, dict) and branch.get("repo") in inventory
                     and isinstance(branch.get("hash"), str) and HASH.fullmatch(branch["hash"]), "Invalid branch snapshot")
@@ -333,6 +334,7 @@ def validate(data, source=None):
                             'Worktree reflog heads lack native output')
                 for head in heads:
                     worktrees['worktree-reflog:' + tree['path'] + ':' + head] = head
+            worktrees.update(private_pointers[branch['repo']])
             require(all((name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")})
                         or (name in worktrees and worktrees[name] == branch["hash"])
                         for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
@@ -780,7 +782,7 @@ def render_detailed(data, source=None):
             seen_reviews.add(entry["url"])
             number = urlsplit(entry["url"]).path.rsplit("/", 1)[1]
             native_mr = native_mrs.get(entry['url'])
-            state = ('native state: ' + native_mr['source']['state']) if native_mr else 'referenced; state unread'
+            state = ('native state: ' + native_mr['source']['state']) if native_mr else 'referenced; state/ownership unverified'
             links.append(f"[GitLab MR !{number}]({entry['url']}) ({state})")
         return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
 

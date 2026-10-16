@@ -1,7 +1,7 @@
 ---
 name: work-summary
-description: "Create a ranked weekly what-I-did bullet list from available Git, GitHub, and Jira evidence, using authenticated connectors or CLIs and gracefully reducing scope when tools or access are missing."
-version: 2.1.0
+description: "Create a ranked weekly what-I-did bullet list from available Git, GitHub, GitLab, and Jira evidence, using native APIs, connectors or CLIs and gracefully reducing scope when tools or access are missing."
+version: 2.2.0
 argument-hint: "[days]"
 user-invocable: true
 ---
@@ -98,6 +98,11 @@ For stale worktrees, read the surviving Git administration metadata and HEAD
 reflog before declaring evidence missing. Record recovered tips separately from
 actual refs. A missing working directory alone does not mean its stored history
 was lost. Read-only recovery must leave permissions, refs and registrations intact.
+Read worktree-specific `refs/worktree`, `refs/bisect` and `refs/rewritten` in each
+registered or retained-admin context; the main checkout's ref listing omits them.
+Bind each native namespace response to its actual common directory, keep those
+reference labels distinct from shared refs, and preserve any disappeared paths
+as changes between observations rather than erasing earlier captured history.
 
 GitHub discovery uses the authenticated account on `GH_HOST` (default
 `github.com`): authored updates, older open authored/assigned work, review
@@ -144,6 +149,10 @@ comment suffix: retain those native comments immediately, read missing history,
 and preserve richer native rows when merging projected pages. Count/identity
 drift stays incomplete while valid comments and links survive. Projected rows
 without native actors/times cannot prove weekly activity.
+Follow moved Jira keys using independent authenticated reads of the requested
+and canonical keys with equal native issue IDs. Preserve both native responses
+and the original reference URL. A readable canonical issue survives a failed
+alias-verification read, but the unresolved alias cannot prove a ticket relation.
 Check actual changelog objects and comment fidelity rather than assuming that
 an installed CLI exposes every API capability. When a supported authenticated
 REST reader or connector is available, use native paginated history and comment
@@ -182,6 +191,13 @@ native Git access. API authentication and Git SSH access are independent: an emp
 SSH agent does not rule out a configured identity. Bind the actual remote route,
 retain native ref responses and match full hashes across captured snapshots.
 These proofs can supply MR links; they cannot establish MR state or activity.
+Try native public item and history endpoints independently of authentication
+status endpoints. Collect readable GitLab MR details, notes and public role
+inventories; match native public email to a previously verified alias before
+crediting the numeric account. Follow current descriptions and all captured
+discussion bodies across Jira, GitHub and GitLab to a fixed point. Public Jira
+field history supplements authenticated details and comments without replacing
+their visibility or counts. Retain endpoint-specific failures and scopes.
 
 ## Select and Rank Work
 
@@ -208,6 +224,9 @@ can guide scope, tone and grouping; its dates, plans and TODOs are not fresh
 completion evidence. For a manager update, emphasize professional progress,
 blockers, decisions and substantive review/unblocking contributions. Keep
 unrelated personal projects and low-value audit detail in the saved evidence.
+Judge relevance from the work's purpose and the supplied reference, rather than
+the repository name or namespace; a personal repository can support professional
+work explicitly relevant to the destination.
 
 Each bullet's description is one clear line about what was done or investigated.
 Ongoing work may be included when actual activity supports it; phrase its state

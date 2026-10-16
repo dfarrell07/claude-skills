@@ -271,6 +271,44 @@ def jira_reference(item):
     return f"[{item['key']}]({item['url']})"
 
 
+def jira_key_aliases(jira):
+    """Resolve moved keys only through two authenticated native issue identities."""
+    from jira_sources import KEY, _normalize
+    records = jira.get('key_aliases', [])
+    require(isinstance(records, list), 'Invalid Jira key aliases')
+    known = {item['key']: item for item in jira.get('issues', [])}
+    aliases, ids = {}, {}
+    for record in records:
+        require(isinstance(record, dict), 'Invalid Jira key alias')
+        requested, canonical = record.get('requested_key'), record.get('canonical_key')
+        require(isinstance(requested, str) and KEY.fullmatch(requested)
+                and isinstance(canonical, str) and KEY.fullmatch(canonical)
+                and requested != canonical and canonical in known, 'Invalid Jira alias keys')
+        native_ids = []
+        for field in ('requested', 'canonical'):
+            raw = record.get(field)
+            normalized = _normalize(raw, jira['metadata']['site'])
+            require(normalized['key'] == canonical and not isinstance(raw.get('id'), bool)
+                    and re.fullmatch(r'[1-9][0-9]*', str(raw.get('id'))), 'Invalid native Jira alias identity')
+            native_ids.append(str(raw['id']))
+        require(native_ids[0] == native_ids[1], 'Jira alias native ID mismatch')
+        target = known[canonical]
+        require(any(isinstance(target.get(field), dict) and str(target[field].get('id')) == native_ids[0]
+                    for field in ('source', 'detail')), 'Jira alias target ID mismatch')
+        require(requested not in aliases or aliases[requested] == canonical,
+                'Conflicting Jira key aliases')
+        aliases[requested], ids[requested] = canonical, native_ids[0]
+    resolved = {}
+    for key in aliases:
+        target, seen = key, set()
+        while target in aliases:
+            require(target not in seen and ids[target] == ids[key], 'Cyclic or conflicting Jira key alias chain')
+            seen.add(target)
+            target = aliases[target]
+        resolved[key] = target
+    return resolved
+
+
 def validate_jira(data, start, end):
     jira = data.get('jira')
     if jira is None:
@@ -299,6 +337,7 @@ def validate_jira(data, start, end):
         require(isinstance(item.get('status'), str) and item.get('status_category') in {'new', 'indeterminate', 'done'},
                 'Invalid Jira status')
         result[item['key']] = item
+    jira_key_aliases(jira)
     for event in jira.get('activity', []):
         require(isinstance(event, dict) and event.get('key') in result, 'Unknown Jira activity issue')
         require(start is not None and start <= timestamp(event['occurred_at']) <= end, 'Jira activity outside capture window')

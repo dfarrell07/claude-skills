@@ -26,6 +26,30 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(data['github']['prs'][0]['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(data['jira']['issues'][0]['pr_links'][0]['url'], data['github']['prs'][0]['url'])
 
+    def test_moved_native_jira_key_links_canonical_ticket_and_retains_original_reference(self):
+        data = self.capture()
+        native = {'key': 'TEST-123', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',
+                  'fields': {'summary': 'Canonical ticket', 'status': {'name': 'Active',
+                             'statusCategory': {'key': 'indeterminate'}}}}
+        data['jira']['issues'][0]['source'] = native
+        data['jira']['key_aliases'] = [{'requested_key': 'OLD-7', 'canonical_key': 'TEST-123',
+                                      'requested': copy.deepcopy(native), 'canonical': copy.deepcopy(native)}]
+        data['github']['prs'][0]['title'] = 'OLD-7: repair checks'
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        relation = data['github']['prs'][0]['jira_links'][0]
+        self.assertEqual(relation['key'], 'TEST-123')
+        self.assertEqual(relation['source_key'], 'OLD-7')
+        self.assertEqual(relation['jira_source_url'], 'https://jira.example.test/browse/OLD-7')
+        broken = copy.deepcopy(data)
+        broken['jira']['key_aliases'][0]['canonical']['id'] = '999'
+        with self.assertRaises(ValueError):
+            validate_links(broken)
+        broken = copy.deepcopy(data)
+        broken['github']['prs'][0]['jira_links'][0]['source_key'] = 'OTHER-8'
+        with self.assertRaises(ValueError):
+            validate_links(broken)
+
     def test_later_selected_native_observation_keeps_new_ticket_reference(self):
         data = self.capture()
         pr = data['github']['prs'][0]

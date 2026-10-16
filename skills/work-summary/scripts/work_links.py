@@ -4,7 +4,7 @@ import re
 from urllib.parse import quote, urlsplit
 
 from evidence import is_pr_url, require
-from extended_evidence import repository_aliases
+from extended_evidence import jira_key_aliases, repository_aliases
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -191,6 +191,7 @@ def associate_work(jira, github):
     """Add symmetric links, retaining provenance of each explicit mention."""
     issues = {issue['key']: issue for issue in jira['issues']}
     site = jira.get('metadata', {}).get('site')
+    ticket_aliases = jira_key_aliases(jira)
     items = github_items(github)
     records = github.get('repository_aliases', [])
     require(isinstance(records, list), 'Invalid GitHub repository aliases')
@@ -215,27 +216,35 @@ def associate_work(jira, github):
             continue
         for field in ('title', 'body', 'head_ref'):
             for key in confirmed_keys(item.get(field), site):
-                key = key.upper()
+                source_key = key.upper()
+                key = ticket_aliases.get(source_key, source_key)
                 issue = issues.get(key)
                 if issue is None:
                     continue
-                relations.setdefault((key, item['url']), {'url': item['url'], 'proof': 'github_' + field + '_key',
-                                                         'evidence_url': item['url'], 'sensitive': issue['sensitive']})
+                relation = {'url': item['url'], 'proof': 'github_' + field + '_key',
+                            'evidence_url': item['url'], 'sensitive': issue['sensitive']}
+                if key != source_key:
+                    relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
+                relations.setdefault((key, item['url']), relation)
     for comment in github.get('reference_comments', []):
         url = canonical.get(pr_identity(comment['item_url'], aliases))
         if url is None:
             continue
-        for key in confirmed_keys(comment['body'], site):
+        for source_key in confirmed_keys(comment['body'], site):
+            key = ticket_aliases.get(source_key, source_key)
             issue = issues.get(key)
             if issue is not None:
-                relations.setdefault((key, url), {'url': url, 'proof': 'github_comment_key',
-                                                'evidence_url': comment['url'],
-                                                'sensitive': issue['sensitive']})
+                relation = {'url': url, 'proof': 'github_comment_key', 'evidence_url': comment['url'],
+                            'sensitive': issue['sensitive']}
+                if key != source_key:
+                    relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
+                relations.setdefault((key, url), relation)
     # The same PR may have several observed snapshots. Attach the same linked
     # ticket context to each while leaving original fields and states intact.
     for item in items:
         item['jira_links'] = [{'key': key, 'url': issues[key]['url'], 'proof': proof['proof'],
-                               'evidence_url': proof['evidence_url'], 'sensitive': proof.get('sensitive', issues[key]['sensitive'])}
+                               'evidence_url': proof['evidence_url'], 'sensitive': proof.get('sensitive', issues[key]['sensitive']),
+                               **{field: proof[field] for field in ('source_key', 'jira_source_url') if field in proof}}
                               for (key, url), proof in sorted(relations.items())
                               if pr_identity(url, aliases) == pr_identity(item['url'], aliases)]
     for issue in issues.values():
@@ -246,6 +255,7 @@ def associate_work(jira, github):
 def validate_links(data):
     jira = data.get('jira', {'issues': []})
     issues = {issue['key']: issue for issue in jira['issues']}
+    ticket_aliases = jira_key_aliases(jira)
     items = github_items(data['github'])
     host = data['metadata'].get('github_host', 'github.com')
     aliases = repository_aliases(data['github'], host)
@@ -269,6 +279,12 @@ def validate_links(data):
                     and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)
                     and not parts.query and not parts.fragment, 'Invalid Jira PR URL')
             require(isinstance(relation.get('proof'), str) and relation['proof'], 'Missing cross-source proof')
+            source_key = relation.get('source_key', issue['key'])
+            require(('source_key' in relation) == ('jira_source_url' in relation), 'Incomplete Jira alias provenance')
+            require(ticket_aliases.get(source_key, source_key) == issue['key'], 'Unverified Jira source key')
+            if 'source_key' in relation:
+                require(relation.get('jira_source_url') == f"https://{jira['metadata']['site']}/browse/{source_key}",
+                        'Invalid original Jira alias URL')
             if 'source_url' in relation:
                 source_url = relation['source_url']
                 require(isinstance(source_url, str), 'Invalid PR source URL')
@@ -286,14 +302,14 @@ def validate_links(data):
             if relation['proof'] == 'github_comment_key':
                 require(any(comment['url'] == evidence_url
                             and pr_identity(comment['item_url'], aliases) == pr_identity(relation['url'], aliases)
-                            and issue['key'] in confirmed_keys(comment['body'], jira.get('metadata', {}).get('site'))
+                            and source_key in confirmed_keys(comment['body'], jira.get('metadata', {}).get('site'))
                             for comment in data['github'].get('reference_comments', [])),
                         'GitHub key mention absent from native comment')
             elif relation['proof'].startswith('github_'):
                 require(relation['proof'] in {'github_title_key', 'github_body_key', 'github_head_ref_key'}
                         and evidence_url == relation['url'], 'Invalid GitHub reference provenance')
                 field = relation['proof'].removeprefix('github_').removesuffix('_key')
-                require(field in {'title', 'body', 'head_ref'} and any(issue['key'] in
+                require(field in {'title', 'body', 'head_ref'} and any(source_key in
                     confirmed_keys(item.get(field), jira.get('metadata', {}).get('site'))
                     for item in by_identity.get(pr_identity(relation['url'], aliases), [])), 'GitHub key mention absent from evidence')
             else:
@@ -322,5 +338,6 @@ def validate_links(data):
                     pr_identity(pr['url'], aliases) == pr_identity(item['url'], aliases) and pr['proof'] == relation.get('proof')
                     and pr['evidence_url'] == relation.get('evidence_url')
                     and pr.get('sensitive', issue['sensitive']) == relation.get('sensitive', issue['sensitive'])
+                    and all(pr.get(field) == relation.get(field) for field in ('source_key', 'jira_source_url'))
                     for pr in issue.get('pr_links', [])),
                     'GitHub Jira relation is absent from source issue')

@@ -552,25 +552,48 @@ def add_referenced_jira(result, keys, start, end, warn):
         gap("Jira site/account changed or became unavailable; referenced tickets were not read.")
         return result
     by_key = {item["key"]: item for item in result["issues"]}
+    key_aliases = {row['requested_key']: row['canonical_key'] for row in result.get('key_aliases', [])}
     selected, preloaded = [], {}
     for key in requested:
         if key not in coverage["requested_keys"]:
             coverage["requested_keys"].append(key)
         try:
             require(isinstance(key, str) and KEY.fullmatch(key), "Invalid referenced issue key")
-            item = by_key.get(key)
+            item = by_key.get(key_aliases.get(key, key))
+            alias_error = None
             if item is None:
                 raw = decode_json(command(["acli", "jira", "workitem", "view", key,
                                            "--fields", DETAIL_FIELDS, "--json"], stdin=""))
                 item = _normalize(raw, site)
-                require(item["key"] == key, "Referenced Jira key mismatch")
-                by_key[key] = item
-                result["issues"].append(item)
-                preloaded[key] = raw
+                canonical_key = item['key']
+                existing = by_key.get(canonical_key)
+                if existing is None:
+                    by_key[canonical_key] = item
+                    result['issues'].append(item)
+                else:
+                    item = existing
+                preloaded[canonical_key] = raw
+                if canonical_key != key:
+                    try:
+                        canonical = decode_json(command(['acli', 'jira', 'workitem', 'view', canonical_key,
+                                                         '--fields', DETAIL_FIELDS, '--json'], stdin=''))
+                        normalized = _normalize(canonical, site)
+                        require(normalized['key'] == canonical_key
+                                and re.fullmatch(r'[1-9][0-9]*', str(raw.get('id')))
+                                and not isinstance(raw.get('id'), bool)
+                                and str(raw['id']) == str(canonical.get('id')), 'Jira key alias identity mismatch')
+                        result.setdefault('key_aliases', []).append({'requested_key': key,
+                            'canonical_key': canonical_key, 'requested': raw, 'canonical': canonical})
+                        key_aliases[key] = canonical_key
+                        preloaded[canonical_key] = canonical
+                    except ERRORS as error:
+                        alias_error = error
             if "referenced_by_github" not in item["roles"]:
                 item["roles"].append("referenced_by_github")
-            if item["detail_status"] != "ok":
+            if item["detail_status"] != "ok" and item not in selected:
                 selected.append(item)
+            if alias_error is not None:
+                raise alias_error
             if key not in coverage["returned_keys"]:
                 coverage["returned_keys"].append(key)
             failures.pop(key, None)

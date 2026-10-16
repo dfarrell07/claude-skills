@@ -102,12 +102,31 @@ claim a local scan happened, or fabricate collector JSON to imply validation.
 Produce the same useful work list directly from connector evidence. When file
 tools exist, a saved capture can be read without claiming a fresh native search.
 
-Authentication or permission errors affect the failing source only. Preserve
+Authentication or permission errors affect the failing operation. Preserve
 evidence already collected from other sources and earlier successful pages.
 Do not quote credential values, dump authentication configuration, or interpret
 an inaccessible repository/ticket as nonexistent. A connector may provide a
 working alternative to an unauthenticated CLI; verify its native account rather
 than assuming the CLI and connector use the same identity.
+
+Test access per operation. A denied authenticated-user endpoint does not prove
+that public item, inventory, comment, or history endpoints are unreadable.
+For explicit GitLab MR URLs, try verified-TLS native public detail reads, native
+repository redirects, and paginated notes/discussions. A native public email
+matching an already verified account alias can establish the target's numeric
+GitLab identity for public authored, assigned and review inventories. GitLab
+requires a public email to be verified; retain the native identity object and
+alias basis rather than matching usernames across services. See the
+[GitLab Users API](https://docs.gitlab.com/api/users/).
+
+For Jira, separately try public issue identity and paginated field history at
+the authenticated site's native endpoint. Verify issue IDs and keys before
+combining observations. Anonymous visibility can be narrower than authenticated
+visibility: retain public history as a separate scope and preserve authenticated
+comments and their counts. An anonymous zero or 404 cannot erase an authenticated
+positive or establish that a private item/comment does not exist. Keep exact
+endpoint failures; public histories and public MR inventories do not establish
+complete private-account coverage.
 
 For connector collection, resolve the current native user and requested time
 window, then read authored changes, accessible participation events, and older

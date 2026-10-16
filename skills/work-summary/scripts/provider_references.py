@@ -4,6 +4,7 @@ import re
 from urllib.parse import urlsplit
 
 from evidence import HOST, require
+from extended_evidence import jira_key_aliases
 from work_links import (URL, complete_references, confirmed_keys, discovery_keys,
                         github_items, native_review_links)
 
@@ -111,14 +112,18 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
 def associate_gitlab(jira, gitlab):
     issues = {issue['key']: issue for issue in jira.get('issues', [])}
     site = jira.get('metadata', {}).get('site')
+    aliases = jira_key_aliases(jira)
     relations = {item['url']: {} for item in gitlab.get('items', [])}
     for item, field, url, text, note_id in gitlab_texts(gitlab):
-        for key in confirmed_keys(text, site):
+        for source_key in confirmed_keys(text, site):
+            key = aliases.get(source_key, source_key)
             if key in issues:
                 relation = {'key': key, 'url': issues[key]['url'], 'proof': 'gitlab_' + field + '_key',
                             'evidence_url': url, 'sensitive': issues[key]['sensitive']}
                 if note_id is not None:
                     relation['note_id'] = note_id
+                if key != source_key:
+                    relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
                 relations[item['url']].setdefault(key, relation)
     for item in gitlab.get('items', []):
         item['jira_links'] = [relations[item['url']][key] for key in sorted(relations[item['url']])]
