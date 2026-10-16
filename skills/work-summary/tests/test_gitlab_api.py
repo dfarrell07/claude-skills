@@ -274,6 +274,54 @@ class GitLabApiTest(unittest.TestCase):
         self.assertEqual(result['items'][0]['notes_status'], 'partial')
         self.assertTrue(result['items'][0]['notes'])
 
+    def inventory_fallback_capture(self, urls=None, failed_later_page=False):
+        def read(url):
+            if '/notes?' in url:
+                return response(url, [])
+            if '/merge_requests?' in url:
+                params = parse_qs(urlsplit(url).query)
+                if 'author_id' in params and params.get('state') == ['all'] and '/projects/' not in url:
+                    if params['page'] == ['2']:
+                        return response(url, None, status=403)
+                    return response(url, [mr(8)], headers={'x-next-page': '2' if failed_later_page else ''})
+                return response(url, [])
+            if urlsplit(url).path.endswith('/merge_requests/8'):
+                return response(url, None, status=403)
+            return response(url, mr())
+        return self.collect(read, urls=urls, emails=['own@example.test'])[0]
+
+    def checked(self, result):
+        api.validate_gitlab_api({'gitlab': result, 'metadata': {'author_aliases': [
+            {'email': 'own@example.test', 'source': 'authenticated_github_profile'}]}})
+
+    def test_full_native_inventory_source_survives_failed_detail_read(self):
+        result = self.inventory_fallback_capture()
+        retained = next(item for item in result['items'] if item['number'] == 8)
+        self.assertEqual(retained['source'], mr(8))
+        self.assertEqual(retained['source_kind'], 'inventory')
+        self.assertEqual(result['metadata']['status'], 'partial')
+
+    def test_earlier_failed_explicit_seed_recovers_from_later_native_inventory(self):
+        result = self.inventory_fallback_capture(urls=[WEB[:-1] + '8', WEB])
+        self.assertEqual({item['number'] for item in result['items']}, {7, 8})
+
+    def test_inventory_status_role_endpoint_and_dropped_positive_are_bound(self):
+        baseline = self.inventory_fallback_capture(failed_later_page=True)
+        for kind in ('status', 'role', 'endpoint', 'positive'):
+            bad = json.loads(json.dumps(baseline))
+            if kind == 'status':
+                bad['metadata']['inventories'][0]['status'] = 'ok'
+            elif kind == 'role':
+                bad['metadata']['inventories'] = [row for row in bad['metadata']['inventories']
+                    if row['role'] != 'open_reviews']
+            elif kind == 'endpoint':
+                bad['metadata']['inventories'][0]['endpoint'] = bad['metadata']['inventories'][0]['endpoint'].replace(
+                    'author_id=41', 'author_id=999')
+            else:
+                bad['items'] = [item for item in bad['items'] if item['number'] != 8]
+            with self.assertRaises(ValueError):
+                self.checked(bad)
+
 
 if __name__ == '__main__':
     unittest.main()

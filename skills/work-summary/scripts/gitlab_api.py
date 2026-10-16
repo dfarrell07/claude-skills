@@ -96,6 +96,20 @@ def valid_note(note):
     require(timestamp(note.get('created_at')) <= timestamp(note.get('updated_at')), 'Invalid native note dates')
 
 
+def valid_inventory_row(row, host, actor, role):
+    native_host, _, _ = valid_mr(row)
+    require(native_host == host, 'Inventory host mismatch')
+    if role in {'authored_updates', 'open_authored'}:
+        require((row.get('author') or {}).get('id') == actor, 'Inventory author mismatch')
+    else:
+        field = 'assignees' if role == 'open_assigned' else 'reviewers'
+        require(isinstance(row.get(field), list)
+                and any(isinstance(user, dict) and user.get('id') == actor for user in row[field]),
+                'Inventory participant mismatch')
+    if role != 'authored_updates':
+        require(row['state'] == 'opened', 'Open inventory state mismatch')
+
+
 def read_notes(reader, host, repo, source):
     """Try independent public routes; a denied endpoint cannot erase its siblings."""
     notes, sources = {}, []
@@ -250,7 +264,7 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
               'inventories': [], 'verified_aliases': sorted({email.casefold() for email in verified_emails
                                           if isinstance(email, str) and email})}}
     reader = PublicReader(result, read or public_get)
-    pending, attempted, actors, users_read = [], set(), set(), set()
+    pending, attempted, actors, users_read, fallback_sources = [], set(), set(), set(), {}
     for url in urls:
         if url not in pending:
             pending.append(url)
@@ -265,22 +279,31 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                 continue
             attempted.add(original)
             endpoint = f'https://{host}/api/v4/projects/{quote(repo, safe="")}/merge_requests/{number}'
-            response = reader.get(endpoint)
-            source = response['source']
-            native_host, native_repo, native_number = valid_mr(source)
-            require(native_host == host and native_number == number, 'MR response identity mismatch')
-            final_path = urlsplit(response['url']).path
-            allowed = {f'/api/v4/projects/{quote(repo, safe="")}/merge_requests/{number}',
-                       f'/api/v4/projects/{source["project_id"]}/merge_requests/{number}'}
-            require(final_path in allowed, 'MR response project redirect mismatch')
-            require(native_repo == repo or response.get('redirects'), 'Unverified MR project rename')
+            source_kind = 'detail'
+            try:
+                response = reader.get(endpoint)
+                source = response['source']
+                native_host, native_repo, native_number = valid_mr(source)
+                require(native_host == host and native_number == number, 'MR response identity mismatch')
+                final_path = urlsplit(response['url']).path
+                allowed = {f'/api/v4/projects/{quote(repo, safe="")}/merge_requests/{number}',
+                           f'/api/v4/projects/{source["project_id"]}/merge_requests/{number}'}
+                require(final_path in allowed, 'MR response project redirect mismatch')
+                require(native_repo == repo or response.get('redirects'), 'Unverified MR project rename')
+            except (OSError, URLError, ValueError, TypeError, KeyError, AttributeError) as error:
+                require(original in fallback_sources, 'Native MR detail unavailable without readable inventory source')
+                reader.fail(endpoint, str(error) if isinstance(error, ValueError) else type(error).__name__)
+                source = fallback_sources[original]
+                native_host, native_repo, native_number = valid_mr(source)
+                source_kind = 'inventory'
             existing = next((item for item in result['items'] if item['url'] == source['web_url']), None)
             if existing:
                 if original not in existing['requested_urls']:
                     existing['requested_urls'].append(original)
             else:
                 item = {'url': source['web_url'], 'host': native_host, 'repo': native_repo, 'number': native_number,
-                    'source': source, 'requested_urls': [original], 'notes': [], 'notes_status': 'partial'}
+                    'source': source, 'source_kind': source_kind, 'requested_urls': [original],
+                    'notes': [], 'notes_status': 'partial'}
                 result['items'].append(item)
                 item['notes'], item['notes_status'], item['notes_sources'] = read_notes(reader, host, native_repo, source)
             author = source.get('author') or {}
@@ -317,17 +340,7 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                            ('open_reviews', {'reviewer_id': actor, 'state': 'opened'})]
                 for role, params in queries:
                     def inventory_row(row):
-                        native_host, _, _ = valid_mr(row)
-                        require(native_host == host, 'Inventory host mismatch')
-                        if role in {'authored_updates', 'open_authored'}:
-                            require((row.get('author') or {}).get('id') == actor, 'Inventory author mismatch')
-                        else:
-                            field = 'assignees' if role == 'open_assigned' else 'reviewers'
-                            require(isinstance(row.get(field), list)
-                                    and any(isinstance(user, dict) and user.get('id') == actor for user in row[field]),
-                                    'Inventory participant mismatch')
-                        if role != 'authored_updates':
-                            require(row['state'] == 'opened', 'Open inventory state mismatch')
+                        valid_inventory_row(row, host, actor, role)
                     endpoint = f'https://{host}/api/v4/merge_requests?' + urlencode({'scope': 'all', **params})
                     rows, status = reader.pages(endpoint, inventory_row)
                     result['metadata']['inventories'].append({'host': host, 'user_id': actor, 'role': role,
@@ -343,7 +356,11 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                                 'status': project_status})
                             rows.extend(recovered)
                     for row in rows:
-                        if row['web_url'] not in attempted and row['web_url'] not in pending:
+                        first_source = row['web_url'] not in fallback_sources
+                        fallback_sources.setdefault(row['web_url'], row)
+                        existing_urls = {item['url'] for item in result['items']}
+                        if first_source and row['web_url'] not in existing_urls and row['web_url'] not in pending:
+                            attempted.discard(row['web_url'])
                             pending.append(row['web_url'])
             actors.clear()
     result['metadata']['status'] = ('partial' if result['metadata']['failures'] else 'ok') if attempted else (
@@ -390,6 +407,50 @@ def validate_gitlab_api(data):
         except ValueError as error:
             require(str(error) == 'native_http_' + str(query.get('status')), 'Invalid native query receipt')
         queries.setdefault(url, []).append(query)
+    inventory_sources, inventory_urls, global_roles = [], set(), set()
+    for inventory in meta['inventories']:
+        require(isinstance(inventory, dict) and inventory.get('scope') in {'public_host', 'known_public_project'}
+                and inventory.get('role') in {'authored_updates', 'open_authored', 'open_assigned', 'open_reviews'}
+                and inventory.get('status') in {'ok', 'partial'}
+                and any(identity['host'] == inventory.get('host') and identity['user_id'] == inventory.get('user_id')
+                        for identity in meta['identities']), 'Unbound GitLab inventory identity')
+        host, actor, role = inventory['host'], inventory['user_id'], inventory['role']
+        endpoint = inventory.get('endpoint')
+        safe_api(endpoint, host)
+        parts = urlsplit(endpoint)
+        pairs = parse_qsl(parts.query)
+        params = dict(pairs)
+        require(len(params) == len(pairs), 'Duplicate inventory query parameters')
+        identity_field = 'assignee_id' if role == 'open_assigned' else 'reviewer_id' if role == 'open_reviews' else 'author_id'
+        expected = {'scope': 'all', identity_field: str(actor), 'state': 'all' if role == 'authored_updates' else 'opened'}
+        if 'updated_after' in params and role == 'authored_updates':
+            timestamp(params['updated_after'])
+            expected['updated_after'] = params['updated_after']
+        require(params == expected, 'Inventory endpoint identity or filter mismatch')
+        path = '/api/v4/merge_requests'
+        if inventory['scope'] == 'known_public_project':
+            require(project_path(inventory.get('repo')), 'Invalid inventory project')
+            path = '/api/v4/projects/' + quote(inventory['repo'], safe='') + '/merge_requests'
+        else:
+            key = host, actor, role
+            require(key not in global_roles, 'Duplicate global inventory role')
+            global_roles.add(key)
+        require(parts.path == path, 'Inventory endpoint scope mismatch')
+        counters = {}
+        def replay_inventory(url):
+            position = counters.get(url, 0)
+            counters[url] = position + 1
+            require(url in queries and position < len(queries[url]), 'Missing native inventory page')
+            return queries[url][position]
+        reader = PublicReader({'metadata': {'queries': [], 'failures': []}}, replay_inventory)
+        rows, status = reader.pages(endpoint, lambda row: valid_inventory_row(row, host, actor, role))
+        require(status == inventory['status'], 'Inventory coverage differs from native pages')
+        inventory_sources.extend(rows)
+        inventory_urls.update(row['web_url'] for row in rows)
+    for identity in meta['identities']:
+        require(all((identity['host'], identity['user_id'], role) in global_roles
+                    for role in ('authored_updates', 'open_authored', 'open_assigned', 'open_reviews')),
+                'Missing native public GitLab role inventory')
     seen = set()
     for item in capture['items']:
         host, repo, number = valid_mr(item['source'])
@@ -410,15 +471,19 @@ def validate_gitlab_api(data):
                         and query.get('source') == item['source']
                         and re.fullmatch(r'/api/v4/projects/[^/]+/merge_requests/' + str(number),
                                          urlsplit(query['requested_url']).path)), None)
-        require(receipt is not None, 'MR source absent from native detail query')
-        request_host = urlsplit(receipt['requested_url']).hostname
-        require(request_host == host, 'MR detail host mismatch')
-        original_repo = mr_route(item['requested_urls'][0])[1]
-        final_path = urlsplit(receipt['url']).path
-        require(final_path in {f'/api/v4/projects/{quote(original_repo, safe="")}/merge_requests/{number}',
-                               f'/api/v4/projects/{item["source"]["project_id"]}/merge_requests/{number}'},
-                'MR detail project route mismatch')
-        require(repo == original_repo or receipt.get('redirects'), 'MR rename lacks native redirect')
+        require(item.get('source_kind') in {'detail', 'inventory'}, 'Invalid native MR source kind')
+        if item['source_kind'] == 'detail':
+            require(receipt is not None, 'MR source absent from native detail query')
+            request_host = urlsplit(receipt['requested_url']).hostname
+            require(request_host == host, 'MR detail host mismatch')
+            original_repo = mr_route(item['requested_urls'][0])[1]
+            final_path = urlsplit(receipt['url']).path
+            require(final_path in {f'/api/v4/projects/{quote(original_repo, safe="")}/merge_requests/{number}',
+                                   f'/api/v4/projects/{item["source"]["project_id"]}/merge_requests/{number}'},
+                    'MR detail project route mismatch')
+            require(repo == original_repo or receipt.get('redirects'), 'MR rename lacks native redirect')
+        else:
+            require(item['source'] in inventory_sources, 'MR fallback source absent from native inventories')
         counters = {}
         def replay(url):
             position = counters.get(url, 0)
@@ -446,12 +511,7 @@ def validate_gitlab_api(data):
             endpoint = f'https://{identity["host"]}/api/v4/users/{identity["user_id"]}'
             require(any(query.get('status') == 200 and query.get('source') == identity['source']
                         for query in queries.get(endpoint, [])), 'GitLab identity absent from native public user')
-    for inventory in meta['inventories']:
-        require(isinstance(inventory, dict) and inventory.get('scope') in {'public_host', 'known_public_project'}
-                and inventory.get('role') in {'authored_updates', 'open_authored', 'open_assigned', 'open_reviews'}
-                and inventory.get('status') in {'ok', 'partial'}
-                and any(identity['host'] == inventory.get('host') and identity['user_id'] == inventory.get('user_id')
-                        for identity in meta['identities']), 'Unbound GitLab inventory identity')
+    require(inventory_urls <= seen, 'Readable native inventory MR was dropped')
     for lead in meta['identity_leads']:
         require(isinstance(lead, dict) and lead.get('status') == 'unavailable'
                 and integer(lead.get('user_id'), 1)
