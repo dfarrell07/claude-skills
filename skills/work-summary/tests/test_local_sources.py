@@ -152,6 +152,25 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertEqual(record['private_refs']['route'], 'retained_admin')
         self.assertIn(saved, local_sources.private_ref_pointers(entry).values())
 
+    def test_private_ref_failed_command_preserves_native_positive_stdout(self):
+        repo, tree, saved = self.private_fixture()
+        original = local_sources.git
+
+        def failed(path, *args, **kwargs):
+            raw = original(path, *args, **kwargs)
+            if str(path) == str(tree) and 'for-each-ref' in args:
+                raise subprocess.CalledProcessError(128, list(args), output=raw, stderr='fixture failure')
+            return raw
+
+        with patch.object(local_sources, 'git', side_effect=failed):
+            data = self.capture(repo)
+        entry = data['metadata']['repositories'][0]
+        proof = next(row for row in entry['worktrees'] if row['path'] == str(tree))['private_refs']
+        self.assertEqual(proof['status'], 'partial')
+        self.assertEqual(proof['returncode'], 128)
+        self.assertIn(saved, local_sources.private_ref_pointers(entry).values())
+        self.assertIn(saved, [row['hash'] for row in data['commits'][str(repo)]])
+
     def test_symlink_cannot_bypass_state_directory_exclusions(self):
         home = self.root / 'home'
         for name in ('.ssh', '.aws', '.docker'):
