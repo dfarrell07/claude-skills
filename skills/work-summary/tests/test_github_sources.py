@@ -692,6 +692,51 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(data['activity'], [])
         self.assertEqual(client.warnings, [])
 
+    def test_canonical_index_conflicting_head_keeps_both_native_observations_for_two_branches(self):
+        snapshot = gql(repo='canonical/repo', sha='c' * 40)
+        snapshot['body'] = 'Earlier native TEST-81 context'
+        indexed = graphql_item({**gql(repo='canonical/repo', sha='b' * 40),
+                                'body': 'Later native TEST-82 context'}, 'github.com')
+        def api(args):
+            if args[0] != 'graphql':
+                return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
+            def change(i, repo, data):
+                if repo == 'org/repo':
+                    data['c' + i] = {'id': 'native-repository', 'nameWithOwner': 'canonical/repo', 'object': None}
+                else:
+                    data.pop('c' + i)
+                    if i == '0':
+                        data['s' + i] = connection([snapshot])
+            return snapshot_data(args, change)
+        client, branches, data = self.associate(api, branches=[branch(), branch(sha='b' * 40)],
+                                               index={'canonical/repo': [indexed]})
+        self.assertEqual([br['pr_status'] for br in branches], ['matched', 'matched'])
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'any_author_sha_search')
+        self.assertEqual(branches[1]['prs'][0]['proof'], 'exact_head_or_merge_sha')
+        self.assertEqual(data['pr_index'][0]['head_sha'], 'c' * 40)
+        self.assertEqual(data['pr_index'][0]['body'], snapshot['body'])
+        self.assertEqual(data['pr_index_observations'], [indexed])
+        native = data['pr_index'] + data['pr_index_observations']
+        self.assertTrue(all(any(br['hash'] in (row['head_sha'], row['merge_sha']) for row in native)
+                            for br in branches if br['prs'][0]['proof'] == 'exact_head_or_merge_sha'))
+        self.assertEqual(client.warnings, [])
+
+    def test_conflicting_snapshot_observations_deduplicate_complete_identical_native_rows(self):
+        first = gql(repo='org/repo')
+        second = {**first, 'body': 'Later native TEST-83 context', 'headRefOid': 'c' * 40}
+        def api(args):
+            def change(i, repo, data):
+                data['s' + i] = connection([first])
+                data['c' + i]['object']['associatedPullRequests'] = connection([second])
+            return snapshot_data(args, change)
+        client, branches, data = self.associate(api, branches=[branch(), branch(sha='b' * 40)])
+        self.assertEqual(len(data['pr_index']), 1)
+        self.assertEqual(len(data['pr_index_observations']), 1)
+        self.assertEqual(data['pr_index'][0], graphql_item(first, 'github.com'))
+        self.assertEqual(data['pr_index_observations'][0], graphql_item(second, 'github.com'))
+        self.assertTrue(all(br['pr_status'] == 'matched' for br in branches))
+        self.assertEqual(client.warnings, [])
+
     def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
         first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',
                  'created_at': '2026-10-12T23:32:33Z', 'updated_at': '2026-10-12T23:32:33Z',

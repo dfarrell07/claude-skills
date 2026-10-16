@@ -507,7 +507,7 @@ class Github:
         for repo, sha in tuples:
             coverage_key = coverage_keys[(repo, sha)]
             self.coverage.setdefault(coverage_key, {'status': 'ok', 'pages': 0, 'count': 0})
-            states[(repo, sha)] = {'matches': {}, 'search': {'cursor': None, 'cursors': set(), 'seen': set(),
+            states[(repo, sha)] = {'matches': {}, 'observations': [], 'search': {'cursor': None, 'cursors': set(), 'seen': set(),
                                                           'total': None, 'pages': 0, 'done': False},
                                   'commit': {'cursor': None, 'cursors': set(), 'seen': set(),
                                              'pages': 0, 'done': global_search, 'failed': False}}
@@ -603,7 +603,9 @@ class Github:
                             require(item['url'] not in state['seen'], 'Duplicate snapshot PR')
                             state['seen'].add(item['url'])
                             proof = ('global_any_author_sha_search' if global_search else 'any_author_sha_search') if method == 'search' else 'commit_association'
-                            states[key]['matches'].setdefault(item['url'], (item, proof))
+                            previous = states[key]['matches'].setdefault(item['url'], (item, proof))[0]
+                            if item != previous and item not in states[key]['observations']:
+                                states[key]['observations'].append(item)
                         except ERRORS:
                             self.problem(coverage_key, method + ' contained an invalid or duplicate PR')
                     if method == 'search':
@@ -643,7 +645,16 @@ class Github:
         """Match current native snapshots; no_match does not exclude historical PR use."""
         indices, pending = {}, {}
         by_path = {entry['path']: entry for entry in repositories}
-        all_indexed = {}
+        all_indexed, observations, seen_observations = {}, [], set()
+
+        def retain_index(item):
+            original = all_indexed.setdefault(item['url'], item)
+            if item != original:
+                fingerprint = json.dumps(item, sort_keys=True)
+                if fingerprint not in seen_observations:
+                    seen_observations.add(fingerprint)
+                    observations.append(item)
+
         for branch in branches:
             if branch['object_type'] != 'commit':
                 continue
@@ -664,7 +675,7 @@ class Github:
                 if remote not in indices:
                     indices[remote] = self.authored_index(remote)
                     for item in indices[remote]:
-                        all_indexed.setdefault(item['url'], item)
+                        retain_index(item)
                 exact = False
                 for item in indices[remote]:
                     if branch['hash'] in (item['head_sha'], item['merge_sha']):
@@ -695,15 +706,20 @@ class Github:
                 if states[key]['commit'].get('failed'):
                     global_state = self._global_snapshots[key[1]]
                     for url, value in global_state['matches'].items():
-                        states[key]['matches'].setdefault(url, value)
+                        previous = states[key]['matches'].setdefault(url, value)[0]
+                        if value[0] != previous:
+                            states[key]['observations'].append(value[0])
+                    states[key]['observations'].extend(global_state['observations'])
                     self.coverage['snapshot:' + ':'.join(key)]['global_search'] = dict(
                         self.coverage['global_snapshot:' + key[1]])
             for key in batch:
                 repo, sha = key
                 info = self.coverage['snapshot:' + repo + ':' + sha]
                 matches = states[key]['matches']
-                for url, (item, proof) in matches.items():
-                    all_indexed.setdefault(url, item)
+                for item, proof in matches.values():
+                    retain_index(item)
+                for item in states[key]['observations']:
+                    retain_index(item)
                 for branch in pending[key]:
                     branch['association_lookups'].append({'repo': repo, **info})
                     for item, proof in matches.values():
@@ -721,7 +737,7 @@ class Github:
             if canonical not in indices:
                 indices[canonical] = self.authored_index(canonical)
                 for item in indices[canonical]:
-                    all_indexed.setdefault(item['url'], item)
+                    retain_index(item)
             for branch in branches:
                 if not any(method == 'authored_pr_index:' + requested
                            for method in branch.get('association_methods', [])):
@@ -752,6 +768,7 @@ class Github:
                 branch['prs'] = list({item['url']: item for item in branch['prs']}.values())
                 branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
         github['pr_index'] = list(all_indexed.values())
+        github['pr_index_observations'] = observations
         for proof in self._repository_aliases.values():
             if proof is not None and proof not in github.setdefault('repository_aliases', []):
                 github['repository_aliases'].append(proof)
