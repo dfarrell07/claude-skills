@@ -230,7 +230,7 @@ than copying its exact topics, link count, dates or unfinished placeholders.
 - Investigated a compatibility regression and prepared a local fix.
 ```
 
-Never fabricate a counterpart. A native PR body may supply an explicit Jira
+Never fabricate a counterpart. A native PR body or comment may supply an explicit Jira
 URL even when Jira authentication is unavailable; keep that as referenced
 context without claiming verified Jira status, title or ownership. Likewise,
 Jira can supply a PR URL when GitHub is unavailable. Selected native commit
