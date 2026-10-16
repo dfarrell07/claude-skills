@@ -284,6 +284,32 @@ def same_github_api_repo_url(left, right):
             and first.query == second.query and first.fragment == second.fragment)
 
 
+def github_history_coverage_index(coverage):
+    """Index exact history operation scopes without erasing native key variants."""
+    result = {}
+    for key, info in coverage.items():
+        operation, _, url = key.partition(':')
+        if operation not in {'head_history', 'rest_head_history', 'html_head_history'}:
+            continue
+        if not same_github_item_url(url, url):
+            continue
+        parts = urlsplit(url)
+        if parts.query or parts.fragment:
+            continue
+        path = parts.path.split('/')
+        identity = (parts.netloc.casefold(), path[1].casefold(), path[2].casefold(), *path[3:])
+        result.setdefault(identity, []).append(info)
+    return result
+
+
+def github_history_complete(index, url):
+    """Every observed history read for this native item must be complete."""
+    parts = urlsplit(url)
+    path = parts.path.split('/')
+    identity = (parts.netloc.casefold(), path[1].casefold(), path[2].casefold(), *path[3:])
+    return all(info.get('status') == 'ok' for info in index.get(identity, []))
+
+
 def validate_review_context(source, item, host='github.com'):
     """A review's submitted time is native context, not a text-revision timestamp."""
     require(isinstance(source, dict) and is_pr_url(item['url']) and integer(source.get('id'), 1),
@@ -610,6 +636,7 @@ def validate_github(data, evidence, start, end):
                     and key.removeprefix('unrouted:') in unrouted, 'Invalid unsupported GitHub repository scope')
         if info['status'] == 'partial':
             require(metadata.get('github_status') == 'partial' and metadata.get('warnings'), 'Missing discovery gap')
+    history_coverage = github_history_coverage_index(metadata.get('github_discovery', {}))
     for branch in data.get('branches', []):
         prs = branch.get('prs', [])
         require(isinstance(prs, list), 'Invalid branch PR associations')
@@ -666,8 +693,7 @@ def validate_github(data, evidence, start, end):
                                 for field in ('repo', 'number', 'url', 'state'))
                                 for row in indexed_observations.get(candidate.get('url', '').casefold(), [])),
                         'Related-only candidate lacks a captured native matching branch name')
-                require(all(metadata.get('github_discovery', {}).get(prefix + candidate['url'], {}).get('status', 'ok') == 'ok'
-                            for prefix in ('head_history:', 'rest_head_history:', 'html_head_history:')),
+                require(github_history_complete(history_coverage, candidate['url']),
                         'Related-only candidate has an incomplete historical read')
     # Indexed snapshots remain citations, but use the primary observed state when available.
     for url, item in indexed.items():

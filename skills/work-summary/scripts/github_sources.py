@@ -9,7 +9,9 @@ import subprocess
 from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
-from extended_evidence import comment_history_state, comment_node_bound, same_github_api_repo_url, same_github_item_url, validate_review_context
+from extended_evidence import (comment_history_state, comment_node_bound, github_history_complete,
+                               github_history_coverage_index, same_github_api_repo_url,
+                               same_github_item_url, validate_review_context)
 from github_timeline import collect_timeline
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
@@ -25,7 +27,7 @@ PR_FIELDS = '''url title body number state createdAt updatedAt closedAt mergedAt
 repository { nameWithOwner } headRepository { nameWithOwner } mergeCommit { oid } baseRefName'''
 
 
-def branch_association_status(branch, coverage=None):
+def branch_association_status(branch, coverage=None, *, history_coverage=None):
     """Separate unsupported repository scope from an incomplete native read."""
     if branch.get('object_type') != 'commit':
         return 'not_applicable'
@@ -36,9 +38,10 @@ def branch_association_status(branch, coverage=None):
         return 'partial'
     if branch.get('association_scope') == 'github_global_without_repository':
         return 'unsupported' if any(info.get('scope') == 'github_global' for info in lookups) else 'partial'
-    if coverage and any(coverage.get(prefix + item['url'], {}).get('status') == 'partial'
-                        for item in branch.get('related_prs', [])
-                        for prefix in ('head_history:', 'rest_head_history:', 'html_head_history:')):
+    if history_coverage is None:
+        history_coverage = github_history_coverage_index(coverage or {})
+    if any(not github_history_complete(history_coverage, item['url'])
+           for item in branch.get('related_prs', [])):
         return 'partial'
     return 'related_only' if branch.get('related_prs') else 'no_match'
 
@@ -801,9 +804,10 @@ class Github:
         for offset in range(0, len(items), 15):
             self._head_history_batch(github, items[offset:offset + 15])
         self.associate_head_events(branches, github)
+        history_coverage = github_history_coverage_index(self.coverage)
         for branch in branches:
             if 'association_lookups' in branch:
-                branch['pr_status'] = branch_association_status(branch, self.coverage)
+                branch['pr_status'] = branch_association_status(branch, history_coverage=history_coverage)
 
     def _inspect_activity(self, github, items):
         seen = self._activity_seen

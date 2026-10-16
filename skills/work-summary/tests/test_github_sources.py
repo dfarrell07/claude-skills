@@ -279,6 +279,65 @@ class GithubSourcesTest(unittest.TestCase):
             'https://ghe.example.test/api/v3/repos/org/wrong/issues/events/42',
             'https://ghe.example.test/api/v3/repos/ORG/REPO/issues/events/42'))
 
+    def test_related_case_variant_keeps_failed_history_partial_and_positive_head_matched(self):
+        from extended_evidence import validate_github
+        first = {**gql(repo='ORG/REPO', sha='b' * 40, head='unrelated'), 'body': 'Original'}
+        later = {**gql(repo='org/repo', sha='c' * 40, head='feature'), 'body': 'Later'}
+        def api(args):
+            if any(arg.startswith('q=is:pr repo:') for arg in args):
+                after = 'after=next' in args
+                return {'data': {'search': connection([later] if after else [first], total=2,
+                    more=not after, cursor=None if after else 'next')}}
+            if 'timelineItems' in query_text(args):
+                raise subprocess.CalledProcessError(1, 'native-api', stderr='HTTP 403')
+            return snapshot_data(args)
+        client = self.client(api)
+        branches = [branch(refs=['refs/heads/feature'])]
+        github = {'prs': [], 'issues': [], 'activity': []}
+        client.associate_branches(branches, [repository()], github)
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'ok')
+        self.assertEqual(branches[0]['related_prs'][0]['url'], later['url'])
+        native_key = 'head_history:' + first['url']
+        self.assertEqual(client.coverage[native_key]['status'], 'partial')
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        data = {'metadata': {'github_host': 'github.com', 'github_user': 'me',
+                'github_status': 'partial', 'warnings': client.warnings,
+                'github_discovery': client.coverage, 'repositories': [repository()]},
+                'github': github, 'branches': branches}
+        validate_github(data, {}, START, END)
+        forged = copy.deepcopy(data)
+        forged['branches'][0]['pr_status'] = 'related_only'
+        with self.assertRaisesRegex(ValueError, 'incomplete historical read'):
+            validate_github(forged, {}, START, END)
+        # A real exact-head proof stays positive despite a separate history gap.
+        positive = copy.deepcopy(data)
+        positive['branches'][0].update(hash='b' * 40, pr_status='matched', prs=[{
+            'repo': first['repository']['nameWithOwner'], 'number': first['number'],
+            'url': first['url'], 'state': 'open', 'proof': 'exact_head_or_merge_sha'}])
+        self.assertEqual(branch_association_status(positive['branches'][0], client.coverage), 'matched')
+        validate_github(positive, {}, START, END)
+
+    def test_history_coverage_case_variants_never_erase_failed_scope_or_match_other_routes(self):
+        candidate = {'url': 'https://github.com/org/repo/pull/1'}
+        related = {**branch(), 'related_prs': [candidate],
+                   'association_lookups': [{'status': 'ok'}]}
+        for operation in ('head_history', 'rest_head_history', 'html_head_history'):
+            with self.subTest(operation=operation):
+                coverage = {operation + ':https://github.com/ORG/REPO/pull/1': {'status': 'partial'},
+                            operation + ':' + candidate['url']: {'status': 'ok'}}
+                before = copy.deepcopy(coverage)
+                self.assertEqual(branch_association_status(related, coverage), 'partial')
+                self.assertEqual(coverage, before)
+                for unrelated in ('https://github.com/org/repo/PULL/1',
+                                  'https://github.com/org/repo/issues/1',
+                                  'https://github.com/org/repo/pull/2',
+                                  'https://foreign.example.test/org/repo/pull/1',
+                                  candidate['url'] + '?page=1', candidate['url'] + '#event-42'):
+                    self.assertEqual(branch_association_status(related,
+                        {operation + ':' + unrelated: {'status': 'partial'}}), 'related_only')
+        self.assertEqual(branch_association_status(related,
+            {'unrelated:head_history:' + candidate['url']: {'status': 'partial'}}), 'related_only')
+
     def test_alias_metadata_case_drift_keeps_ids_and_same_row_html_name_binding(self):
         from extended_evidence import repository_aliases
         from work_links import referenced_keys
