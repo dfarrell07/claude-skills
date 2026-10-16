@@ -398,6 +398,20 @@ def validate_github(data, evidence, start, end):
                     'Invalid GitHub context roles')
             timestamp(item['observed_at'])
             evidence[item['url']] = item
+    context_observations = github.get('context_observations', [])
+    require(isinstance(context_observations, list), 'Invalid native context observations')
+    observed_payloads = set()
+    for item in context_observations:
+        require(isinstance(item, dict) and item.get('url') in evidence,
+                'Native context observation absent from selected evidence')
+        original = evidence[item['url']]
+        kind = 'prs' if is_pr_url(original['url']) else 'issues'
+        valid_item(item, kind, host)
+        require(item['repo'] == original['repo'] and item['number'] == original['number'],
+                'Native context observation identity disagrees')
+        fingerprint = json.dumps(item, sort_keys=True)
+        require(fingerprint not in observed_payloads, 'Duplicate native context observation')
+        observed_payloads.add(fingerprint)
     indexed = {}
     for item in github.get('pr_index', []):
         valid_item(item, 'prs', host)

@@ -219,8 +219,14 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                     github['context_' + kind].append(item)
                     known[item['url']] = item
                     retained_context.append(item)
-                if 'initial_dated_search_context' not in known[item['url']].setdefault('roles', []):
-                    known[item['url']]['roles'].append('initial_dated_search_context')
+                original = known[item['url']]
+                if any(original.get(field) != value for field, value in item.items()
+                       if field not in {'roles', 'observed_at'}):
+                    # Later role discovery must not replace an earlier native
+                    # body/title observation or sever its reference frontier.
+                    github.setdefault('context_observations', []).append(dict(item))
+                if 'initial_dated_search_context' not in original.setdefault('roles', []):
+                    original['roles'].append('initial_dated_search_context')
         if retained_context:
             ledger._inspect_activity(github, retained_context)
         ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
@@ -412,6 +418,9 @@ def validate(data, source=None):
                     and isinstance(lead.get("hash"), str) and HASH.fullmatch(lead["hash"])
                     and isinstance(lead.get("author_email"), str) and lead["author_email"], "Invalid authorship lead")
     if "github_searches" in metadata:
+        retained_context_by_url = {}
+        for item in github_items(github, include_index=False):
+            retained_context_by_url.setdefault(item['url'], []).append(item)
         searches = metadata["github_searches"]
         require(isinstance(searches, dict), "Invalid GitHub search coverage")
         if metadata.get("github_status") != "unavailable":
@@ -438,6 +447,9 @@ def validate(data, source=None):
                             and item['url'] not in {row['url'] for row in github[kind]}
                             and not start <= timestamp(item['updated_at']) <= end,
                             'Invalid native-query context item')
+                    retained = retained_context_by_url.get(item['url'], [])
+                    require(any(all(row.get(field) == value for field, value in item.items())
+                                for row in retained), 'Native-query context payload was not retained')
                     context_urls.add(item['url'])
             if info["status"] == "ok":
                 require(total == len(github[kind]) + outside and not info["incomplete_results"],

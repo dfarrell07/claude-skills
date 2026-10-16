@@ -144,7 +144,7 @@ def native_review_links(issue):
 
 
 def github_items(github, include_index=True):
-    buckets = ('prs', 'issues', 'context_prs', 'context_issues') + (
+    buckets = ('prs', 'issues', 'context_prs', 'context_issues', 'context_observations') + (
         ('pr_index', 'pr_index_observations') if include_index else ())
     return [item for bucket in buckets for item in github.get(bucket, [])]
 
