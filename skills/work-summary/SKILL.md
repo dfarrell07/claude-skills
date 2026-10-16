@@ -111,6 +111,10 @@ refs may supply keys for selected PRs. Follow newly captured explicit Jira/PR
 references until no new keys or URLs remain; attempt each failed reference once
 and preserve its coverage gap. Never search unrelated projects merely to enlarge
 the report.
+Historical repository links may resolve to a renamed or transferred repository.
+Accept that relation only when independent native reads of the requested and
+canonical repositories confirm the same repository ID. Preserve the original
+link as provenance beside the canonical PR relation.
 
 When listing work, show **both Jira and PR links** when a verified relation exists.
 Use the same paired links in themes, ongoing work, actor events, and detailed lists.

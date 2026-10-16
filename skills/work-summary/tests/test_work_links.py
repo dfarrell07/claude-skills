@@ -62,6 +62,47 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(issue['pr_links'][0]['source_url'], original_url)
         self.assertEqual(pr['jira_links'][0]['key'], issue['key'])
 
+    def test_native_repository_alias_pairs_historical_jira_url_without_rewriting_proof(self):
+        data = self.capture()
+        pr,issue = data['github']['prs'][0],data['jira']['issues'][0]
+        pr['title']='No ticket key in this PR'
+        original='https://github.com/previous/repo/pull/42'
+        issue['detail']['fields']['description']={'marks':[{'attrs':{'href':original}}]}
+        issue['pr_links']=[{'url':original,'proof':'description','evidence_url':issue['url']}]
+        record={'host':'github.com','requested_repo':'previous/repo','canonical_repo':'org/repo',
+                'requested':{'path':'repos/previous/repo','id':123,'full_name':'org/repo',
+                             'html_url':'https://github.com/org/repo'},
+                'canonical':{'path':'repos/org/repo','id':123,'full_name':'org/repo',
+                             'html_url':'https://github.com/org/repo'}}
+        # Different repository names alone must never establish identity.
+        associate_work(data['jira'],data['github'])
+        self.assertEqual(pr['jira_links'],[])
+        data['github']['repository_aliases']=[record]
+        associate_work(data['jira'],data['github'])
+        validate_links(data)
+        relation=issue['pr_links'][0]
+        self.assertEqual(relation['url'],pr['url'])
+        self.assertEqual(relation['source_url'],original)
+        self.assertEqual(pr['jira_links'][0]['key'],issue['key'])
+        associate_work(data['jira'],data['github'])
+        validate_links(data)
+        self.assertEqual(relation['source_url'],original)
+        for tamper in ('missing-alias','wrong-number','wrong-native-source','invalid-native-suffix','different-id'):
+            with self.subTest(tamper=tamper):
+                broken=copy.deepcopy(data)
+                if tamper=='missing-alias':
+                    broken['github'].pop('repository_aliases')
+                if tamper=='wrong-number':
+                    broken['jira']['issues'][0]['pr_links'][0]['source_url']=original.replace('/42','/43')
+                if tamper=='wrong-native-source':
+                    broken['jira']['issues'][0]['detail']['fields']['description']='Unrelated content'
+                if tamper=='invalid-native-suffix':
+                    broken['jira']['issues'][0]['detail']['fields']['description']=original+'oops'
+                if tamper=='different-id':
+                    broken['github']['repository_aliases'][0]['canonical']['id']=124
+                with self.assertRaises(ValueError):
+                    validate_links(broken)
+
     def test_native_gitlab_mr_references_keep_href_comment_and_private_proof(self):
         data = self.capture()
         issue = data['jira']['issues'][0]

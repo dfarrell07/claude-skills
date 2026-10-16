@@ -330,6 +330,75 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(item['roles'], ['jira_link'])
         self.assertEqual(data['activity'], [{'preserved': True}])
 
+    def test_transferred_repo_requires_native_equal_ids_and_caches_proof(self):
+        metadata = {'id': 12345, 'full_name': 'new/project', 'html_url': 'https://github.com/new/project'}
+        def api(args):
+            endpoint = args[2]
+            if endpoint in ('repos/old/project', 'repos/new/project'):
+                return copy.deepcopy(metadata)
+            if endpoint.startswith('repos/old/project/issues/'):
+                return rest(int(endpoint.rsplit('/', 1)[1]), repo='new/project')
+            return []
+        client = self.client(api)
+        data = {'prs': [], 'issues': []}
+        seeds = [f'https://github.com/old/project/pull/{number}' for number in (1, 2)]
+        client.add_linked_prs(data, seeds)
+        self.assertEqual([item['url'] for item in data['context_prs']],
+                         ['https://github.com/new/project/pull/1', 'https://github.com/new/project/pull/2'])
+        self.assertEqual([item['jira_seed_urls'] for item in data['context_prs']], [[url] for url in seeds])
+        self.assertEqual(data['repository_aliases'], [{
+            'host': 'github.com', 'requested_repo': 'old/project', 'canonical_repo': 'new/project',
+            'requested': {'path': 'repos/old/project', **metadata},
+            'canonical': {'path': 'repos/new/project', **metadata}}])
+        self.assertEqual(sum(args[2] in ('repos/old/project', 'repos/new/project') for args in client.calls), 2)
+        before = len(client.calls)
+        client.add_linked_prs(data, ['https://github.com/new/project/pull/1', *seeds])
+        self.assertEqual(len(client.calls), before)
+        self.assertEqual(client.warnings, [])
+
+    def test_transferred_repo_keeps_existing_native_context_and_events(self):
+        metadata = {'id': 12345, 'full_name': 'new/project', 'html_url': 'https://github.com/new/project'}
+        item = rest_item(rest(repo='new/project'), 'prs', 'github.com')
+        item['body'] = 'Preserved earlier native observation'
+        event = {'preserved': True}
+        def api(args):
+            if args[2] in ('repos/old/project', 'repos/new/project'):
+                return metadata
+            if args[2] == 'repos/old/project/issues/1':
+                return rest(repo='new/project')
+            self.fail('Existing canonical context actor endpoints must not be reread')
+        client = self.client(api)
+        data = {'prs': [item], 'issues': [], 'activity': [event]}
+        seed = 'https://github.com/old/project/pull/1'
+        self.assertEqual(client.add_linked_prs(data, [seed]), [])
+        self.assertEqual(data['context_prs'], [])
+        self.assertEqual(data['activity'], [event])
+        self.assertEqual(item['body'], 'Preserved earlier native observation')
+        self.assertEqual(item['jira_seed_urls'], [seed])
+        self.assertEqual(client.warnings, [])
+
+    def test_unproven_repository_redirect_remains_a_gap_and_failure_is_cached(self):
+        metadata = {'id': 12345, 'full_name': 'new/project', 'html_url': 'https://github.com/new/project'}
+        for field, value in [('id', 54321), ('id', True), ('full_name', 'unrelated/project'),
+                             ('full_name', 'NEW/Project'), ('html_url', 'https://evil.test/new/project')]:
+            with self.subTest(field=field, value=value):
+                def api(args):
+                    endpoint = args[2]
+                    if endpoint == 'repos/old/project':
+                        return metadata
+                    if endpoint == 'repos/new/project':
+                        return {**metadata, field: value}
+                    if endpoint.startswith('repos/old/project/issues/'):
+                        return rest(int(endpoint.rsplit('/', 1)[1]), repo='new/project')
+                    return []
+                client = self.client(api)
+                data = {'prs': [], 'issues': []}
+                client.add_linked_prs(data, [f'https://github.com/old/project/pull/{number}' for number in (1, 2)])
+                self.assertEqual(data['context_prs'], [])
+                self.assertNotIn('repository_aliases', data)
+                self.assertEqual(sum(args[2] in ('repos/old/project', 'repos/new/project') for args in client.calls), 2)
+                self.assertEqual(len(client.warnings), 2)
+
     def test_case_equivalence_never_accepts_wrong_repository_number_host_or_kind(self):
         wrong_host = rest()
         wrong_host['html_url'] = 'https://evil.test/org/repo/pull/1'
@@ -344,7 +413,10 @@ class GithubSourcesTest(unittest.TestCase):
                 self.assertEqual(data['context_prs'], [])
                 self.assertEqual(data['activity'], [])
                 self.assertEqual(client.coverage['jira_link:ORG/Repo#1']['status'], 'partial')
-                self.assertEqual(len(client.calls), 1)
+                expected = ['repos/ORG/Repo/issues/1']
+                if row['html_url'] == 'https://github.com/org/other/pull/1':
+                    expected.append('repos/ORG/Repo')
+                self.assertEqual([args[2] for args in client.calls], expected)
 
     def test_existing_jira_seed_is_not_refetched_or_duplicated(self):
         client = self.client(lambda args: {'total_count': 0, 'incomplete_results': False, 'items': []}

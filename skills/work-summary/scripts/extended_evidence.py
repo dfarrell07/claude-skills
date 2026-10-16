@@ -6,6 +6,41 @@ from urllib.parse import quote, urlsplit
 from evidence import HASH, HOST, REPO, integer, require, timestamp, valid_item
 
 
+def repository_aliases(github, host):
+    """Bind renamed repository routes only through two native repository IDs."""
+    records = github.get('repository_aliases', [])
+    require(isinstance(records, list), 'Invalid GitHub repository aliases')
+    aliases, identities, route_ids = {}, {}, {}
+    for record in records:
+        require(isinstance(record, dict) and record.get('host') == host,
+                'Invalid GitHub repository alias host')
+        requested, canonical = record.get('requested_repo'), record.get('canonical_repo')
+        for repo in (requested, canonical):
+            require(isinstance(repo, str) and REPO.fullmatch(repo)
+                    and all(part not in {'.', '..'} for part in repo.split('/')),
+                    'Invalid GitHub repository alias route')
+        proofs = []
+        for field, repo in (('requested', requested), ('canonical', canonical)):
+            proof = record.get(field)
+            require(isinstance(proof, dict) and proof.get('path') == 'repos/' + repo
+                    and integer(proof.get('id'), 1) and proof.get('full_name') == canonical
+                    and proof.get('html_url') == f'https://{host}/{canonical}',
+                    'Invalid native GitHub repository alias proof')
+            proofs.append(proof)
+        require(proofs[0]['id'] == proofs[1]['id'], 'GitHub repository alias ID mismatch')
+        for repo in (requested, canonical):
+            route = host.casefold(), repo.casefold()
+            require(route not in route_ids or route_ids[route] == proofs[0]['id'],
+                    'Conflicting GitHub repository route IDs')
+            route_ids[route] = proofs[0]['id']
+        key = (host.casefold(), requested.casefold())
+        identity = canonical.casefold(), proofs[0]['id']
+        require(key not in identities or identities[key] == identity, 'Conflicting GitHub repository alias')
+        identities[key] = identity
+        aliases[key] = canonical.casefold()
+    return aliases
+
+
 def validate_activity_identity(event, item, host):
     """Native cross-reference rows have source identity, not an event ID."""
     if event.get('id') is not None:
@@ -34,6 +69,7 @@ def validate_activity_identity(event, item, host):
 def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
+    repository_aliases(github, host)
     for kind in ('prs', 'issues'):
         for item in github.get('context_' + kind, []):
             valid_item(item, kind, host)

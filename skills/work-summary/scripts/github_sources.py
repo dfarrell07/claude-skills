@@ -82,6 +82,8 @@ class Github:
         self._linked_attempts = set()
         self._activity_items = set()
         self._activity_seen = set()
+        self._repository_metadata = {}
+        self._repository_aliases = {}
 
     def graphql(self, *args):
         # gh exits nonzero for GraphQL errors even when stdout retains successful
@@ -236,13 +238,20 @@ class Github:
                 if original is None:
                     row = self.api('--method', 'GET', f'repos/{repo}/issues/{number}')
                     item = rest_item(row, 'prs', self.host)
-                    require(item['repo'].casefold() == repo.casefold() and item['number'] == number,
-                            'Linked PR response identity disagrees')
-                    item['roles'], item['observed_at'] = [], iso(datetime.now(UTC))
-                    github['context_prs'].append(item)
-                    all_items[item['url']] = item
-                    by_identity[identity] = original = item
-                    new_items.append(item)
+                    require(item['number'] == number, 'Linked PR response number disagrees')
+                    if item['repo'].casefold() != repo.casefold():
+                        proof = self._verify_repository_alias(repo, item['repo'])
+                        if proof not in github.setdefault('repository_aliases', []):
+                            github['repository_aliases'].append(proof)
+                    canonical_identity = (self.host.casefold(), item['repo'].casefold(), number)
+                    original = by_identity.get(canonical_identity)
+                    if original is None:
+                        item['roles'], item['observed_at'] = [], iso(datetime.now(UTC))
+                        github['context_prs'].append(item)
+                        all_items[item['url']] = item
+                        by_identity[canonical_identity] = original = item
+                        new_items.append(item)
+                    by_identity[identity] = original
                     self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1,
                                           'requested_url': url, 'resolved_url': item['url']}
                 if url not in original.setdefault('jira_seed_urls', []):
@@ -253,6 +262,34 @@ class Github:
                 self.problem(key, 'linked PR unavailable or invalid; omitted link is a coverage gap')
         self._inspect_activity(github, new_items)
         return new_items
+
+    def _verify_repository_alias(self, requested, canonical):
+        """Prove a repository redirect with independently fetched native IDs."""
+        key = (requested.casefold(), canonical.casefold())
+        if key in self._repository_aliases:
+            proof = self._repository_aliases[key]
+            require(proof is not None, 'Repository alias could not be verified')
+            return proof
+        # Failed identity reads remain unknown for this observation; repeated
+        # old links must not cause two extra repository reads each time.
+        self._repository_aliases[key] = None
+        records = []
+        for repo in (requested, canonical):
+            cache_key = repo.casefold()
+            if cache_key not in self._repository_metadata:
+                row = self.api('--method', 'GET', 'repos/' + repo)
+                require(isinstance(row, dict), 'Invalid native repository metadata')
+                self._repository_metadata[cache_key] = {field: row[field] for field in ('id', 'full_name', 'html_url')}
+            native = self._repository_metadata[cache_key]
+            require(integer(native['id'], 1) and native['full_name'] == canonical
+                    and native['html_url'] == f'https://{self.host}/{canonical}',
+                    'Repository redirect identity disagrees')
+            records.append({'path': 'repos/' + repo, **native})
+        require(records[0]['id'] == records[1]['id'], 'Repository redirect IDs disagree')
+        proof = {'host': self.host, 'requested_repo': requested, 'canonical_repo': canonical,
+                 'requested': records[0], 'canonical': records[1]}
+        self._repository_aliases[key] = proof
+        return proof
 
     def _inspect_activity(self, github, items):
         seen = self._activity_seen
