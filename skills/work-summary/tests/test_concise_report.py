@@ -58,6 +58,8 @@ class ConciseReportTest(unittest.TestCase):
         source = self.capture()
         issue = self.add_jira(source)
         enriched = self.enrich(source,('Most important result','Less important follow-up'))
+        for theme in enriched['analysis']['themes']:
+            theme['links'] = [issue['url'], source['github']['prs'][0]['url']]
         original = copy.deepcopy(enriched)
         report = ws.render(enriched,source)
         self.assertEqual(report,
@@ -85,7 +87,9 @@ class ConciseReportTest(unittest.TestCase):
         pr = source['github']['prs'][0]
         pr['body'] = 'Context https://other-jira.example/browse/CONTEXT-9?focusedCommentId=17#note'
         source['jira'] = {'metadata':{'status':'unavailable','site':''},'issues':[],'activity':[]}
-        report = ws.render(source)
+        enriched = self.enrich(source)
+        enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
+        report = ws.render(enriched, source)
         self.assertIn('  - https://other-jira.example/browse/CONTEXT-9',report)
         self.assertIn('Jira state is unverified',report)
         self.assertIn('Jira unavailable',report)
@@ -116,7 +120,9 @@ class ConciseReportTest(unittest.TestCase):
         source = self.capture()
         issue = self.add_jira(source)
         source['github']['prs'][0]['body']='https://foreign.example/browse/TEST-123'
-        report = ws.render(source)
+        enriched = self.enrich(source)
+        enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
+        report = ws.render(enriched, source)
         self.assertIn('  - '+issue['url'],report)
         self.assertIn('  - https://foreign.example/browse/TEST-123',report)
         self.assertIn('Jira state is unverified',report)
@@ -128,7 +134,9 @@ class ConciseReportTest(unittest.TestCase):
         original='https://JIRA.EXAMPLE.TEST/browse/test-123'
         pr=source['github']['prs'][0]
         pr['body']=original
-        report=ws.render(source)
+        enriched=self.enrich(source)
+        enriched['analysis']['themes'][0]['links']=ws.work_urls(source,enriched['analysis']['themes'][0])
+        report=ws.render(enriched,source)
         self.assertEqual(report.count('  - '+issue['url']),1)
         self.assertNotIn('state is unverified',report)
         proof=ws.contextual_jira_links(pr)[0]
@@ -168,7 +176,8 @@ class ConciseReportTest(unittest.TestCase):
             'url':pr['url']+'#discussion_r1','id':1,'body':'Native review'}]
         report=ws.render(source)
         self.assertTrue(report.startswith('- Discussed: '))
-        self.assertIn(issue['url'],report)
+        self.assertNotIn(issue['url'],report)
+        self.assertIn(issue['url'],ws.work_urls(source,ws.fallback_topics(source)[0]))
         self.assertNotIn('Merged:',report)
 
     def test_curated_ongoing_work_is_kept_without_duplicate_topic(self):
@@ -225,7 +234,10 @@ class ConciseReportTest(unittest.TestCase):
         entry['message']='Fix https://JIRA.EXAMPLE/browse/test-123 and https://github.com/org/repo/pull/8#note'
         original=copy.deepcopy(source)
         topic=ws.fallback_topics(source)[0]
-        report=ws.render(source)
+        enriched=copy.deepcopy(source)
+        topic.update(name='Local work',links=ws.work_urls(source,topic))
+        enriched['analysis']={'themes':[topic],'in_progress':[]}
+        report=ws.render(enriched,source)
         self.assertIn('  - https://jira.example/browse/TEST-123',report)
         self.assertIn('  - https://github.com/org/repo/pull/8',report)
         self.assertIn('Jira state is unverified',report)
@@ -275,7 +287,9 @@ class ConciseReportTest(unittest.TestCase):
         url='https://git.example.test/group/project~~not~~/-/merge_requests/17'
         issue['detail']['fields']['description'] += '\nContext '+url
         associate_work(source['jira'],source['github'])
-        report=ws.render(source)
+        enriched=self.enrich(source)
+        enriched['analysis']['themes'][0]['links']=[url]
+        report=ws.render(enriched,source)
         self.assertIn('  - <'+url+'>',report)
         self.assertNotIn('MR merged',report)
         self.assertEqual(issue['review_links'][0]['proof'],'description')
@@ -299,6 +313,179 @@ class ConciseReportTest(unittest.TestCase):
         self.assertTrue(report.startswith('- Merged: Change 20'))
         self.assertEqual(ws.render(source),report)
         self.assertEqual(source,original)
+
+    def selective_capture(self):
+        source=self.capture()
+        template=source['github']['prs'][0]
+        source['github']['prs'] += [{**template,'number':number,
+            'url':f'https://github.com/org/repo/pull/{number}', 'title':f'Peripheral change {number}'}
+            for number in (8,9)]
+        issue=self.add_jira(source)
+        mr='https://git.example.test/group/project/-/merge_requests/17'
+        issue['detail']['fields']['description']=' '.join(
+            [item['url'] for item in source['github']['prs']]+[mr])
+        issue['pr_links']=[{'url':item['url'],'proof':'description',
+            'evidence_url':issue['url'],'sensitive':False} for item in source['github']['prs']]
+        associate_work(source['jira'],source['github'])
+        return source,issue,mr
+
+    def test_explicit_links_select_core_work_without_losing_full_audit(self):
+        source,issue,mr=self.selective_capture()
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        theme['jira']=[{key:issue[key] for key in ('key','url')}]
+        theme['links']=[issue['url'],source['github']['prs'][0]['url']]
+        original=copy.deepcopy(enriched)
+        candidates=ws.work_urls(source,theme)
+        self.assertIn(mr,candidates)
+        self.assertEqual(len(candidates),5)
+        brief=ws.render(enriched,source)
+        for url in candidates:
+            self.assertEqual(url in brief,url in theme['links'])
+        detailed=ws.render(enriched,source,detailed=True)
+        summary,audit=detailed.split('## Detailed Work Log',1)
+        for url in candidates:
+            self.assertEqual(url in summary,url in theme['links'])
+            self.assertIn(url,audit)
+        self.assertEqual(enriched,original)
+
+    def test_legacy_links_are_direct_citations_even_with_many_native_relations(self):
+        source,issue,mr=self.selective_capture()
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        report=ws.render(enriched,source)
+        self.assertEqual(ws.display_urls(source,theme),[theme['items'][0]['url']])
+        self.assertNotIn(issue['url'],report)
+        self.assertNotIn(mr,report)
+        theme['items']=[]
+        theme['jira']=[{key:issue[key] for key in ('key','url')}]
+        self.assertEqual(ws.render(enriched,source),'- Fix the important behavior\n  - '+issue['url'])
+
+    def test_explicit_empty_suppresses_links_and_duplicate_ongoing_citation(self):
+        source=self.capture()
+        pr=source['github']['prs'][0]
+        pr.update(state='open',merged_at=None,closed_at=None,
+                  body='https://unknown.example/browse/TEST-8')
+        enriched=self.enrich(source)
+        enriched['analysis']['themes'][0]['links']=[]
+        enriched['analysis']['in_progress']=[{**self.reference(pr),'description':'Same work'}]
+        self.assertEqual(ws.render(enriched,source),'- Fix the important behavior')
+
+    def test_omitted_candidate_does_not_hide_distinct_ongoing_work(self):
+        source,issue,_=self.selective_capture()
+        other=source['github']['prs'][1]
+        other.update(state='open',merged_at=None,closed_at=None)
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        theme['jira']=[{key:issue[key] for key in ('key','url')}]
+        theme['links']=[]
+        enriched['analysis']['in_progress']=[{**self.reference(other),'description':'Distinct work'}]
+        report=ws.render(enriched,source)
+        self.assertIn('- Ongoing: Distinct work',report)
+        self.assertIn('  - '+other['url'],report)
+
+    def test_selected_links_reject_sibling_global_forged_and_wrong_types(self):
+        source=self.capture()
+        first=source['github']['prs'][0]
+        second={**first,'number':8,'url':first['url'].replace('/7','/8')}
+        source['github']['prs'].append(second)
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        enriched['analysis']['themes'].append({'name':'Other','description':'Other work',
+            'items':[self.reference(second)]})
+        for selected in ([second['url']], [first['url']+'#forged'],
+                         ['https://forged.example/browse/TEST-1'], [None], first['url']):
+            with self.subTest(selected=selected):
+                theme['links']=selected
+                with self.assertRaises(ValueError):
+                    ws.render(enriched,source)
+
+    def test_nested_topics_have_independent_links_and_valid_markdown_nesting(self):
+        try:
+            from markdown_it import MarkdownIt
+        except ImportError:
+            self.skipTest('Markdown parser is not installed')
+        source=self.capture()
+        pr=source['github']['prs'][0]
+        enriched=copy.deepcopy(source)
+        enriched['analysis']={'themes':[{'name':'Group','description':'Main result','items':[],
+            'links':[], 'subtopics':[{'name':'Child','description':'Substantive detail',
+                'items':[self.reference(pr)],'links':[pr['url'],pr['url']],
+                'subtopics':[{'name':'Further','description':'Further detail',
+                    'items':[self.reference(pr)],'links':[pr['url']]}]}]}], 'in_progress':[]}
+        original=copy.deepcopy(enriched)
+        report=ws.render(enriched,source)
+        self.assertEqual(report,'- Main result\n  - Substantive detail\n    - '+pr['url']+
+            '\n    - Further detail\n      - '+pr['url'])
+        tokens=MarkdownIt().parse(report)
+        contents=[(token.level,token.content) for token in tokens if token.type=='inline']
+        self.assertEqual(contents,[(3,'Main result'),(5,'Substantive detail'),
+            (7,pr['url']),(7,'Further detail'),(9,pr['url'])])
+        self.assertEqual(enriched,original)
+        group=enriched['analysis']['themes'][0]
+        group['links']=[pr['url']]
+        with self.assertRaises(ValueError):
+            ws.render(enriched,source)
+
+    def test_child_cannot_select_parent_or_sibling_artifacts_without_own_citation(self):
+        source=self.capture()
+        first=source['github']['prs'][0]
+        second={**first,'number':8,'url':first['url'].replace('/7','/8')}
+        source['github']['prs'].append(second)
+        enriched=self.enrich(source)
+        parent=enriched['analysis']['themes'][0]
+        child={'name':'Child','description':'Child work','items':[self.reference(second)]}
+        parent['subtopics']=[child,{'name':'Sibling','description':'Sibling work',
+            'items':[self.reference(first)]}]
+        child['links']=[first['url']]
+        with self.assertRaises(ValueError):
+            ws.render(enriched,source)
+        child['links']=[second['url']]
+        parent['links']=[]
+        report=ws.render(enriched,source)
+        self.assertIn('  - Child work\n    - '+second['url'],report)
+        self.assertIn('  - Sibling work\n    - '+first['url'],report)
+
+    def test_parent_and_children_preserve_deliberately_reused_selected_url(self):
+        source=self.capture()
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        url=source['github']['prs'][0]['url']
+        theme['links']=[url,url]
+        theme['subtopics']=[{**copy.deepcopy(theme),'description':'Child work'}]
+        report=ws.render(enriched,source)
+        self.assertEqual(report.count(url),2)
+        self.assertIn('  - Child work\n    - '+url,report)
+
+    def test_no_auth_context_is_selectable_but_never_automatic_or_noted_if_omitted(self):
+        source=self.capture()
+        pr=source['github']['prs'][0]
+        urls=[f'https://unknown.example/browse/TEST-{number}' for number in range(1,15)]
+        pr['body']=' '.join(urls)
+        enriched=self.enrich(source)
+        theme=enriched['analysis']['themes'][0]
+        candidates=ws.work_urls(source,theme)
+        self.assertTrue(set(urls)<=set(candidates))
+        for capture,original in ((source,None),(enriched,source)):
+            report=ws.render(capture,original)
+            self.assertNotIn('unknown.example',report)
+            self.assertNotIn('Jira state is unverified',report)
+        theme['links']=list(reversed(urls))
+        report=ws.render(enriched,source)
+        self.assertEqual([line.strip()[2:] for line in report.splitlines() if line.startswith('  - ')],
+                         list(reversed(urls)))
+        self.assertIn('Jira state is unverified',report)
+
+    def test_grouping_nodes_require_evidenced_children(self):
+        source=self.capture()
+        enriched=self.enrich(source)
+        group=enriched['analysis']['themes'][0]
+        group.update(items=[],links=[])
+        for children in ([],{},[{'name':'Empty','description':'Empty','items':[]}]):
+            with self.subTest(children=children):
+                group['subtopics']=children
+                with self.assertRaises(ValueError):
+                    ws.render(enriched,source)
 
     def test_bad_github_configuration_does_not_block_other_capable_sources(self):
         jira={'metadata':{'status':'ok','site':'jira.example.test'},'issues':[],'activity':[],'linked_prs':[]}

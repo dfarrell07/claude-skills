@@ -330,7 +330,7 @@ def validate(data, source=None):
                 "Analysis citation is absent from source evidence")
         return original
 
-    for theme in analysis["themes"]:
+    def theme_node(theme):
         require(isinstance(theme, dict) and all(isinstance(theme.get(key), str) and theme[key].strip()
                 for key in ("name", "description")) and isinstance(theme.get("items"), list), "Invalid theme")
         for item in theme["items"]:
@@ -352,7 +352,22 @@ def validate(data, source=None):
             require(isinstance(item, dict) and isinstance(item.get("repo"), str)
                     and any(entry["hash"] == item.get("hash") for entry in commits.get(item["repo"], [])),
                     "Analysis commit is absent from source evidence")
-        require(theme["items"] or local or jira_refs or branch_refs, "A theme needs at least one source citation")
+        children = theme.get("subtopics", [])
+        require(isinstance(children, list), "Invalid subtopics")
+        for child in children:
+            theme_node(child)
+        require(theme["items"] or local or jira_refs or branch_refs or children,
+                "A theme needs at least one source citation or evidenced subtopic")
+        if "links" in theme:
+            selected = theme["links"]
+            require(isinstance(selected, list) and all(isinstance(url, str) for url in selected),
+                    "Invalid selected links")
+            candidates = set(work_urls(data, theme))
+            require(all(url in candidates for url in selected),
+                    "Selected link is absent from this topic's source evidence")
+
+    for theme in analysis["themes"]:
+        theme_node(theme)
     for item in analysis["in_progress"]:
         require(isinstance(item, dict) and isinstance(item.get("description"), str) and item["description"].strip(),
                 "Invalid in-progress item")
@@ -467,6 +482,42 @@ def work_urls(data, topic):
     return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
 
 
+def direct_urls(topic):
+    """Exact cited artifacts establish work identity without traversing relations."""
+    return list(dict.fromkeys(item['url'] for field in ('items', 'jira')
+                              for item in topic.get(field, [])))
+
+
+def display_urls(data, topic):
+    """Use deliberate selections; legacy topics show only directly cited artifacts.
+
+    work_urls remains the complete source-backed candidate API. Its relations
+    prove that a URL may be selected, not that it belongs in the work narrative.
+    """
+    return list(dict.fromkeys(topic['links'] if 'links' in topic else direct_urls(topic)))
+
+
+def topic_nodes(topics):
+    """Walk authored order without inheriting evidence or links between nodes."""
+    for topic in topics:
+        yield topic
+        yield from topic_nodes(topic.get('subtopics', []))
+
+
+def render_topic_lines(data, topic, depth=0, detailed=False):
+    label = markdown(topic['description'])
+    if detailed:
+        label = f"**{markdown(topic['name'])}**: " + label
+    lines = ['  ' * depth + '- ' + label]
+    for url in display_urls(data, topic):
+        # Autolinks keep Markdown-sensitive repository paths literal.
+        lines.append('  ' * (depth + 1) + '- ' +
+                     (f'<{url}>' if any(char in url for char in '_~') else url))
+    for child in topic.get('subtopics', []):
+        lines.extend(render_topic_lines(data, child, depth + 1, detailed))
+    return lines
+
+
 def fallback_topics(data, limit=12):
     """Select a small deterministic list from event proof, never backlog roles."""
     metadata = data['metadata']
@@ -527,7 +578,8 @@ def render(data, source=None, detailed=False):
         return render_detailed(data, source)
     validate(data, source)
     topics = list(data['analysis']['themes']) if 'analysis' in data else fallback_topics(data)
-    represented = {url for topic in topics for url in work_urls(data, topic)}
+    represented = {url for topic in topic_nodes(topics)
+                   for url in direct_urls(topic) + display_urls(data, topic)}
     for ongoing in data.get('analysis', {}).get('in_progress', []):
         if ongoing['url'] in represented:
             continue
@@ -537,24 +589,23 @@ def render(data, source=None, detailed=False):
         else:
             topic['items'] = [{key: ongoing[key] for key in ('repo', 'number', 'url')}]
         topics.append(topic)
-        represented.update(work_urls(data, topic))
+        represented.update(direct_urls(topic) + display_urls(data, topic))
     lines = []
     for topic in topics:
-        lines.append('- ' + markdown(topic['description']))
-        for url in work_urls(data, topic):
-            # Autolink brackets retain the displayed raw URL when repository
-            # paths could otherwise activate emphasis or strikethrough.
-            lines.append('  - ' + (f'<{url}>' if any(char in url for char in '_~') else url))
+        lines.extend(render_topic_lines(data, topic))
     if not topics:
         lines.append('No supported work found in the available evidence.')
     known_jira_urls = {item['url'] for item in data.get('jira', {}).get('issues', [])}
     contextual = set()
     local_github_context = set()
-    for topic in topics:
+    for topic in topic_nodes(topics):
+        displayed = set(display_urls(data, topic))
         for item in topic_github_items(data, topic):
-            contextual.update(link['url'] for link in contextual_jira_links(item))
+            contextual.update(link['url'] for link in contextual_jira_links(item)
+                              if link['url'] in displayed)
         for relation in local_context_links(data, topic):
-            (contextual if relation['provider'] == 'jira' else local_github_context).add(relation['url'])
+            if relation['url'] in displayed:
+                (contextual if relation['provider'] == 'jira' else local_github_context).add(relation['url'])
     notes = []
     if contextual - known_jira_urls:
         notes.append('Jira state is unverified for contextual links.')
@@ -619,10 +670,7 @@ def render_detailed(data, source=None):
     if "analysis" in data:
         lines += ["### Key Accomplishments", ""]
         for theme in data["analysis"]["themes"]:
-            citations = [linked(item) for item in theme["items"]]
-            citations += [f"{markdown(item['repo'])} `{item['hash'][:12]}`" for item in theme.get("commits", []) + theme.get("branches", [])]
-            citations += [jira_work(item) for item in theme.get("jira", [])]
-            lines.append(f"- **{markdown(theme['name'])}**: {markdown(theme['description'])} ({', '.join(citations)})")
+            lines.extend(render_topic_lines(data, theme, detailed=True))
         if not data["analysis"]["themes"]:
             lines.append("No evidence-backed accomplishments identified in this capture.")
         lines += ["", "### In Progress", ""]
