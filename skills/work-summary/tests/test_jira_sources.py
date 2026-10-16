@@ -196,6 +196,31 @@ else:
         self.data["auth_exit"] = True
         self.assertEqual(self.collect()["metadata"]["status"], "unavailable")
 
+    def test_jira_collection_needs_neither_git_nor_github_cli(self):
+        # The fixture executable has an absolute interpreter; it is the only
+        # executable on PATH, as in a Jira-only execution environment.
+        with patch.dict(os.environ, {"PATH": str(self.bin)}):
+            self.assertIsNone(jira.shutil.which("gh"))
+            self.assertIsNone(jira.shutil.which("git"))
+            result = self.collect()
+        self.assertEqual(len(result["issues"]), 1)
+        self.assertEqual(result["issues"][0]["detail_status"], "ok")
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["c1"])
+        self.assertTrue(all(call[0] == "jira" for call in self.calls()))
+
+    def test_lost_cli_or_auth_during_reference_expansion_preserves_native_capture(self):
+        for failure in (FileNotFoundError("acli disappeared"),
+                        jira.subprocess.CalledProcessError(1, "acli", stderr="authentication expired")):
+            with self.subTest(failure=type(failure).__name__):
+                result = self.collect()
+                native_issues, native_events = copy.deepcopy(result["issues"]), copy.deepcopy(result["activity"])
+                with patch.object(jira, "command", side_effect=failure):
+                    jira.add_referenced_jira(result, ["MENTIONED-2"], START, END, self.warnings.append)
+                self.assertEqual(result["issues"], native_issues)
+                self.assertEqual(result["activity"], native_events)
+                self.assertEqual(result["metadata"]["coverage"]["referenced_by_github"]["status"], "partial")
+                self.assertEqual(result["metadata"]["coverage"]["referenced_by_github"]["requested_keys"], ["MENTIONED-2"])
+
     def test_auth_site_injection_is_rejected(self):
         self.data["auth"] = "Site: https://jira.example.test@evil.example\nEmail: person@example.test\n"
         result = self.collect()

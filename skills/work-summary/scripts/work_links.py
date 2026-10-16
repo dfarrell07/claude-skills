@@ -118,19 +118,25 @@ def referenced_keys(github, site=None):
 def complete_references(jira, github, read_tickets, read_prs=None):
     """Follow explicit captured references to exhaustion, attempting failures once."""
     attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github, include_index=False)}
+    processed_urls, unread_urls = set(attempted_urls), set()
     while True:
         keys = set(referenced_keys(github, jira.get('metadata', {}).get('site'))) - attempted_keys
-        urls = set(jira.get('linked_prs', [])) - attempted_urls
+        urls = set(jira.get('linked_prs', [])) - processed_urls
         if not keys and not urls:
             break
         if keys:
             attempted_keys.update(keys)
             read_tickets(sorted(keys))
-        urls = set(jira.get('linked_prs', [])) - attempted_urls
-        attempted_urls.update(urls)
-        if urls and read_prs is not None:
-            read_prs(sorted(urls))
-    return {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_urls)}
+        urls = set(jira.get('linked_prs', [])) - processed_urls
+        processed_urls.update(urls)
+        if urls:
+            if read_prs is None:
+                unread_urls.update(urls)
+            else:
+                attempted_urls.update(urls)
+                read_prs(sorted(urls))
+    return {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_urls),
+            'unread_pr_urls': sorted(unread_urls)}
 
 
 def associate_work(jira, github):

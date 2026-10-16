@@ -2,12 +2,14 @@
 """Offline adversarial tests for roles, actor dates, and ref associations."""
 import copy
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -73,6 +75,70 @@ class GithubSourcesTest(unittest.TestCase):
         client = Github(api, 'github.com', 'me', START, END, warnings.append)
         client.calls, client.warnings = calls, warnings
         return client
+
+    def test_native_api_callable_collects_without_any_cli_or_shell(self):
+        native = rest()
+        native['body'] = 'Native API body retained without a local CLI.'
+        def api(args):
+            if 'search/issues' in args:
+                query = next(value for value in args if value.startswith('q='))
+                rows = [native] if 'is:pr' in query else []
+                return {'total_count': len(rows), 'incomplete_results': False, 'items': rows}
+            if args[2] == 'repos/org/repo/issues/1/comments':
+                return [{'id': 42, 'user': {'login': 'me'}, 'body': 'Native actor evidence',
+                         'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z',
+                         'html_url': native['html_url'] + '#issuecomment-42'}]
+            return []
+        client = self.client(api)
+        data = {'prs': [], 'issues': []}
+        with patch.dict(os.environ, {'PATH': ''}), patch('subprocess.run', side_effect=AssertionError('No shell transport')):
+            client.discover(data)
+        self.assertEqual(data['context_prs'][0]['body'], native['body'])
+        self.assertEqual([(event['id'], event['body']) for event in data['activity']], [(42, 'Native actor evidence')])
+        self.assertTrue(all(info['status'] == 'ok' for info in client.coverage.values()))
+        self.assertEqual(client.warnings, [])
+
+    def test_forbidden_later_actor_page_preserves_verified_events_and_other_endpoints(self):
+        item = rest_item(rest(), 'prs', 'github.com')
+        def api(args):
+            if args[2].endswith('/issues/1/comments'):
+                if 'page=2' in args:
+                    raise subprocess.CalledProcessError(1, 'native-api', stderr='HTTP 403 rate limit')
+                return [{'id': number, 'user': {'login': 'me'}, 'body': f'Comment {number}',
+                         'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z',
+                         'html_url': item['url'] + f'#issuecomment-{number}'} for number in range(1, 101)]
+            if args[2].endswith('/reviews'):
+                return [{'id': 200, 'user': {'login': 'me'}, 'body': 'Verified review', 'state': 'APPROVED',
+                         'submitted_at': '2026-10-13T00:00:00Z', 'html_url': item['url'] + '#pullrequestreview-200'}]
+            return []
+        client = self.client(api)
+        data = {'activity': []}
+        client._inspect_activity(data, [item])
+        self.assertEqual(len(data['activity']), 101)
+        self.assertEqual(data['activity'][0]['body'], 'Comment 1')
+        self.assertEqual(data['activity'][-1]['review_state'], 'APPROVED')
+        self.assertEqual(client.coverage['activity:org/repo#1:issue_comment']['status'], 'partial')
+        self.assertEqual(client.coverage['activity:org/repo#1:review']['status'], 'ok')
+
+    def test_lost_transport_or_thin_connector_result_never_erases_or_invents_context(self):
+        for failure in ('missing', 'thin'):
+            with self.subTest(failure=failure):
+                def api(args):
+                    if args[2] == 'repos/org/repo/issues/1':
+                        return rest()
+                    if args[2] == 'repos/org/repo/issues/2':
+                        if failure == 'missing':
+                            raise FileNotFoundError('transport no longer available')
+                        return {'url': 'https://github.com/org/repo/pull/2', 'title': 'Search excerpt'}
+                    return []
+                client = self.client(api)
+                data = {'prs': [], 'issues': []}
+                client.add_linked_prs(data, ['https://github.com/org/repo/pull/1'])
+                before = copy.deepcopy(data)
+                self.assertEqual(client.add_linked_prs(data, ['https://github.com/org/repo/pull/2']), [])
+                self.assertEqual(data, before)
+                self.assertEqual(client.coverage['jira_link:org/repo#2']['status'], 'partial')
+                self.assertEqual(len(client.warnings), 1)
 
     def test_native_bodies_are_preserved_exactly_for_cross_source_proof(self):
         body = 'Implements TEST-123.\n\nNative reference: https://jira.example.test/browse/TEST-123\n**Details** ~ remain unchanged. '

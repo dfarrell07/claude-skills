@@ -254,6 +254,27 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(urls, jira['linked_prs'])
         self.assertEqual(tickets, ['TEST-2'])
 
+    def test_missing_pr_reader_retains_context_without_claiming_a_native_attempt(self):
+        data = self.capture()
+        github, jira = data['github'], data['jira']
+        known, unread = github['prs'][0]['url'], 'https://github.com/org/repo/pull/99'
+        issue = jira['issues'][0]
+        issue['detail']['fields']['description'] = 'Review context ' + unread
+        issue['pr_links'] = [{'url': unread, 'proof': 'description', 'evidence_url': issue['url']}]
+        jira['linked_prs'] = [known, unread, unread]
+        before = copy.deepcopy(github)
+        keys = []
+        result = complete_references(jira, github, keys.extend)
+        self.assertEqual(result['attempted_jira_keys'], ['TEST-123'])
+        self.assertEqual(result['attempted_pr_urls'], [known])
+        self.assertEqual(result['unread_pr_urls'], [unread])
+        self.assertEqual(keys, ['TEST-123'])
+        self.assertEqual(github, before)
+        associate_work(jira, github)
+        validate_links(data)
+        self.assertIn(unread, [relation['url'] for relation in issue['pr_links']])
+        self.assertFalse(any(item['url'] == unread for item in github['prs']))
+
     def test_forged_proof_and_unsourced_comment_links_fail(self):
         data = self.capture()
         associate_work(data['jira'], data['github'])
