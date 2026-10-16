@@ -170,6 +170,12 @@ missing account data or prove the work unpublished. Describe this scope as
 context. A failed native global search remains partial, and a positive match
 retains its native proof regardless of the local repository's path or provider.
 
+Completed snapshot lookups can retain a PR with the same branch name without
+proving that the captured commit belonged to that PR. Mark this `related_only`
+and keep the name-based candidate as context. It is not a failed native read,
+an exact PR association or proof of unpublished work. If any snapshot lookup
+failed, retain `partial` even when a name-based candidate exists.
+
 Begin or end with a short source note, for example: "Based on accessible Jira
 and GitHub records for the last 7 days; local Git and backup branches were not
 available." Preserve private/restricted associations only within the private

@@ -1450,9 +1450,25 @@ class GithubSourcesTest(unittest.TestCase):
         indexed = graphql_item(gql(sha='b' * 40, head='feature'), 'github.com')
         client, branches, _ = self.associate(lambda args: snapshot_data(args),
             branches=[branch(refs=['refs/remotes/upstream/feature'])], index={'org/repo': [indexed]})
+        self.assertEqual(branches[0]['pr_status'], 'related_only')
+        self.assertEqual(branches[0]['prs'], [])
+        self.assertEqual(branches[0]['related_prs'][0]['proof'], 'head_name_only')
+        self.assertTrue(all(info['status'] == 'ok' for info in branches[0]['association_lookups']))
+
+    def test_branch_name_only_with_failed_native_lookup_remains_partial(self):
+        from github_sources import graphql_item
+        indexed = graphql_item(gql(sha='b' * 40, head='feature'), 'github.com')
+        def api(args):
+            result = snapshot_data(args)
+            result['errors'] = [{'path': ['s0'], 'message': 'Native SHA search unavailable'}]
+            return result
+        client, branches, _ = self.associate(api,
+            branches=[branch(refs=['refs/remotes/upstream/feature'])], index={'org/repo': [indexed]})
         self.assertEqual(branches[0]['pr_status'], 'partial')
         self.assertEqual(branches[0]['prs'], [])
         self.assertEqual(branches[0]['related_prs'][0]['proof'], 'head_name_only')
+        self.assertTrue(any(info['status'] == 'partial' for info in branches[0]['association_lookups']))
+        self.assertTrue(client.warnings)
 
     def test_snapshot_search_and_commit_pagination_follow_cursors(self):
         def api(args):

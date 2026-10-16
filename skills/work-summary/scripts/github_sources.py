@@ -34,7 +34,7 @@ def branch_association_status(branch):
         return 'partial'
     if branch.get('association_scope') == 'github_global_without_repository':
         return 'unsupported' if any(info.get('scope') == 'github_global' for info in lookups) else 'partial'
-    return 'partial' if branch.get('related_prs') else 'no_match'
+    return 'related_only' if branch.get('related_prs') else 'no_match'
 
 
 def rest_item(row, kind, host):
