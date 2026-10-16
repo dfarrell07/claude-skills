@@ -63,7 +63,21 @@ class CandidatesTest(unittest.TestCase):
         digest = candidates(capture())
         self.assertIn('## Local commits you authored, by repository (1)', digest)
         self.assertIn('same commits also in 1 other checkout(s): ', digest)
-        self.assertIn('subjects: Fix the parser; Add tests', digest)
+        self.assertIn('    - ' + 'a' * 40 + ' Fix the parser\n    - ' + 'b' * 40 + ' Add tests', digest)
+
+    def test_jira_updates_without_comments_and_pushed_prs_are_not_lost(self):
+        data = capture()
+        data['jira'] = {'metadata': {'status': 'ok'}, 'activity': [], 'issues': [
+            {'key': 'NET-5', 'url': 'https://jira.example.test/browse/NET-5', 'title': 'Closed bug',
+             'status': 'Done', 'status_category': 'done', 'sensitive': False, 'roles': ['updated_by', 'assigned'],
+             'pr_links': [], 'review_links': []}]}
+        pushed = pr('https://github.com/org/repo/pull/9', 9, 'me')
+        data['github']['context_prs'].append(pushed)
+        digest = candidates(data)
+        self.assertIn('tickets you updated in other ways (1;', digest)
+        self.assertIn('[Done] https://jira.example.test/browse/NET-5 "Closed bug"', digest)
+        self.assertIn('## Open authored PRs updated in the window without recorded events (1)', digest)
+        self.assertIn('https://github.com/org/repo/pull/9 "Change 9" updated 10-12', digest)
 
     def test_untrusted_titles_stay_on_one_line(self):
         data = capture()
