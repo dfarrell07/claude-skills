@@ -2,26 +2,39 @@
 
 ## /work-summary
 
-Show recent work: git commits and GitHub activity (PRs, issues).
+Create a ranked weekly work list from the sources available in this session.
+For quarterly check-ins, use `quarterly` to rediscover major efforts and prepare
+an accomplishment briefing with core links and optional review answer starters.
+Each bullet has a one-line work summary and selected core Jira/PR links.
+Use substantive subtopics when a workstream has separate updates; place raw
+links beneath the description they support. Related backports share a work topic;
+importance determines order. Preserve broad evidence without dumping its links.
 
 ```bash
-/work-summary           # Last 7 days with AI analysis (default)
-/work-summary 14        # Last 14 days with AI analysis
-make work-summary       # Last 7 days without AI analysis
-make work-summary DAYS=14  # Last 14 days without AI analysis
+/work-summary
+/work-summary 14
+/work-summary quarterly
+make work-summary
+make work-summary DAYS=14
+make work-summary-test
 ```
 
-**With skill (AI analysis):**
+Use authenticated Git/GitHub/Jira connectors or available CLIs. Missing tools,
+authentication, home directories, or local repositories reduce coverage instead
+of blocking other sources. Mobile/cloud sessions can use connector evidence
+without a shell. The scripted workflow needs Python 3.10+; full local collection
+needs Git 2.37+, GitHub uses authenticated `gh`, and Jira uses authenticated `acli`.
+Git is optional for remote-only collection, and remote CLIs are optional for Git-only use.
 
-- Executive Summary with themed accomplishments
-- In Progress section
-- Activity Stats
-- Detailed Work Log
-
-**With make target (no AI):**
-
-- Activity Stats
-- Detailed Work Log only
+The primary output is the concise work list. A short source note identifies
+material missing/partial sources. Collection takes several minutes and writes a
+large private capture; `render-report.sh --candidates` lists the personal window
+work an agent needs for its analysis, `--analysis` renders that analysis, and
+`--detailed` produces the full private inventory and diagnostics. Each scripted
+run uses its own temporary directory. Without agent analysis, `make work-summary`
+provides a conservative evidence-based fallback.
+See [the skill](../skills/work-summary/SKILL.md) for capability fallbacks,
+source boundaries, link provenance, and analysis/ranking instructions.
 
 ## /jira
 
