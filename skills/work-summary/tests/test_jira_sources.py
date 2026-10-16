@@ -398,7 +398,7 @@ else:
         result = self.collect()
         self.assertEqual(result["issues"][0]["detail_status"], "ok")
         self.assertEqual(len(result["activity"]), 1)
-        self.assertEqual(result["activity"][0]["occurred_at"], "2026-01-08T12:00:00Z")
+        self.assertEqual(result["activity"][0]["occurred_at"], "2026-01-08T12:00:00.123000Z")
 
     def test_edits_credit_update_author_and_missing_editor_is_a_gap(self):
         old = "2026-01-01T00:00:00Z"
