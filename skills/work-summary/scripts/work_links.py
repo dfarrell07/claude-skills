@@ -61,7 +61,7 @@ def referenced_keys(github, site=None):
 
 def complete_references(jira, github, read_tickets, read_prs=None):
     """Follow explicit captured references to exhaustion, attempting failures once."""
-    attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github)}
+    attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github, include_index=False)}
     while True:
         keys = set(referenced_keys(github, jira.get('metadata', {}).get('site'))) - attempted_keys
         urls = set(jira.get('linked_prs', [])) - attempted_urls

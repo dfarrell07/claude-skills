@@ -101,6 +101,20 @@ class WorkLinksTest(unittest.TestCase):
         self.assertTrue(data['jira']['issues'][0]['pr_links'][0]['sensitive'])
         self.assertTrue(data['github']['prs'][0]['jira_links'][0]['sensitive'])
 
+    def test_explicit_jira_link_promotes_index_only_pr_and_expands_its_ticket(self):
+        data = self.capture()
+        github, jira = data['github'], data['jira']
+        github['pr_index'] = [{'url': github['prs'][0]['url'], 'body': 'TEST-2'}]
+        github['prs'] = []
+        jira['linked_prs'] = [github['pr_index'][0]['url']]
+        tickets, urls = [], []
+        def read_prs(values):
+            urls.extend(values)
+            github['context_prs'] = list(github['pr_index'])
+        complete_references(jira, github, tickets.extend, read_prs)
+        self.assertEqual(urls, jira['linked_prs'])
+        self.assertEqual(tickets, ['TEST-2'])
+
     def test_forged_proof_and_unsourced_comment_links_fail(self):
         data = self.capture()
         associate_work(data['jira'], data['github'])
