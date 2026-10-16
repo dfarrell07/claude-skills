@@ -226,6 +226,59 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(client.coverage['jira_link:org/repo#2']['status'], 'partial')
         self.assertEqual(client.coverage['jira_links']['status'], 'partial')
 
+    def test_mixed_case_seed_keeps_native_url_body_and_input_provenance(self):
+        native = rest()
+        native['body'] = 'Exact native body TEST-1.\nSecond line stays intact.'
+        original = copy.deepcopy(native)
+        def api(args):
+            if args[2] == 'repos/ORG/Repo/issues/1':
+                return native
+            return []
+        client = self.client(api)
+        data = {'prs': [], 'issues': []}
+        seed = 'https://GITHUB.com/ORG/Repo/pull/1'
+        client.add_linked_prs(data, [seed])
+        item = data['context_prs'][0]
+        self.assertEqual(item['url'], native['html_url'])
+        self.assertEqual(item['repo'], 'org/repo')
+        self.assertEqual(item['body'], native['body'])
+        self.assertEqual(item['jira_seed_urls'], [seed])
+        self.assertEqual(native, original)
+        info = client.coverage['jira_link:ORG/Repo#1']
+        self.assertEqual((info['requested_url'], info['resolved_url']), (seed, native['html_url']))
+        before = len(client.calls)
+        client.add_linked_prs(data, [native['html_url']])
+        self.assertEqual(len(client.calls), before)
+        self.assertEqual(item['jira_seed_urls'], [seed, native['html_url']])
+        self.assertEqual(len(data['context_prs']), 1)
+
+    def test_existing_case_equivalent_native_pr_is_not_refetched(self):
+        client = self.client(lambda args: self.fail('Existing native item must not be reread'))
+        item = rest_item(rest(), 'prs', 'github.com')
+        data = {'prs': [item], 'issues': [], 'activity': [{'preserved': True}]}
+        seed = 'https://github.com/ORG/Repo/pull/1'
+        self.assertEqual(client.add_linked_prs(data, [seed]), [])
+        self.assertEqual(data['context_prs'], [])
+        self.assertEqual(item['jira_seed_urls'], [seed])
+        self.assertEqual(item['roles'], ['jira_link'])
+        self.assertEqual(data['activity'], [{'preserved': True}])
+
+    def test_case_equivalence_never_accepts_wrong_repository_number_host_or_kind(self):
+        wrong_host = rest()
+        wrong_host['html_url'] = 'https://evil.test/org/repo/pull/1'
+        wrong_kind = rest()
+        wrong_kind.pop('pull_request')
+        wrong_kind['html_url'] = 'https://github.com/org/repo/issues/1'
+        for row in [rest(repo='org/other'), rest(2), wrong_host, wrong_kind]:
+            with self.subTest(response=row['html_url']):
+                client = self.client(lambda args: row)
+                data = {'prs': [], 'issues': []}
+                client.add_linked_prs(data, ['https://github.com/ORG/Repo/pull/1'])
+                self.assertEqual(data['context_prs'], [])
+                self.assertEqual(data['activity'], [])
+                self.assertEqual(client.coverage['jira_link:ORG/Repo#1']['status'], 'partial')
+                self.assertEqual(len(client.calls), 1)
+
     def test_existing_jira_seed_is_not_refetched_or_duplicated(self):
         client = self.client(lambda args: {'total_count': 0, 'incomplete_results': False, 'items': []}
                              if 'search/issues' in args else [])

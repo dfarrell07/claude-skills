@@ -40,6 +40,19 @@ class WorkLinksTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_links(data)
 
+    def test_github_repository_casing_keeps_native_url_and_jira_provenance(self):
+        data = self.capture()
+        pr, issue = data['github']['prs'][0], data['jira']['issues'][0]
+        pr['title'] = 'No ticket key here'
+        original_url = 'https://github.com/ORG/Repo/pull/42'
+        issue['detail']['fields']['description'] = original_url
+        issue['pr_links'] = [{'url': original_url, 'proof': 'description', 'evidence_url': issue['url']}]
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        self.assertEqual(issue['pr_links'][0]['url'], pr['url'])
+        self.assertEqual(issue['pr_links'][0]['source_url'], original_url)
+        self.assertEqual(pr['jira_links'][0]['key'], issue['key'])
+
     def test_foreign_jira_url_does_not_become_bare_key(self):
         for text in ('https://other-jira.example/browse/TEST-123',
                      '[TEST-123](https://other-jira.example/browse/TEST-123)'):

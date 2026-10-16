@@ -36,7 +36,12 @@ def strings(value):
 
 
 def native_pr_mention(value, url):
-    return any(re.search(re.escape(url) + r'(?![0-9])', text) for text in strings(value))
+    return any(re.search(re.escape(url) + r'(?![0-9])', text, re.I) for text in strings(value))
+
+
+def pr_identity(url):
+    parts = urlsplit(url)
+    return parts.netloc.casefold(), parts.path.casefold()
 
 
 def github_items(github, include_index=True):
@@ -82,10 +87,15 @@ def associate_work(jira, github):
     issues = {issue['key']: issue for issue in jira['issues']}
     site = jira.get('metadata', {}).get('site')
     items = github_items(github)
+    canonical = {pr_identity(item['url']): item['url'] for item in reversed(items) if '/pull/' in item['url']}
     relations = {}
     for issue in issues.values():
         for pr in issue.get('pr_links', []):
-            relations.setdefault((issue['key'], pr['url']), dict(pr))
+            url = canonical.get(pr_identity(pr['url']), pr['url'])
+            relation = {**pr, 'url': url}
+            if pr['url'] != url:
+                relation['source_url'] = pr['url']
+            relations.setdefault((issue['key'], url), relation)
     for item in items:
         if '/pull/' not in item['url']:
             continue
@@ -102,7 +112,8 @@ def associate_work(jira, github):
     for item in items:
         item['jira_links'] = [{'key': key, 'url': issues[key]['url'], 'proof': proof['proof'],
                                'evidence_url': proof['evidence_url'], 'sensitive': proof.get('sensitive', issues[key]['sensitive'])}
-                              for (key, url), proof in sorted(relations.items()) if url == item['url']]
+                              for (key, url), proof in sorted(relations.items())
+                              if pr_identity(url) == pr_identity(item['url'])]
     for issue in issues.values():
         issue['pr_links'] = [proof for (key, url), proof in sorted(relations.items()) if key == issue['key']]
 
@@ -112,8 +123,10 @@ def validate_links(data):
     issues = {issue['key']: issue for issue in jira['issues']}
     items = github_items(data['github'])
     by_url = {}
+    by_identity = {}
     for item in items:
         by_url.setdefault(item['url'], []).append(item)
+        by_identity.setdefault(pr_identity(item['url']), []).append(item)
     for issue in issues.values():
         links = issue.get('pr_links', [])
         require(isinstance(links, list), 'Invalid Jira PR links')
@@ -126,6 +139,9 @@ def validate_links(data):
                     and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)
                     and not parts.query and not parts.fragment, 'Invalid Jira PR URL')
             require(isinstance(relation.get('proof'), str) and relation['proof'], 'Missing cross-source proof')
+            if 'source_url' in relation:
+                require(isinstance(relation['source_url'], str)
+                        and pr_identity(relation['source_url']) == pr_identity(relation['url']), 'PR source identity mismatch')
             evidence_url = relation.get('evidence_url')
             require(isinstance(evidence_url, str) and (evidence_url == issue['url']
                     or evidence_url.startswith(issue['url'] + '?focusedCommentId=')
@@ -134,7 +150,7 @@ def validate_links(data):
                 field = relation['proof'].removeprefix('github_').removesuffix('_key')
                 require(field in {'title', 'body', 'head_ref'} and any(issue['key'] in
                     mentioned_keys(item.get(field), jira.get('metadata', {}).get('site'))
-                    for item in by_url.get(relation['url'], [])), 'GitHub key mention absent from evidence')
+                    for item in by_identity.get(pr_identity(relation['url']), [])), 'GitHub key mention absent from evidence')
             else:
                 fields = (issue.get('detail') or {}).get('fields', {})
                 proof = relation['proof']
@@ -158,6 +174,8 @@ def validate_links(data):
         for relation in item.get('jira_links', []):
             issue = issues.get(relation.get('key'))
             require(issue is not None and relation.get('url') == issue['url'] and any(
-                    pr['url'] == item['url'] and pr['proof'] == relation.get('proof')
-                    and pr['evidence_url'] == relation.get('evidence_url') for pr in issue.get('pr_links', [])),
+                    pr_identity(pr['url']) == pr_identity(item['url']) and pr['proof'] == relation.get('proof')
+                    and pr['evidence_url'] == relation.get('evidence_url')
+                    and pr.get('sensitive', issue['sensitive']) == relation.get('sensitive', issue['sensitive'])
+                    for pr in issue.get('pr_links', [])),
                     'GitHub Jira relation is absent from source issue')

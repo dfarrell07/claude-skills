@@ -194,6 +194,8 @@ class Github:
             github.setdefault(key, [])
         all_items = {item['url']: item for kind in ('prs', 'issues', 'context_prs', 'context_issues')
                      for item in github.get(kind, [])}
+        by_identity = {(urlsplit(item['url']).netloc.casefold(), item['repo'].casefold(), item['number']): item
+                       for item in all_items.values() if urlsplit(item['url']).path.split('/')[-2] == 'pull'}
         new_items = []
         for url in urls:
             key = 'jira_links'
@@ -202,23 +204,31 @@ class Github:
                 if url in self._linked_attempts:
                     continue
                 self._linked_attempts.add(url)
-                parts = urlsplit(url).path.strip('/').split('/')
+                parsed = urlsplit(url)
+                parts = parsed.path.strip('/').split('/')
                 require(len(parts) == 4 and parts[2] == 'pull' and parts[3].isascii()
                         and parts[3].isdigit() and int(parts[3]) > 0, 'Invalid linked PR URL')
                 repo, number = '/'.join(parts[:2]), int(parts[3])
                 require(REPO.fullmatch(repo) and all(part not in ('.', '..') for part in repo.split('/'))
-                        and url == f'https://{self.host}/{repo}/pull/{number}', 'Invalid linked PR host or path')
+                        and parsed.netloc.casefold() == self.host.casefold()
+                        and url == f'https://{parsed.netloc}/{repo}/pull/{number}', 'Invalid linked PR host or path')
                 key = f'jira_link:{repo}#{number}'
-                if url not in all_items:
+                identity = (self.host.casefold(), repo.casefold(), number)
+                original = by_identity.get(identity)
+                if original is None:
                     row = self.api('--method', 'GET', f'repos/{repo}/issues/{number}')
                     item = rest_item(row, 'prs', self.host)
-                    require(item['url'] == url, 'Linked PR response identity disagrees')
+                    require(item['repo'].casefold() == repo.casefold() and item['number'] == number,
+                            'Linked PR response identity disagrees')
                     item['roles'], item['observed_at'] = [], iso(datetime.now(UTC))
                     github['context_prs'].append(item)
-                    all_items[url] = item
+                    all_items[item['url']] = item
+                    by_identity[identity] = original = item
                     new_items.append(item)
-                    self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1}
-                original = all_items[url]
+                    self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1,
+                                          'requested_url': url, 'resolved_url': item['url']}
+                if url not in original.setdefault('jira_seed_urls', []):
+                    original['jira_seed_urls'].append(url)
                 if 'jira_link' not in original.setdefault('roles', []):
                     original['roles'].append('jira_link')
             except ERRORS:
