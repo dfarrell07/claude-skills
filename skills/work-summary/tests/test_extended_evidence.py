@@ -75,10 +75,12 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
             github_discovery={'unrouted:/work/local': {'status': 'unsupported',
                 'scope': 'github_global_without_repository', 'reason': 'No configured GitHub repository',
                 'pages': 0, 'count': 0}})
-        data['branches'] = [{'pr_status': 'unsupported', 'association_scope': 'github_global_without_repository',
+        data['branches'] = [{'repo': '/work/local', 'pr_status': 'unsupported',
+            'association_scope': 'github_global_without_repository',
             'prs': [], 'association_lookups': [{'scope': 'github_global', 'status': 'ok'}]}]
         self.validate(data, evidence)
-        for mutation in ('failed_lookup', 'missing_lookup', 'routed_branch', 'unsupported_api_failure'):
+        for mutation in ('failed_lookup', 'missing_lookup', 'routed_branch', 'unsupported_api_failure',
+                         'configured_remote', 'unknown_repository'):
             broken = copy.deepcopy(data)
             if mutation == 'failed_lookup':
                 broken['branches'][0]['association_lookups'][0]['status'] = 'partial'
@@ -86,9 +88,14 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
                 broken['branches'][0]['association_lookups'] = []
             elif mutation == 'routed_branch':
                 broken['branches'][0]['association_scope'] = 'configured_repository'
-            else:
+            elif mutation == 'unsupported_api_failure':
                 broken['metadata']['github_discovery']['activity:org/repo#1'] = (
                     broken['metadata']['github_discovery'].pop('unrouted:/work/local'))
+            elif mutation == 'configured_remote':
+                broken['metadata']['repositories'][0]['remotes'] = [
+                    {'kind': 'github', 'host': 'github.com', 'repo': 'org/project'}]
+            else:
+                broken['branches'][0]['repo'] = '/unrecorded/path'
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.validate(broken, evidence)
     def test_cross_reference_source_rejects_forged_identity_and_routes(self):

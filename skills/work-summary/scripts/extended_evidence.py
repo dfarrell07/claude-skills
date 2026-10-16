@@ -338,6 +338,10 @@ def historical_head_hashes(record, known, host='github.com'):
 def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
+    inventory = {row.get('path'): row for row in metadata.get('repositories', []) if isinstance(row, dict)}
+    unrouted = {path for path, row in inventory.items() if not any(
+        isinstance(remote, dict) and remote.get('kind') == 'github' and remote.get('host', host) == host
+        for remote in row.get('remotes', []))}
     repository_aliases(github, host)
     for kind in ('prs', 'issues'):
         for item in github.get('context_' + kind, []):
@@ -488,8 +492,7 @@ def validate_github(data, evidence, start, end):
             require(key.startswith('unrouted:') and info.get('scope') == 'github_global_without_repository'
                     and info['pages'] == info['count'] == 0
                     and isinstance(info.get('reason'), str) and bool(info['reason'].strip())
-                    and any(row.get('path') == key.removeprefix('unrouted:')
-                            for row in metadata.get('repositories', [])), 'Invalid unsupported GitHub repository scope')
+                    and key.removeprefix('unrouted:') in unrouted, 'Invalid unsupported GitHub repository scope')
         if info['status'] == 'partial':
             require(metadata.get('github_status') == 'partial' and metadata.get('warnings'), 'Missing discovery gap')
     for branch in data.get('branches', []):
@@ -520,6 +523,7 @@ def validate_github(data, evidence, start, end):
         if branch['pr_status'] == 'unsupported':
             lookups = branch.get('association_lookups', [])
             require(branch.get('association_scope') == 'github_global_without_repository'
+                    and branch.get('repo') in unrouted
                     and bool(lookups) and all(info.get('status') == 'ok' for info in lookups)
                     and any(info.get('scope') == 'github_global' for info in lookups)
                     and not prs, 'Unsupported branch needs completed global lookups without repository scope')
