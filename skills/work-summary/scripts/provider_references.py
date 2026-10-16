@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from evidence import HOST, require
 from extended_evidence import github_reference_comments, jira_key_aliases
-from work_links import (URL, complete_references, confirmed_keys, discovery_keys,
+from work_links import (URL, classify_reference_failures, complete_references, confirmed_keys, discovery_keys,
                         github_items, native_review_links)
 
 
@@ -110,6 +110,7 @@ def complete_provider_references(jira, github, branches, read_tickets, read_prs,
             attempted_gitlab.update(targets)
             gitlab = read_gitlab(sorted(attempted_gitlab))
     associate_gitlab(jira, gitlab)
+    classify_reference_failures(jira, github, gitlab)
     return gitlab, {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_prs),
                     'unread_pr_urls': sorted(unread_prs), 'attempted_gitlab_urls': sorted(attempted_gitlab)}
 

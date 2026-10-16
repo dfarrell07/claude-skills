@@ -13,6 +13,21 @@ from provider_references import (  # noqa: E402
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_unresolved_gitlab_ticket_url_is_not_only_a_lexical_lead(self):
+        mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
+        jira = {'metadata': {'site': 'jira.example.test', 'coverage': {
+            'referenced_by_github': {'status': 'partial', 'requested_keys': ['NEWPROJECT-7'],
+                'returned_keys': [], 'failures': {'NEWPROJECT-7': {'message': 'native 404'}}}}},
+            'issues': [], 'linked_prs': []}
+        github = {'prs': [], 'issues': []}
+        gitlab = {'items': [{'url': mr, 'source': {
+            'description': 'See https://jira.example.test/browse/NEWPROJECT-7'}}]}
+        complete_provider_references(jira, github, [], lambda keys: None, None, lambda urls: gitlab)
+        classification = jira['metadata']['coverage']['referenced_by_github']['failure_classification']
+        self.assertEqual(classification['NEWPROJECT-7'], {
+            'kind': 'explicit_jira_url', 'evidence_urls': [mr]})
+        self.assertEqual(jira['metadata']['coverage']['referenced_by_github']['status'], 'partial')
+
     def test_new_ticket_histories_join_reference_closure_without_reviving_old_pairings(self):
         old_pr = 'https://github.com/org/project/pull/9'
         mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
