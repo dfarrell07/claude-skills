@@ -1,6 +1,6 @@
 # Plan for quarterly review support
 
-Status: implementation and qualification in progress, October 16, 2026.
+Status: implemented, October 16, 2026. Qualification scopes and remaining refinements appear below.
 
 Extend the evidence gathering behind weekly 1:1 briefings to help the user see and remember the great
 work they have done, especially major efforts, and provide a starting point for their own quarterly report.
@@ -181,4 +181,28 @@ and notes-only operation. An independent forward test produced useful drafts in 
 Its self-review caught an inferred commitment from peer feedback; the guidance now explicitly distinguishes
 a suggested growth opportunity from the user's confirmed intention. Personal source documents and generated
 review answers remain outside this repository. Further qualification and critical-review results belong here
-after they have actually completed.
+only after they have actually completed.
+
+Qualification completed for the implementation:
+
+- The 465-test work-summary suite passes in CI on Linux and macOS with Python 3.10 and 3.13.
+  Native Git symlink-root tests corrected an actual macOS fixture-path failure without changing the collector.
+- Five consecutive independent expert reviews found no actionable findings after fixes for malformed timezone
+  offsets, native search index/payload date disagreement, and missing retained-context evidence.
+- Independent scale probes recovered 5,001 clustered search results while failed pages, malformed rows,
+  count drift, and unrecoverable caps retained useful results with explicit limits.
+- Native model forward tests exercised dated feedback, ambiguous review periods, and genuine local tooling
+  beside a generated deployment fixture. They preserved useful work without invented goals or delivery.
+- A fixed July–September calendar test used four native search pages containing 315 authored merges and a
+  separate all-home Git capture of 432 repositories. Local evidence surfaced major development and design
+  efforts that the merged inventory alone could not represent. Counts describe test evidence, not output topics.
+- Independent local replay checked exact-window attribution and accounting across all 17,491 captured rows,
+  then sampled actual objects, histories, backup refs, and worktree snapshots. Generated repositories remain
+  evidence for semantic review, never automatic product accomplishments.
+
+The local findings added explicit guidance about copied history and deliberately seeded fixture dates.
+The actual writing material keeps major automation, design, investigation, and delivery efforts visible,
+uses selective links, and offers short openings the user can rewrite. Per-source visibility, observation
+times, private provenance and further native collection details stay with the private qualification artifacts.
+These tests do not establish a universal inventory or correctness of future generated prose; each run still
+needs the evidence and editorial checks in the workflow.
