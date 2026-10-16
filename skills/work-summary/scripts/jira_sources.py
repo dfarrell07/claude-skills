@@ -26,8 +26,7 @@ KEY = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*\Z")
 BACKEND = re.compile(r"jira-prod-[a-z0-9]+(?:-[a-z0-9]+)*\.prod\.atl-paas\.net\Z")
 PR_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*(?=$|[\s/?#\"<>),.;\]])")
 SEARCH_FIELDS = "key,summary,status,assignee,reporter,labels"
-DETAIL_FIELDS = ("summary,status,assignee,reporter,description,comment,labels,"
-                 "issuelinks,updated,created,resolution,security")
+DETAIL_FIELDS = "*all"
 ERRORS = (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError)
 
 
@@ -183,6 +182,204 @@ def _normalize(row, site):
             "status_category": status["statusCategory"]["key"], "roles": [],
             "sensitive": True, "sensitivity_verified": False, "updated_at": None,
             "detail_status": "not_selected", "pr_links": [], "source": row}
+
+
+def _custom_pr_links(item, fields, source_kind, github_host):
+    result = {}
+    for field_id, value in fields.items():
+        if not re.fullmatch(r'customfield_[1-9][0-9]*', field_id):
+            continue
+        for text, private in _source_strings(value, item.get('sensitive', True)):
+            for url in PR_URL.findall(text.replace('|', ' ')):
+                parts = urlsplit(url)
+                if (parts.netloc.casefold() != github_host.casefold()
+                        or any(part in {'.', '..'} for part in parts.path.split('/')[1:3])):
+                    continue
+                url = 'https://' + parts.netloc.lower() + parts.path
+                row = {'url': url, 'proof': 'custom_field', 'field_id': field_id,
+                       'source_kind': source_kind, 'evidence_url': item['url'], 'sensitive': private}
+                result[url, field_id, private] = row
+    return list(result.values())
+
+
+def _full_detail_fields(item, native, site):
+    require(isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold()
+            and item.get('url') == f"https://{site}/browse/{item['key']}", 'Invalid full Jira tenant binding')
+    normalized = _normalize(native, site)
+    require(normalized['key'] == item['key'], 'Full Jira detail key mismatch')
+    basis = next((item[name] for name in ('detail', 'source') if isinstance(item.get(name), dict)
+                  and item[name].get('key') == item['key']
+                  and not isinstance(item[name].get('id'), bool)
+                  and re.fullmatch(r'[1-9][0-9]*', str(item[name].get('id')))), None)
+    require(basis is not None and not isinstance(native.get('id'), bool)
+            and str(native.get('id')) == str(basis['id']), 'Full Jira detail native ID mismatch')
+    return native['fields']
+
+
+def validate_full_details(result):
+    """Validate the optional supplemental all-fields observations and coverage."""
+    metadata = result.get('metadata', {})
+    issues = result.get('issues', [])
+    coverage = metadata.get('coverage', {}).get('full_details')
+    if coverage is None:
+        require(not any(any(key in item for key in ('full_detail', 'full_detail_status', 'full_detail_error'))
+                        for item in issues), 'Full Jira fields lack coverage')
+        return
+    captured, incomplete, failed = [], [], []
+    for item in issues:
+        status = item.get('full_detail_status')
+        require(status in {'ok', 'partial', 'failed'}, 'Invalid full Jira detail status')
+        if status in {'ok', 'partial'}:
+            fields = _full_detail_fields(item, item.get('full_detail'), metadata.get('site', ''))
+            captured.append(item['key'])
+            privacy_complete = ('security' in fields and isinstance(fields.get('labels'), list)
+                                and all(isinstance(label, str) for label in fields['labels']))
+            if status == 'ok':
+                require(privacy_complete and item.get('sensitivity_verified') is True,
+                        'Complete full Jira fields lack privacy evidence')
+            private = not privacy_complete or bool(fields.get('security')) or any(
+                isinstance(label, str) and ('security' in label.casefold() or label.upper().startswith('CVE-'))
+                for label in fields.get('labels', []) if isinstance(fields.get('labels'), list))
+            for old in (item.get('detail') or item.get('source'),):
+                old_fields = old.get('fields', {}) if isinstance(old, dict) else {}
+                private = private or bool(old_fields.get('security')) or any(
+                    isinstance(label, str) and ('security' in label.casefold() or label.upper().startswith('CVE-'))
+                    for label in (old_fields['labels'] if isinstance(old_fields.get('labels'), list) else []))
+            require(type(item.get('sensitive')) is bool and (not private or item['sensitive']),
+                    'Full Jira detail privacy was downgraded')
+        else:
+            require('full_detail' not in item, 'Failed full Jira read contains accepted native fields')
+        if status == 'ok':
+            require('full_detail_error' not in item, 'Successful full Jira read retains a failure')
+        else:
+            error = item.get('full_detail_error')
+            require(isinstance(error, dict) and set(error) <= {'type', 'message', 'returncode', 'stderr', 'stdout', 'timeout'}
+                    and isinstance(error.get('type'), str) and bool(error['type'])
+                    and isinstance(error.get('message'), str), 'Missing full Jira failure evidence')
+            if 'returncode' in error:
+                require(type(error['returncode']) is int and error['returncode'] != 0
+                        and isinstance(error.get('stdout'), str) and isinstance(error.get('stderr'), str),
+                        'Invalid native full Jira command failure')
+            if 'timeout' in error:
+                require(isinstance(error['timeout'], (int, float)) and not isinstance(error['timeout'], bool)
+                        and error['timeout'] > 0, 'Invalid full Jira timeout')
+            (incomplete if status == 'partial' else failed).append(item['key'])
+    requested = [item['key'] for item in issues]
+    require(len(set(requested)) == len(requested), 'Repeated full Jira coverage key')
+    expected = {'status': 'ok' if len(captured) == len(issues) and not incomplete else
+                'partial' if captured else 'unavailable', 'scope': 'authenticated_all_fields',
+                'requested_keys': sorted(requested), 'captured_keys': sorted(captured),
+                'incomplete_keys': sorted(incomplete), 'failed_keys': sorted(failed)}
+    require(coverage == expected, 'Full Jira fields coverage differs from native observations')
+
+
+def supplement_full_details(result, warn):
+    """Read omitted native fields without replacing prior observations or activity."""
+    metadata = result['metadata']
+    site = metadata.get('site', '')
+    issues = result.get('issues', [])
+
+    def bind(item, native):
+        return _full_detail_fields(item, native, site)
+
+    pending = []
+    for item in issues:
+        if 'full_detail' in item:
+            bind(item, item['full_detail'])
+        if item.get('full_detail_status') == 'ok':
+            bind(item, item.get('full_detail'))
+        else:
+            pending.append(item)
+    auth_error = None
+    if pending:
+        try:
+            auth = command(['acli', 'jira', 'auth', 'status'], stdin='')
+            actual_site, actual_user = _auth_context(auth)
+            require(actual_site == site and actual_user.casefold() == metadata.get('user', '').casefold(),
+                    'Jira site/account changed before full-field read')
+        except ERRORS as error:
+            auth_error = error
+
+    def read(item):
+        if auth_error is not None:
+            return None, auth_error
+        try:
+            return decode_json(command(['acli', 'jira', 'workitem', 'view', item['key'],
+                                        '--fields', '*all', '--json'], stdin='')), None
+        except subprocess.CalledProcessError as error:
+            try:
+                native = decode_json(error.stdout) if isinstance(error.stdout, str) else None
+            except (ValueError, TypeError):
+                native = None
+            return native, error
+        except ERRORS as error:
+            return None, error
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        reads = list(pool.map(read, pending))
+    for item, (native, error) in zip(pending, reads):
+        try:
+            if error is not None and native is None:
+                raise error
+            fields = bind(item, native)
+            item['full_detail'] = native
+            item['full_detail_status'] = 'partial'
+            require('security' in fields and isinstance(fields.get('labels'), list)
+                    and all(isinstance(label, str) for label in fields['labels']), 'Missing full-field sensitivity evidence')
+            private = bool(fields['security']) or any('security' in label.casefold() or label.upper().startswith('CVE-')
+                                                     for label in fields['labels'])
+            item['sensitive'] = bool(item.get('sensitive', True)) or private
+            item['sensitivity_verified'] = True
+            if error is not None:
+                raise error
+            item['full_detail_status'] = 'ok'
+            item.pop('full_detail_error', None)
+        except ERRORS as failure:
+            item['full_detail_status'] = 'partial' if 'full_detail' in item else 'failed'
+            item['full_detail_error'] = _failure(failure)
+            # Incomplete sensitivity evidence can never lower existing privacy.
+            item['sensitive'] = True
+
+    linked = set(result.get('linked_prs', []))
+    for item in issues:
+        if item.get('sensitive'):
+            for row in item.get('pr_links', []):
+                row['sensitive'] = True
+        if item.get('full_detail_status') not in {'ok', 'partial'} or 'full_detail' not in item:
+            continue
+        fields = bind(item, item['full_detail'])
+        custom = _custom_pr_links(item, fields, 'full_detail', metadata.get('github_host', 'github.com'))
+        old = [row for row in item.get('pr_links', [])
+               if not (row.get('proof') == 'custom_field' and row.get('source_kind') == 'full_detail')]
+        item['pr_links'] = old + custom
+        linked.update(row['url'] for row in custom)
+    # Privacy may have risen since these derived records were first built.
+    from jira_public_history import public_history_review_links
+    for item in issues:
+        if 'history_review_links' in item:
+            item['history_review_links'] = public_history_review_links(item, metadata.get('github_host', 'github.com'))
+        if item.get('sensitive'):
+            for row in item.get('review_links', []):
+                row['sensitive'] = True
+    result['linked_prs'] = sorted(linked)
+    complete = [item['key'] for item in issues if item.get('full_detail_status') == 'ok']
+    captured = [item['key'] for item in issues if item.get('full_detail_status') in {'ok', 'partial'}]
+    incomplete = [item['key'] for item in issues if item.get('full_detail_status') == 'partial']
+    failed = [item['key'] for item in issues if item.get('full_detail_status') == 'failed']
+    coverage = {'status': 'ok' if len(complete) == len(issues) else 'partial' if captured else 'unavailable',
+                'scope': 'authenticated_all_fields', 'requested_keys': sorted(item['key'] for item in issues),
+                'captured_keys': sorted(captured), 'incomplete_keys': sorted(incomplete), 'failed_keys': sorted(failed)}
+    metadata.setdefault('coverage', {})['full_details'] = coverage
+    message = 'Some authenticated full-field Jira reads are unavailable or incomplete; prior observations remain preserved.'
+    if coverage['status'] == 'ok' and message in metadata.get('warnings', []):
+        metadata['warnings'].remove(message)
+    if coverage['status'] != 'ok':
+        metadata['status'] = 'partial'
+        if message not in metadata.setdefault('warnings', []):
+            metadata['warnings'].append(message)
+            warn('Jira: ' + message)
+    validate_full_details(result)
+    return result
 
 
 def _detail_items(result, selected, start, end, warn, preloaded=None):
@@ -359,6 +556,9 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                         proofs.add((url, proof, evidence_url, source_sensitive))
         item["pr_links"] = [{"url": url, "proof": proof, "evidence_url": evidence_url, "sensitive": sensitive}
                             for url, proof, evidence_url, sensitive in sorted(proofs)]
+        custom = _custom_pr_links(item, fields, 'detail', metadata.get('github_host', 'github.com'))
+        item['pr_links'].extend(custom)
+        linked_prs.update(row['url'] for row in custom)
     result["linked_prs"] = sorted(linked_prs)
 
 
