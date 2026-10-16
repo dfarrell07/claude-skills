@@ -519,6 +519,25 @@ else:
         self.assertEqual(result["metadata"]["status"], "partial")
         self.assertTrue(any("available native comments were retained" in warning for warning in self.warnings))
 
+    def test_native_suffix_identity_drift_retains_union_without_claiming_completeness(self):
+        suffix = comment("retained", body="Retain https://github.com/org/repo/pull/1")
+        native = detail(issue(), [suffix], total=2)
+        native["fields"]["comment"].update(startAt=1, maxResults=1)
+        self.data["details"]["TEST-1"] = native
+        self.data["comment_pages"] = [{"comments": [
+            comment("new1", body="New https://github.com/org/repo/pull/2"),
+            comment("new2", body="New https://github.com/org/repo/pull/3")],
+            "startAt": 0, "maxResults": 50, "total": 2, "isLast": True}]
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual({pr["url"] for pr in item["pr_links"]},
+                         {f"https://github.com/org/repo/pull/{number}" for number in (1, 2, 3)})
+        self.assertEqual({event["comment_id"] for event in result["activity"]}, {"retained", "new1", "new2"})
+        self.assertEqual(item["comment_coverage"], {"complete": False, "native_fidelity": True,
+                                                   "captured_count": 3, "total": 2})
+        self.assertEqual(result["metadata"]["status"], "partial")
+        self.assertTrue(any("available native comments were retained" in warning for warning in self.warnings))
+
     def test_duplicate_or_changed_comment_pages_keep_available_native_activity(self):
         first = comment()
         self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)

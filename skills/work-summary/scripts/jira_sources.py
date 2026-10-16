@@ -216,6 +216,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                         comments.setdefault(comment["id"], comment)
                         if comment.get("visibility") or (not isinstance(comment.get("author"), dict) and "visibility" not in comment):
                             restricted_comments.add(comment["id"])
+                complete = complete and len(comments) == native["total"]
                 require(complete, "Incomplete comment pagination")
         except ERRORS:
             gap("One Jira comment capture is missing or incompletely paginated; available native comments were retained.")
