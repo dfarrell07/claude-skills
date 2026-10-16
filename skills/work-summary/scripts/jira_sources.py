@@ -5,6 +5,7 @@ person. Only native comment actors and timestamps establish activity events.
 All returned evidence is private capture data, including sensitivity markers.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import json
 import os
@@ -22,6 +23,7 @@ from evidence import (  # noqa: E402
 
 
 KEY = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*\Z")
+BACKEND = re.compile(r"jira-prod-[a-z0-9]+(?:-[a-z0-9]+)*\.prod\.atl-paas\.net\Z")
 PR_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*(?=$|[\s/?#\"<>),.;\]])")
 SEARCH_FIELDS = "key,summary,status,assignee,reporter,labels"
 DETAIL_FIELDS = ("summary,status,assignee,reporter,description,comment,labels,"
@@ -112,7 +114,18 @@ def _normalize(row, site):
     if row.get("self") is not None:
         require(isinstance(row["self"], str), "Invalid Jira issue self URL")
         parts = urlsplit(row["self"])
-        require(parts.scheme == "https" and parts.netloc.lower() == site, "Jira issue/site mismatch")
+        # acli can return Atlassian's production REST backend in `self` while
+        # authentication names the tenant's browser site. Keep that API URL as
+        # provenance, never as the tenant or browser citation authority.
+        backend = (site.endswith(".atlassian.net") and parts.hostname is not None
+                   and BACKEND.fullmatch(parts.hostname) is not None
+                   and parts.netloc.lower() == parts.hostname)
+        require(parts.scheme == "https" and parts.username is None and parts.password is None
+                and not parts.query and not parts.fragment
+                and (parts.netloc.lower() == site or backend), "Jira issue/site mismatch")
+        route = re.fullmatch(r"/rest/api/(?:2|3)/issue/([1-9][0-9]*)", parts.path)
+        require(route is not None and not isinstance(row.get("id"), bool)
+                and str(row.get("id")) == route[1], "Jira REST resource identity mismatch")
     return {"key": row["key"], "url": f"https://{site}/browse/{row['key']}",
             "title": fields["summary"], "status": status["name"],
             "status_category": status["statusCategory"]["key"], "roles": [],
@@ -135,12 +148,25 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
     def cli(*args):
         return command(["acli", "jira", *args], stdin="")
 
-    linked_prs = set(result["linked_prs"])
-    for item in selected:
+    def read_detail(item):
+        """Only independent CLI reads run in workers; all state updates follow."""
         try:
             detail = (preloaded or {}).get(item["key"])
             if detail is None:
                 detail = decode_json(cli("workitem", "view", item["key"], "--fields", DETAIL_FIELDS, "--json"))
+            return detail, None
+        except ERRORS as error:
+            return None, error
+
+    # executor.map preserves input order. No worker normalizes records, emits
+    # warnings, mutates counters, or handles comment pagination.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        reads = list(pool.map(read_detail, selected))
+    linked_prs = set(result["linked_prs"])
+    for item, (detail, read_error) in zip(selected, reads):
+        try:
+            if read_error is not None:
+                raise read_error
             normalized = _normalize(detail, site)
             require(normalized["key"] == item["key"], "Jira detail identity mismatch")
             fields = detail["fields"]

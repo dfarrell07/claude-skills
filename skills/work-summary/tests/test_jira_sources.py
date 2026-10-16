@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -200,6 +201,87 @@ else:
         result = self.collect()
         self.assertEqual(result["metadata"]["status"], "unavailable")
         self.assertFalse(any("search" in call for call in self.calls()))
+
+    def test_provider_backend_self_keeps_authenticated_browser_site_and_identity(self):
+        site = "tenant-fixture.atlassian.net"
+        backend = "https://jira-prod-synthetic-region-1.prod.atl-paas.net/rest/api/3/issue/1"
+        self.data["auth"] = f"Site: {site}\nEmail: person@example.test\n"
+        self.data["searches"]["assigned"][0]["self"] = backend
+        self.data["details"]["TEST-1"]["self"] = backend
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual(item["url"], f"https://{site}/browse/TEST-1")
+        self.assertEqual(item["source"]["self"], backend)
+        self.assertEqual(item["detail"]["self"], backend)
+        self.assertEqual(item["detail_status"], "ok")
+        self.assertTrue(result["metadata"]["identity_verified"])
+        self.assertEqual(result["metadata"]["coverage"]["assigned"]["status"], "ok")
+        self.assertEqual(len(result["activity"]), 1)
+
+    def test_backend_self_exception_requires_canonical_resource_and_atlassian_context(self):
+        site = "tenant-fixture.atlassian.net"
+        root = "https://jira-prod-synthetic-region-1.prod.atl-paas.net"
+        valid = root + "/rest/api/3/issue/1"
+        for url in [valid.replace("https:", "http:"), valid + "?fields=summary", valid + "#fragment",
+                    valid.replace("https://", "https://user:secret@"),
+                    valid.replace("/issue/1", "/issue/2"), root + "/browse/TEST-1",
+                    valid.replace(".atl-paas.net/", ".atl-paas.net.evil.example/"),
+                    valid.replace("jira-prod-", "jira-stage-"), valid.replace("/issue/1", "/issue/%31")]:
+            with self.subTest(url=url):
+                row = issue()
+                row["self"] = url
+                with self.assertRaises(ValueError):
+                    jira._normalize(row, site)
+        row = issue()
+        row["self"] = valid
+        with self.assertRaises(ValueError):
+            jira._normalize(row, "jira.example.test")
+
+    def test_four_worker_reads_finish_before_sequential_normalization_and_warnings(self):
+        rows = [issue(f"TEST-{n}") for n in range(1, 9)]
+        selected = [jira._normalize(row, "jira.example.test") for row in rows]
+        metadata = {"site": "jira.example.test", "status": "ok", "account_id": "self-id",
+                    "identity_verified": True, "warnings": [], "coverage": {
+                        "details": {"status": "ok", "requested_count": 8, "returned_count": 0}}}
+        result = {"metadata": metadata, "issues": selected, "activity": [], "linked_prs": []}
+        barrier, lock = threading.Barrier(4), threading.Lock()
+        active, peak, completed = 0, 0, 0
+        main_thread = threading.get_ident()
+        warnings, normalized = [], []
+        real_normalize = jira._normalize
+
+        def read(args, **kwargs):
+            nonlocal active, peak, completed
+            self.assertEqual(args[:4], ["acli", "jira", "workitem", "view"])
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                barrier.wait(timeout=10)
+                return "{malformed" if args[4] == "TEST-8" else json.dumps(detail(issue(args[4]), [comment()]))
+            finally:
+                with lock:
+                    active -= 1
+                    completed += 1
+
+        def normalize(*args):
+            self.assertEqual(threading.get_ident(), main_thread)
+            self.assertEqual(completed, 8)
+            normalized.append(args[0]["key"])
+            return real_normalize(*args)
+
+        def warn(message):
+            self.assertEqual(threading.get_ident(), main_thread)
+            warnings.append(message)
+
+        with patch.object(jira, "command", side_effect=read), patch.object(jira, "_normalize", side_effect=normalize):
+            jira._detail_items(result, selected, START, END, warn)
+        self.assertEqual(peak, 4)
+        self.assertEqual(normalized, [f"TEST-{n}" for n in range(1, 8)])
+        self.assertEqual(metadata["coverage"]["details"]["returned_count"], 7)
+        self.assertEqual(len(result["activity"]), 7)
+        self.assertTrue(warnings)
+        self.assertEqual(selected[-1]["detail_status"], "failed")
 
     def test_account_conflict_or_missing_email_never_guesses_activity_actor(self):
         for author in [OTHER, {"accountId": "   "}, {"accountId": "self-id", "emailAddress": ""}]:
