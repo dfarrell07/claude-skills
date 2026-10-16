@@ -105,6 +105,10 @@ class GitLabApiTest(unittest.TestCase):
         result, _, _ = self.collect(read)
         self.assertEqual(result['items'][0]['repo'], 'new/project')
         self.assertEqual(result['items'][0]['requested_urls'], [WEB])
+        forged = json.loads(json.dumps(result))
+        forged['items'][0]['requested_urls'] = [f'https://{HOST}/unrelated/project/-/merge_requests/7']
+        with self.assertRaises(ValueError):
+            api.validate_gitlab_api({'gitlab': forged})
 
     def test_foreign_redirect_wrong_iid_and_unproved_rename_rejected(self):
         for kind in ('foreign', 'iid', 'rename'):

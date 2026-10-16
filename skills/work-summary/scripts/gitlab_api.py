@@ -460,7 +460,15 @@ def validate_gitlab_api(data):
         seen.add(item['url'])
         require(isinstance(item.get('requested_urls'), list) and item['requested_urls'], 'Missing requested MR URL')
         for original in item['requested_urls']:
-            require(mr_route(original)[0] == host and mr_route(original)[2] == number, 'MR seed identity mismatch')
+            seed_host, seed_repo, seed_number = mr_route(original)
+            require(seed_host == host and seed_number == number, 'MR seed identity mismatch')
+            endpoint = f'https://{host}/api/v4/projects/{quote(seed_repo, safe="")}/merge_requests/{number}'
+            alias_observed = any(query.get('status') == 200 and isinstance(query.get('source'), dict)
+                                 and all(query['source'].get(field) == item['source'][field]
+                                         for field in ('id', 'iid', 'project_id'))
+                                 for query in queries.get(endpoint, []))
+            require(alias_observed or item.get('source_kind') == 'inventory' and original == item['url'],
+                    'MR seed alias lacks native endpoint identity proof')
         require(isinstance(item.get('notes'), list) and item.get('notes_status') in {'ok', 'partial'}, 'Invalid MR notes')
         ids = set()
         for note in item['notes']:
