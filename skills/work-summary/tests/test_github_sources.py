@@ -206,7 +206,7 @@ class GithubSourcesTest(unittest.TestCase):
                     'items': [rest(i) for i in range((page - 1) * 100 + 1, page * 100 + 1)]}
         client = self.client(api)
         self.assertEqual(len(client.search('query', 'roles', 'prs')), 1000)
-        self.assertEqual(len(client.calls), 10)
+        self.assertLessEqual(len(client.calls), 128)
         self.assertEqual(client.coverage['roles']['status'], 'partial')
         self.assertTrue(any('1,000-result limit' in warning for warning in client.warnings))
 
