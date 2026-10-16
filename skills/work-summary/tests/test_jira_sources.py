@@ -729,6 +729,31 @@ else:
                 self.assertEqual(result["issues"][0]["detail"]["changelog"], bad)
                 self.assertTrue(warnings)
 
+    def test_malformed_comments_and_missing_editors_name_recovery_targets_without_losing_creation(self):
+        malformed = comment("invalid-created", created="not-a-time")
+        rows = [malformed, comment("invalid-update", updated="not-a-time"),
+                comment("reversed", updated="2026-01-09T12:00:00Z"),
+                comment("missing-editor", updated="2026-01-11T12:00:00Z")]
+        missing_body = comment("missing-body")
+        missing_body.pop("body")
+        rows.append(missing_body)
+        self.data["details"]["TEST-1"] = detail(issue(), rows)
+        original = copy.deepcopy(rows)
+        result = self.collect()
+        item = result["issues"][0]
+        gaps = {entry["comment_id"]: entry for entry in item["comment_native_gaps"]}
+        self.assertEqual(gaps["invalid-created"]["invalid_fields"], ["created", "updated"])
+        for ident in ("invalid-update", "reversed"):
+            self.assertEqual(gaps[ident]["invalid_fields"], ["updated"])
+        self.assertEqual(gaps["missing-editor"]["missing_fields"], ["updateAuthor.accountId"])
+        self.assertEqual(gaps["missing-body"]["missing_fields"], ["body"])
+        for ident, gap in gaps.items():
+            self.assertEqual(gap["required_read"], "/rest/api/3/issue/TEST-1/comment/" + ident)
+        self.assertEqual({(event["comment_id"], event["kind"]) for event in result["activity"]},
+                         {(ident, "comment_created") for ident in ("invalid-update", "reversed", "missing-editor")})
+        self.assertEqual(item["detail"]["fields"]["comment"]["comments"], original)
+        self.assertFalse(item["comment_coverage"]["native_fidelity"])
+
     def test_referenced_key_failure_and_account_switch_are_named_gaps(self):
         result = self.collect()
         jira.add_referenced_jira(result, ["MISSING-2"], START, END, self.warnings.append)

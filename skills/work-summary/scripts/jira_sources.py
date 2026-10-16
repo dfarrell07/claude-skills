@@ -277,7 +277,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
         native_fidelity = True
         native_gaps = []
         for comment in comments.values():
-            missing_fields = []
+            missing_fields, invalid_fields = [], []
             if not (isinstance(comment.get("author"), dict)
                     and isinstance(comment["author"].get("accountId"), str)
                     and comment["author"]["accountId"].strip()):
@@ -285,11 +285,30 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             for field in ("created", "updated"):
                 if not comment.get(field):
                     missing_fields.append(field)
-            if missing_fields:
+                else:
+                    try:
+                        timestamp(comment[field])
+                    except ERRORS:
+                        invalid_fields.append(field)
+            if "body" not in comment:
+                missing_fields.append("body")
+            if not any(field in missing_fields + invalid_fields for field in ("created", "updated")):
+                created, modified = timestamp(comment["created"]), timestamp(comment["updated"])
+                if modified < created:
+                    invalid_fields.append("updated")
+                elif modified != created:
+                    editor = comment.get("updateAuthor")
+                    if not (isinstance(editor, dict) and isinstance(editor.get("accountId"), str)
+                            and editor["accountId"].strip()):
+                        missing_fields.append("updateAuthor.accountId")
+            if missing_fields or invalid_fields:
                 native_fidelity = False
-                native_gaps.append({"comment_id": comment["id"], "missing_fields": missing_fields,
-                                    "required_read": "/rest/api/3/issue/" + item["key"] + "/comment/"
-                                    + quote(comment["id"], safe="")})
+                recovery = {"comment_id": comment["id"], "missing_fields": missing_fields,
+                            "required_read": "/rest/api/3/issue/" + item["key"] + "/comment/"
+                            + quote(comment["id"], safe="")}
+                if invalid_fields:
+                    recovery["invalid_fields"] = invalid_fields
+                native_gaps.append(recovery)
             try:
                 require(isinstance(comment.get("author"), dict)
                         and isinstance(comment["author"].get("accountId"), str)
@@ -297,7 +316,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                         "Comment lacks native actor/body")
                 created = timestamp(comment["created"])
                 events = [("comment_created", comment["author"], created)]
-                if comment.get("updated"):
+                if comment.get("updated") and "updated" not in invalid_fields:
                     modified = timestamp(comment["updated"])
                     require(modified >= created, "Reversed comment timestamps")
                     if modified != created:
@@ -320,6 +339,8 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                                     "captured_count": len(comments), "total": native.get("total") if isinstance(native, dict) else None}
         if native_gaps:
             item["comment_native_gaps"] = native_gaps
+        else:
+            item.pop("comment_native_gaps", None)
         if not native_fidelity:
             gap("One Jira comment stream lacks native actor identities or timestamps; those comments cannot prove exact-window activity.")
         sources = [("description", item["url"], fields.get("description"), item["sensitive"]),
