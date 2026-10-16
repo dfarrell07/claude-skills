@@ -199,6 +199,18 @@ def comment_history_personal_edits(record, start, end, login):
                 'Latest native history edit mismatch')
     else:
         require(snapshot['lastEditedAt'] is None and snapshot['editor'] is None, 'Missing native edit revisions')
+    require('lastEditedAt' in initial and 'editor' in initial, 'Missing initial native edit observation')
+    if initial['lastEditedAt'] is not None:
+        initial_time = timestamp(initial['lastEditedAt'])
+        require(timestamp(initial['createdAt']) <= initial_time <= timestamp(initial['updatedAt']),
+                'Invalid initial native edit time')
+        observed = [row for row in edits if timestamp(row['editedAt']) == initial_time]
+        require(observed, 'Earlier observed native edit disappeared from history')
+        if isinstance(initial['editor'], dict) and initial['editor'].get('login'):
+            require(any(row['editor']['login'].casefold() == initial['editor']['login'].casefold()
+                        for row in observed), 'Earlier observed native editor disappeared from history')
+    else:
+        require(initial['editor'] is None, 'Inconsistent initial native edit observation')
     return [row for row in edits if start <= timestamp(row['editedAt']) <= end
             and row['editor']['login'].casefold() == login.casefold()]
 

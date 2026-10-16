@@ -1590,6 +1590,20 @@ class CommentHistoryTest(unittest.TestCase):
                 self.assertEqual(data['activity'], [])
                 self.assertEqual(data['comment_edit_histories'][0]['status'], 'partial')
 
+    def test_native_initial_revision_cannot_disappear_from_later_complete_history(self):
+        event, node, page = self.history_fixture()
+        for mutation in ('time', 'actor'):
+            altered = copy.deepcopy(node)
+            if mutation == 'time':
+                altered['lastEditedAt'] = '2026-10-15T01:00:00Z'
+            else:
+                altered['editor']['login'] = 'me'
+            with self.subTest(mutation=mutation):
+                client, data = self.run_history(event, altered, [{'data': {'node': page}}])
+                self.assertTrue(client.warnings)
+                self.assertFalse(data['comment_edit_histories'][0]['no_personal_edits_in_window'])
+                self.assertIsNone(data['comment_edit_histories'][0]['personal_edit_ids'])
+
     def test_matching_latest_other_editor_cannot_hide_earlier_personal_revision(self):
         event, node, page = self.history_fixture()
         event['updated_at'] = node['updatedAt']
