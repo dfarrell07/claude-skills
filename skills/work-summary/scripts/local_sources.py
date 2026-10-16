@@ -8,6 +8,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 from evidence import HASH, REPO, UTC, git, iso, require
+from capabilities import inspect_unreadable_tree
 
 
 PRUNED = {'.git', 'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.venv', 'venv', 'go-cache'}
@@ -64,10 +65,71 @@ def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, lim
     return result
 
 
+def recover_stale_worktree(repo, common, record):
+    """Read retained admin data without repairing or pruning a missing worktree."""
+    recovery = {'status': 'partial', 'method': 'retained_worktree_admin', 'reflog_heads': [],
+                'available_heads': []}
+    try:
+        for admin in (Path(common) / 'worktrees').iterdir():
+            if not admin.is_dir():
+                continue
+            try:
+                gitdir = (admin / 'gitdir').read_text(encoding='utf-8')
+            except OSError:
+                continue
+            if Path(gitdir.removesuffix('\n')).parent.resolve() != Path(record['path']).resolve():
+                continue
+            recovery.update(admin_dir=str(admin), gitdir=gitdir)
+            options = ('--git-dir=' + str(admin),)
+            head = git(repo, *options, 'rev-parse', '--verify', 'HEAD^{commit}').removesuffix('\n')
+            require(HASH.fullmatch(head), 'Invalid retained worktree HEAD')
+            recovery['head'] = head
+            for key, variable in (('configured_author_email', 'user.email'), ('configured_author_name', 'user.name')):
+                try:
+                    value = git(repo, *options, 'config', '--get', variable).removesuffix('\n')
+                    require(value and '\n' not in value, 'Invalid retained worktree identity')
+                    recovery[key] = value
+                except subprocess.CalledProcessError as error:
+                    if error.returncode != 1:
+                        raise
+                    recovery[key] = None
+            args = (*options, 'reflog', 'show', '--no-use-mailmap', '--no-show-signature',
+                    '--encoding=UTF-8', '--no-color', '--format=%H', 'HEAD')
+            raw = git(repo, *args)
+            file_path = admin / 'logs' / 'HEAD'
+            try:
+                file_raw = file_path.read_text(encoding='utf-8')
+            except FileNotFoundError:
+                file_raw = ''
+            file_heads = set()
+            for line in file_raw.splitlines():
+                before, after, _ = line.split(' ', 2)
+                require(HASH.fullmatch(before) and HASH.fullmatch(after), 'Invalid retained reflog record')
+                file_heads.update(sha for sha in (before, after) if set(sha) != {'0'})
+            # `git reflog show` silently omits entries whose objects are gone.
+            # The retained native file preserves those identities and old OIDs.
+            heads = sorted(set(raw.splitlines()) | file_heads)
+            require(all(HASH.fullmatch(sha) for sha in heads), 'Invalid retained reflog identity')
+            recovery.update(reflog_heads=heads, reflog_output=raw, reflog_command=list(args),
+                            reflog_file=file_raw, reflog_file_path=str(file_path))
+            candidates = sorted(set(heads + [head] + ([record['head']] if record.get('head') else [])))
+            require(all(HASH.fullmatch(sha) for sha in candidates), 'Invalid registered HEAD')
+            checked = git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
+                          stdin='\n'.join(candidates) + '\n').splitlines()
+            available = [sha for sha, line in zip(candidates, checked) if line == sha + ' commit']
+            recovery['available_heads'] = available
+            if len(available) == len(candidates) == len(checked):
+                recovery['status'] = 'ok'
+            return recovery
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        pass
+    return recovery
+
+
 def collect_local(roots, start, end, warn, api=None, identity=None, author_emails=()):
     identity = identity or {}
     host = os.environ.get('GH_HOST', 'github.com').lower()
-    entries, inspected, queue = {}, set(), []
+    entries, inspected, queue, recoveries = {}, set(), [], []
     configured_names = {' '.join(identity['name'].casefold().split())} if identity.get('name') else set()
 
     def add_repo(directory, marked=False):
@@ -112,12 +174,19 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                         record = {'path': str(path), 'exists': path.is_dir(),
                                   'head': next((field[5:] for field in fields if field.startswith('HEAD ')), None),
                                   'branch': next((field[7:] for field in fields if field.startswith('branch ')), None),
-                                  'detached': 'detached' in fields}
+                                  'detached': 'detached' in fields,
+                                  'prunable': next((field[9:] for field in fields if field.startswith('prunable ')), None)}
                         entry['worktrees'].append(record)
                         if record['exists'] and 'bare' not in fields:
                             queue.append(path)
                         elif not record['exists']:
-                            warn(f'Registered worktree is missing: {path}; available Git objects are still inventoried.')
+                            recovered = record['recovery'] = recover_stale_worktree(canonical, common, record)
+                            if recovered.get('configured_author_email'):
+                                entry['identities'].add(recovered['configured_author_email'])
+                            if recovered.get('configured_author_name'):
+                                configured_names.add(' '.join(recovered['configured_author_name'].casefold().split()))
+                            if recovered['status'] != 'ok':
+                                warn(f'Registered worktree is missing: {path}; retained Git admin data is incomplete.')
                 except (subprocess.SubprocessError, OSError, ValueError):
                     warn(f'Cannot enumerate registered worktrees for {canonical}.')
         except (subprocess.SubprocessError, OSError, UnicodeError):
@@ -152,6 +221,13 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             dependency_roots.append(candidate.absolute())
     exclusions = []
     visited = set()
+
+    def scan_error(error):
+        recovered = inspect_unreadable_tree(error.filename)
+        recoveries.append(recovered)
+        if recovered['status'] != 'ok':
+            warn(f'Cannot scan {error.filename}; local coverage is incomplete.')
+
     for root in dict.fromkeys(scan_roots):
         try:
             if not root.is_dir():
@@ -164,7 +240,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             continue
         add_repo(root, marked=any(os.path.lexists(parent / '.git') for parent in (root, *root.parents)))
         walk_targets = {root: root}
-        for directory, dirs, files in os.walk(root, followlinks=True, onerror=lambda error: warn(f'Cannot scan {error.filename}; local coverage is incomplete.')):
+        for directory, dirs, files in os.walk(root, followlinks=True, onerror=scan_error):
             current = Path(directory)
             real = walk_targets.pop(current, None)
             if real is None:
@@ -226,8 +302,19 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         entry['paths'] = sorted(entry['paths'])
         entry.pop('worktrees_inspected', None)
         try:
-            entry['tips'] = sorted(set(git(entry['path'], 'rev-list', '--all', '--no-walk=unsorted').splitlines()))
+            ordinary_tips = sorted(set(git(entry['path'], 'rev-list', '--all', '--no-walk=unsorted').splitlines()))
+            recovered_tips = {sha for tree in entry['worktrees']
+                              for sha in tree.get('recovery', {}).get('available_heads', [])}
+            entry['tips'] = sorted(set(ordinary_tips) | recovered_tips)
             require(all(HASH.fullmatch(tip) for tip in entry['tips']), 'Invalid reference tip')
+            if recovered_tips:
+                revisions = '\n'.join(sorted(recovered_tips)) + '\n' + ''.join('^' + sha + '\n' for sha in ordinary_tips)
+                unreferenced = set(git(entry['path'], 'rev-list', '--stdin', stdin=revisions).splitlines())
+                for tree in entry['worktrees']:
+                    recovery = tree.get('recovery')
+                    if recovery is not None:
+                        recovery['unreferenced_reflog_heads'] = sorted(
+                            unreferenced & set(recovery['reflog_heads']) & set(recovery['available_heads']))
             raw = git(entry['path'], 'for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)')
             entry['refs'] = []
             for line in raw.splitlines():
@@ -259,7 +346,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
                             for ref in entry['refs']
                             if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'}
-                           | {tree['head'] for tree in entry['worktrees']
+                           | recovered_tips | {tree['head'] for tree in entry['worktrees']
                               if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])})
             tip_records[entry['path']] = log_records(entry['path'], heads, no_walk=True)
             records[entry['path']] = recent_records
@@ -306,6 +393,11 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
              'object_type': 'commit', 'peeled_type': None}
             for tree in entry['worktrees']
             if tree['detached'] and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])]
+        snapshot_refs += [
+            {'name': 'worktree-reflog:' + tree['path'] + ':' + sha, 'hash': sha,
+             'object_type': 'commit', 'peeled_type': None}
+            for tree in entry['worktrees']
+            for sha in tree.get('recovery', {}).get('unreferenced_reflog_heads', [])]
         leads_seen = set()
         for record in records.get(entry['path'], []) + tip_records.get(entry['path'], []):
             if record['author_email'] in unknown and record['author_email'] not in entry['identities']:
@@ -381,5 +473,6 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             warn(f'Cannot classify ref snapshots for {entry["path"]}; branch coverage is incomplete.')
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
-                         'repositories': list(entries.values()), 'author_aliases': list(aliases.values())},
+                         'repositories': list(entries.values()), 'author_aliases': list(aliases.values()),
+                         'local_recoveries': recoveries},
             'commits': commits, 'branches': branches, 'unattributed_commits': unattributed}
