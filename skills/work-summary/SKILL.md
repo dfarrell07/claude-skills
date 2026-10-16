@@ -118,6 +118,10 @@ specific gaps. Roles and updates alone do not prove personal work. Mention/subsc
 assignment, requested-review and cross-reference events are context unless
 separate substantive activity supports the described work; an actor/time match
 alone does not make a passive event an accomplishment.
+The current comment body is context, even when its creation or edit actor/time
+is verified. Other edits can change that body; do not attribute exact wording
+to a historical event without native revision-content evidence. Preserve
+contradictory body observations and their uncertainty.
 
 For branch PR associations check all states, saved authored indexes, independent
 any-author SHA search, and commit associations. A commit association alone can

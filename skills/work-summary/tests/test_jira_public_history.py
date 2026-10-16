@@ -25,7 +25,7 @@ def issue(number=1):
     source = {'id': str(number), 'key': f'ACM-{number}',
               'self': f'https://jira-prod-us-mc-44-4.prod.atl-paas.net/rest/api/3/issue/{number}',
               'fields': {'summary': 'Private authenticated title', 'comment': {'total': 159, 'comments': [
-                  {'id': '17997086', 'body': 'Authenticated private comment.'}]}}}
+                  {'id': '77', 'body': 'Authenticated private comment.'}]}}}
     return {'key': source['key'], 'url': f"{BASE}/browse/{source['key']}", 'source': copy.deepcopy(source),
             'detail': source, 'comment_pages': [{'values': ['preserved native comments']}]}
 

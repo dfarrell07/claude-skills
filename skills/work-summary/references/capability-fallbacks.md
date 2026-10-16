@@ -111,6 +111,11 @@ than assuming the CLI and connector use the same identity.
 
 Test access per operation. A denied authenticated-user endpoint does not prove
 that public item, inventory, comment, or history endpoints are unreadable.
+Existing native Git credential helpers can make HTTPS Git reads usable when
+SSH fails; invoke them through Git without printing credentials or changing
+persisted authentication. If a native TLS error names a missing configured CA
+file, a command-local installed OS CA bundle can restore that read while keeping
+certificate verification enabled. Retain both attempts; never disable TLS checks.
 For explicit GitLab MR URLs, try verified-TLS native public detail reads, native
 repository redirects, and paginated notes/discussions. A native public email
 matching an already verified account alias can establish the target's numeric
