@@ -32,7 +32,9 @@ across topics only when it serves a distinct purpose in each.
   current blocker, not simply because another artifact mentions it.
 - **Review/investigation artifact:** contains substantive personal analysis or
   the decision being reported. A review request or incidental mention is not
-  enough to claim that work.
+  enough to claim that work. A native actor/time on a mention, subscription or
+  cross-reference establishes the event, not implementation or review progress.
+  Older open work can be useful ongoing context without being new weekly work.
 - **Backports and superseded changes:** normally select the primary current PR
   and describe maintained-branch coverage in prose. Include a distinct branch
   PR if its behavior, status or blocker matters. Prefer the replacement over a

@@ -101,7 +101,10 @@ requests, and recent review/comment/involvement candidates. Search caps and
 paging/count drift remain explicit. Candidate searches have no upper updated
 cutoff; native actor/event times determine the exact window. Preserve ID-less
 cross-reference events using native source identity. Comment edits require
-native matching editor proof. Roles and updates alone do not prove personal work.
+native matching editor proof. Roles and updates alone do not prove personal work. Mention/subscription,
+assignment, requested-review and cross-reference events are context unless
+separate substantive activity supports the described work; an actor/time match
+alone does not make a passive event an accomplishment.
 
 For branch PR associations check all states, saved authored indexes, independent
 any-author SHA search, and commit associations. A commit association alone can
