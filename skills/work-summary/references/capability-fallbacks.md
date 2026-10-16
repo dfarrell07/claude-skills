@@ -109,7 +109,8 @@ Write a concise ranked bullet list by default: concrete delivered results first,
 then substantive investigation/review work, then ongoing work with its current
 observed state. Ranking should use supported significance and completion, not
 raw commit counts. Combine duplicate commits, PRs and tickets into one work item,
-showing both links when native evidence establishes their relation. Local-only
+showing the core ticket and implementation links when each helps the reader.
+A valid relation alone is not an instruction to display every connected URL. Local-only
 bullets can identify the repository briefly when no verified web link exists;
 retain full paths and hashes in private evidence or optional details. Keep older
 backup work outside weekly accomplishments unless exact-window evidence supports

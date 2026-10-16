@@ -3,8 +3,10 @@
 ## /work-summary
 
 Create a ranked weekly work list from the sources available in this session.
-Each bullet has a one-line work summary with indented raw Jira and PR URLs when
-available. Related changes/backports share a work topic; importance determines order.
+Each bullet has a one-line work summary and selected core Jira/PR links.
+Use substantive subtopics when a workstream has separate updates; place raw
+links beneath the description they support. Related backports share a work topic;
+importance determines order. Preserve broad evidence without dumping its links.
 
 ```bash
 /work-summary

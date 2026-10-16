@@ -1,7 +1,7 @@
 ---
 name: work-summary
 description: "Create a ranked weekly what-I-did bullet list from available Git, GitHub, and Jira evidence, using authenticated connectors or CLIs and gracefully reducing scope when tools or access are missing."
-version: 2.0.0
+version: 2.1.0
 argument-hint: "[days]"
 user-invocable: true
 ---
@@ -159,6 +159,12 @@ priorities and the user's stated priorities when available; do not invent severi
 or impact. Timestamp, PR state and raw commit counts alone do not establish
 importance. Preserve the chosen most-important-first order.
 
+Use the destination and audience to select useful work. A supplied 1:1 update
+can guide scope, tone and grouping; its dates, plans and TODOs are not fresh
+completion evidence. For a manager update, emphasize professional progress,
+blockers, decisions and substantive review/unblocking contributions. Keep
+unrelated personal projects and low-value audit detail in the saved evidence.
+
 Each bullet's description is one clear line about what was done or investigated.
 Ongoing work may be included when actual activity supports it; phrase its state
 accurately. Avoid generic aggregates such as “11 PRs merged” as a work topic.
@@ -167,16 +173,36 @@ context when useful and keep full hashes/paths in the evidence/details.
 
 ## Required Primary Output
 
-Return a simple Markdown bullet list, with one one-line work summary per top-level
-bullet. Under each, put deduplicated **raw Jira and PR URLs** as indented sub-bullets.
-Use both counterparts where a native relation is available. Include native MR
-URLs when relevant. Do not replace URLs with titled Markdown links, add headings,
-stats, tables, an executive-summary wrapper, or a detailed inventory to this list.
+Return a simple Markdown bullet list ranked by importance. A work topic can
+stand alone or have short, substantive subtopics when a shared workstream has
+separately explainable progress. Put raw Jira/PR/MR URL sub-bullets beneath the
+narrowest description they support. Keep descriptions one line each. Avoid
+headings, stats, tables, placeholders and an executive-summary wrapper.
+
+**Collect broadly, present selectively.** A native relation proves a reference,
+not that its URL belongs in this update. Select the core ticket that directly
+tracks the described work and the implementation/review artifacts the reader
+needs. Include both Jira and PR when each adds useful identification. Omit
+incidental mentions, umbrella trackers, historical predecessors, superseded
+proposals and repetitive backports unless they matter to the specific update.
+Retain those observations privately; do not reduce discovery to make the list
+shorter. Prefer a primary PR for equivalent backports and describe branch scope
+in prose. Keep multiple PRs when they implement distinct necessary pieces.
+
+There is no fixed link quota and no requirement to fill a Jira/PR pair. A useful
+update can have no URLs. Before keeping a URL, ask what the reader would learn
+by opening it that the summary and other selected links do not already provide.
+See [editorial selection](references/editorial-selection.md) for criteria,
+hierarchy and analysis examples. Match a supplied reference's judgment rather
+than copying its exact topics, link count, dates or unfinished placeholders.
 
 ```text
-- Fixed the component's release verification and backport handling.
-  - https://jira.example.test/browse/EXAMPLE-123
-  - https://github.com/org/repo/pull/456
+- Improved the service's verification workflow.
+  - Planning and implementation context.
+    - https://jira.example.test/browse/EXAMPLE-123
+    - https://github.com/org/repo/pull/456
+  - Added CI checks for the remaining helpers.
+    - https://github.com/org/repo/pull/457
 - Investigated a compatibility regression and prepared a local fix.
 ```
 
@@ -196,7 +222,13 @@ keep the long diagnostics in the private detailed evidence.
 For scripted runs, copy every source section unchanged into `enriched.json`
 in the same run directory and add `analysis`. Use ordered `themes` as the ranked
 work topics; each description becomes one work bullet. Every topic needs captured
-GitHub items, Jira tickets and/or local commit/branch citations. Explicitly selected `in_progress` entries follow as ongoing context without
+GitHub items, Jira tickets and/or local commit/branch citations, including when
+their URLs are intentionally omitted. Add `links` as the ordered URL strings to
+display, selecting only candidates supported by that node's evidence; `[]` means
+no links. Add optional `subtopics` with the same shape for substantive child
+updates. A grouping parent can rely on its children's citations and show no
+links. Parent/sibling evidence cannot justify a child's URL. Explicitly selected
+`in_progress` entries follow as ongoing context without
 claiming weekly activity from open state alone. Include genuinely worked-on
 ongoing topics among the ranked themes when appropriate; do not auto-promote
 backlog roles.
@@ -212,6 +244,10 @@ backlog roles.
       ],
       "jira": [
         {"key": "EXAMPLE-123", "url": "https://jira.example.test/browse/EXAMPLE-123"}
+      ],
+      "links": [
+        "https://jira.example.test/browse/EXAMPLE-123",
+        "https://github.com/org/repo/pull/456"
       ]
     }
   ],
@@ -228,10 +264,13 @@ bash "$SKILL_DIR/scripts/render-report.sh" "$RUN_DIR/enriched.json" "$RUN_DIR/da
 ```
 
 Without analysis, the renderer provides a conservative evidence-based fallback;
-agent analysis should improve grouping and importance order. Validation checks
+it lists direct cited artifacts without expanding their surrounding reference
+graph. Agent analysis should choose core links, grouping and importance order. Validation checks
 source preservation and citation membership, not the truth of every prose claim.
-Read the actual bullet output, verify each summary and raw counterpart URL,
-check ranking, and correct misleading groupings before delivery.
+Read the actual bullet output as the intended reader: verify every claim and
+selected URL, remove peripheral or redundant links, check ranking, and place
+subtopic links beneath their own descriptions. Evidence coverage is not a
+reason to put every captured artifact into the concise list.
 
 For optional private audit detail only:
 
