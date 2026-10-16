@@ -1475,5 +1475,141 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(query_text(client.calls[1]).count(':search('), 1)
 
 
+class CommentHistoryTest(unittest.TestCase):
+    client = GithubSourcesTest.client
+    def history_fixture(self):
+        event = {'id': 51, 'node_id': 'native51', 'user': {'login': 'bot', 'node_id': 'BOT51'},
+                 'body': 'Earlier source body', 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-51',
+                 'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z'}
+        node = {'id': 'native51', 'databaseId': 51, 'url': event['html_url'],
+                'author': {'login': 'bot', 'id': 'BOT51'}, 'editor': {'login': 'bot'},
+                'createdAt': event['created_at'], 'updatedAt': '2026-10-16T01:00:00Z',
+                'lastEditedAt': '2026-10-16T01:00:00Z'}
+        def row(identity, when, actor='bot'):
+            return {'id': identity, 'editedAt': when, 'createdAt': when, 'updatedAt': when,
+                    'deletedAt': None, 'editor': {'login': actor, 'id': 'native-' + actor}}
+        rows = [row('edit2', node['lastEditedAt']), row('edit1', event['updated_at']),
+                row('created', event['created_at'])]
+        page = {**node, 'body': 'Current source https://gitlab.com/group/project/-/merge_requests/2',
+                'includesCreatedEdit': True, 'userContentEdits': {'totalCount': 3,
+                'nodes': rows, 'pageInfo': {'hasNextPage': False, 'endCursor': 'last'}}}
+        return event, node, page
+
+    def run_history(self, event, node, pages):
+        responses = iter(pages)
+        def api(args):
+            if args[0] == 'graphql':
+                if 'userContentEdits' in query_text(args):
+                    return next(responses)
+                return {'data': {'node': node}}
+            return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
+        client = self.client(api)
+        data = {'activity': []}
+        client._inspect_activity(data, [{'url': 'https://github.com/org/repo/pull/1', 'repo': 'org/repo', 'number': 1}])
+        return client, data
+
+    def test_complete_bot_history_recovers_drift_and_preserves_both_reference_bodies(self):
+        from extended_evidence import github_reference_comments, validate_github
+        event, node, page = self.history_fixture()
+        client, data = self.run_history(event, node, [{'data': {'node': page}}])
+        self.assertEqual(client.warnings, [])
+        self.assertEqual(data['activity'], [])
+        self.assertTrue(data['comment_edit_histories'][0]['no_personal_edits_in_window'])
+        self.assertEqual([row['body'] for row in github_reference_comments(data)], [event['body'], page['body']])
+        item = rest_item(rest(), 'prs', 'github.com')
+        source = {'github': data, 'metadata': {'github_user': 'me'}}
+        validate_github(source, {item['url']: item}, START, END)
+        for mutation in ('actor', 'count', 'rest', 'status'):
+            forged = copy.deepcopy(source)
+            proof = forged['github']['comment_edit_histories'][0]
+            if mutation == 'actor':
+                proof['pages'][0]['response']['data']['node']['userContentEdits']['nodes'][1]['editor']['login'] = 'me'
+            elif mutation == 'count':
+                proof['pages'][0]['response']['data']['node']['userContentEdits']['totalCount'] = 4
+            elif mutation == 'rest':
+                proof['rest_observation']['user']['node_id'] = 'other'
+            else:
+                proof['status'] = 'partial'
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate_github(forged, {item['url']: item}, START, END)
+
+    def test_pagination_native_cursor_and_complete_count_are_required(self):
+        event, node, page = self.history_fixture()
+        first, second = copy.deepcopy(page), copy.deepcopy(page)
+        first['userContentEdits']['nodes'] = first['userContentEdits']['nodes'][:1]
+        first['userContentEdits']['pageInfo'] = {'hasNextPage': True, 'endCursor': 'next-cursor'}
+        second['userContentEdits']['nodes'] = second['userContentEdits']['nodes'][1:]
+        client, data = self.run_history(event, node, [{'data': {'node': first}}, {'data': {'node': second}}])
+        self.assertEqual(client.warnings, [])
+        self.assertTrue(any('after=next-cursor' in call for call in client.calls))
+        self.assertEqual([p['after'] for p in data['comment_edit_histories'][0]['pages']], [None, 'next-cursor'])
+
+    def test_unknown_deleted_personal_and_malformed_history_never_certify_negative(self):
+        event, node, page = self.history_fixture()
+        for mutation in ('self', 'unknown', 'deleted', 'count', 'duplicate', 'created', 'future', 'identity', 'errors', 'cursor'):
+            altered = copy.deepcopy(page)
+            rows = altered['userContentEdits']['nodes']
+            if mutation == 'self':
+                rows[1]['editor']['login'] = 'Me'
+            elif mutation == 'unknown':
+                rows[1]['editor'] = None
+            elif mutation == 'deleted':
+                rows[1]['deletedAt'] = '2026-10-14T00:00:00Z'
+            elif mutation == 'count':
+                altered['userContentEdits']['totalCount'] = 4
+            elif mutation == 'duplicate':
+                rows[1]['id'] = rows[0]['id']
+            elif mutation == 'created':
+                altered['includesCreatedEdit'] = False
+            elif mutation == 'future':
+                rows[1]['editedAt'] = '2026-11-01T00:00:00Z'
+            elif mutation == 'identity':
+                altered['author']['id'] = 'another-author'
+            elif mutation == 'cursor':
+                altered['userContentEdits']['pageInfo'] = {'hasNextPage': True, 'endCursor': None}
+            response = {'data': {'node': altered}}
+            if mutation == 'errors':
+                response['errors'] = [{'message': 'incomplete native history'}]
+            with self.subTest(mutation=mutation):
+                client, data = self.run_history(copy.deepcopy(event), copy.deepcopy(node), [response])
+                self.assertTrue(client.warnings)
+                self.assertEqual(data['activity'], [])
+                self.assertEqual(data['comment_edit_histories'][0]['status'], 'partial')
+
+    def test_capped_and_changed_native_pages_remain_explicit_gaps(self):
+        event, node, page = self.history_fixture()
+        first, second = copy.deepcopy(page), copy.deepcopy(page)
+        first['userContentEdits']['nodes'] = first['userContentEdits']['nodes'][:1]
+        first['userContentEdits']['pageInfo'] = {'hasNextPage': True, 'endCursor': 'next'}
+        second['userContentEdits']['nodes'] = second['userContentEdits']['nodes'][1:]
+        for mutation in ('cap', 'repeat', 'count', 'body', 'latest'):
+            altered = copy.deepcopy(second)
+            if mutation == 'repeat':
+                altered['userContentEdits']['pageInfo'] = {'hasNextPage': True, 'endCursor': 'next'}
+            elif mutation == 'count':
+                altered['userContentEdits']['totalCount'] = 4
+            elif mutation == 'body':
+                altered['body'] = 'Changed while paging'
+            elif mutation == 'latest':
+                altered['lastEditedAt'] = '2026-10-15T00:00:00Z'
+            with self.subTest(mutation=mutation):
+                responses = [{'data': {'node': first}}, {'data': {'node': altered}}]
+                with patch('github_sources.MAX_LIST_PAGES', 1 if mutation == 'cap' else 100):
+                    client, data = self.run_history(event, node, responses)
+                self.assertTrue(client.warnings)
+                self.assertFalse(data['comment_edit_histories'][0]['no_personal_edits_in_window'])
+
+    def test_self_edit_outside_window_and_creation_by_self_do_not_imply_weekly_edit(self):
+        event, node, page = self.history_fixture()
+        page['userContentEdits']['nodes'][-1]['editor']['login'] = 'me'
+        page['userContentEdits']['nodes'][0]['editedAt'] = '2026-10-16T01:00:00Z'
+        # END is midnight: the latest self edit lies after the exact end.
+        page['editor']['login'] = 'me'
+        page['userContentEdits']['nodes'][0]['editor']['login'] = 'me'
+        client, data = self.run_history(event, node, [{'data': {'node': page}}])
+        self.assertEqual(client.warnings, [])
+        self.assertEqual(data['activity'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

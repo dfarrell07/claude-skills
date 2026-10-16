@@ -113,6 +113,113 @@ def validate_editor_comment(event, comment):
                     'GitHub native comment author mismatch')
 
 
+def comment_node_bound(node, rest):
+    """Bind a later native observation to the same comment and native author."""
+    require(isinstance(node, dict) and node.get('id') == rest.get('node_id')
+            and integer(node.get('databaseId'), 1) and node['databaseId'] == rest.get('id')
+            and node.get('url') == rest.get('html_url')
+            and timestamp(node.get('createdAt')) == timestamp(rest.get('created_at'))
+            and timestamp(node.get('createdAt')) <= timestamp(node.get('updatedAt')),
+            'Native comment history identity mismatch')
+    require('author' in node, 'Missing native history author')
+    author, original = node['author'], rest.get('user')
+    if author is None or original is None:
+        require(author is None and original is None, 'Native history deleted author mismatch')
+    else:
+        require(isinstance(author, dict) and isinstance(original, dict), 'Invalid native history author')
+        if author.get('id') and original.get('node_id'):
+            require(author['id'] == original['node_id'], 'Native history author ID mismatch')
+        else:
+            require(isinstance(author.get('login'), str) and bool(author['login'])
+                    and author['login'].casefold() == original.get('login', '').casefold(),
+                    'Native history author mismatch')
+
+
+def comment_history_negative(record, start, end, login):
+    """Replay complete native edit pages; uncertainty never proves absence."""
+    rest, initial = record['rest_observation'], record['current_observation']
+    comment_node_bound(initial, rest)
+    pages = record['pages']
+    require(isinstance(pages, list) and 0 < len(pages) <= 100, 'Missing/bounded native edit history')
+    cursor, cursors, ids, rows, snapshot, total = None, set(), set(), [], None, None
+    for index, page in enumerate(pages):
+        require(isinstance(page, dict) and page.get('after') == cursor, 'Native edit cursor mismatch')
+        response = page.get('response')
+        require(isinstance(response, dict) and not response.get('errors'), 'Native edit history query failed')
+        node = response['data']['node']
+        comment_node_bound(node, rest)
+        require(isinstance(node.get('body'), str), 'Missing native current comment body')
+        current = {field: node[field] for field in ('id', 'databaseId', 'url', 'author', 'editor',
+                   'createdAt', 'updatedAt', 'lastEditedAt', 'includesCreatedEdit', 'body')}
+        require(type(current['includesCreatedEdit']) is bool, 'Missing native creation-edit flag')
+        require(snapshot is None or current == snapshot, 'Native edit history changed during paging')
+        snapshot = current
+        require(timestamp(node['updatedAt']) >= max(timestamp(initial['updatedAt']), timestamp(rest['updated_at'])),
+                'Native history observation regressed')
+        connection = node['userContentEdits']
+        require(isinstance(connection, dict) and integer(connection.get('totalCount'))
+                and isinstance(connection.get('nodes'), list) and len(connection['nodes']) <= 100,
+                'Invalid native edit page')
+        require(total is None or total == connection['totalCount'], 'Native edit count changed')
+        total = connection['totalCount']
+        for row in connection['nodes']:
+            require(isinstance(row, dict) and isinstance(row.get('id'), str) and row['id']
+                    and row['id'] not in ids, 'Duplicate/missing native edit ID')
+            ids.add(row['id'])
+            edited, created, updated = (timestamp(row.get(field)) for field in ('editedAt', 'createdAt', 'updatedAt'))
+            require(timestamp(node['createdAt']) <= edited <= created <= updated
+                    and edited <= timestamp(node['updatedAt'])
+                    and 'deletedAt' in row and row['deletedAt'] is None,
+                    'Deleted or invalid native edit revision')
+            require(not rows or timestamp(rows[-1]['editedAt']) >= edited, 'Native edit ordering changed')
+            require(isinstance(row.get('editor'), dict) and isinstance(row['editor'].get('login'), str)
+                    and bool(row['editor']['login']), 'Missing native historical editor')
+            rows.append(row)
+        info = connection.get('pageInfo')
+        require(isinstance(info, dict) and type(info.get('hasNextPage')) is bool, 'Invalid native edit page info')
+        if not info['hasNextPage']:
+            require(index == len(pages) - 1 and len(rows) == total, 'Native edit total mismatch')
+            break
+        cursor = info.get('endCursor')
+        require(isinstance(cursor, str) and cursor and cursor not in cursors
+                and connection['nodes'] and len(rows) < total and index < len(pages) - 1,
+                'Incomplete native edit pagination')
+        cursors.add(cursor)
+    else:
+        raise ValueError('Native edit pagination did not terminate')
+    creation_rows = [row for row in rows if timestamp(row['editedAt']) == timestamp(snapshot['createdAt'])]
+    require(len(creation_rows) == int(snapshot['includesCreatedEdit']), 'Ambiguous native creation revision')
+    edits = [row for row in rows if row not in creation_rows]
+    if edits:
+        require(timestamp(snapshot['lastEditedAt']) == max(timestamp(row['editedAt']) for row in edits)
+                and isinstance(snapshot['editor'], dict)
+                and snapshot['editor'].get('login', '').casefold() == edits[0]['editor']['login'].casefold(),
+                'Latest native history edit mismatch')
+    else:
+        require(snapshot['lastEditedAt'] is None and snapshot['editor'] is None, 'Missing native edit revisions')
+    return not any(start <= timestamp(row['editedAt']) <= end
+                   and row['editor']['login'].casefold() == login.casefold() for row in edits)
+
+
+def github_reference_comments(github):
+    """Yield saved discussion bodies and identity-bound current native bodies."""
+    yield from github.get('reference_comments', [])
+    for record in github.get('comment_edit_histories', []):
+        for page in record.get('pages', []):
+            try:
+                node = page['response']['data']['node']
+                comment_node_bound(node, record['rest_observation'])
+                require(isinstance(node.get('body'), str), 'Missing native body')
+                yield {'item_url': record['item_url'], 'repo': record['repo'], 'number': record['number'],
+                       'kind': record['kind'], 'id': node['databaseId'], 'node_id': node['id'],
+                       'url': node['url'], 'body': node['body'],
+                       'author_login': (node['author'] or {}).get('login'),
+                       'author_node_id': (node['author'] or {}).get('id'),
+                       'created_at': node['createdAt'], 'updated_at': node['updatedAt']}
+            except (KeyError, ValueError, TypeError, AttributeError):
+                continue
+
+
 def historical_head_hashes(record, known, host='github.com'):
     """Native force-push history proves a former head, without proving weekly work."""
     require(isinstance(record, dict), 'Invalid native head event')
@@ -213,6 +320,41 @@ def validate_github(data, evidence, start, end):
         identity = comment['item_url'], comment['kind'], comment['id']
         require(identity not in comments_seen, 'Duplicate native GitHub comment')
         comments_seen[identity] = comment
+    histories = github.get('comment_edit_histories', [])
+    require(isinstance(histories, list), 'Invalid native comment edit histories')
+    histories_seen = set()
+    for record in histories:
+        require(isinstance(record, dict), 'Invalid native comment edit history')
+        identity = record.get('item_url'), record.get('kind'), record.get('comment_id')
+        comment = comments_seen.get(identity)
+        require(comment is not None and identity not in histories_seen
+                and record.get('repo') == comment['repo'] and record.get('number') == comment['number']
+                and record.get('node_id') == comment.get('node_id'), 'Native edit history target mismatch')
+        histories_seen.add(identity)
+        rest = record.get('rest_observation')
+        require(isinstance(rest, dict) and rest.get('id') == comment['id']
+                and rest.get('node_id') == comment.get('node_id') and rest.get('html_url') == comment['url']
+                and (rest.get('body') or '') == comment['body']
+                and timestamp(rest.get('created_at')) == timestamp(comment['created_at'])
+                and timestamp(rest.get('updated_at')) == timestamp(comment['updated_at']),
+                'Native history REST observation mismatch')
+        author = rest.get('user')
+        require((author or {}).get('login') == comment.get('author_login')
+                and (author or {}).get('node_id') == comment.get('author_node_id'),
+                'Native history REST author mismatch')
+        comment_node_bound(record.get('current_observation'), rest)
+        require(record.get('status') in {'ok', 'partial'}
+                and type(record.get('no_personal_edits_in_window')) is bool,
+                'Invalid native history status')
+        try:
+            negative = comment_history_negative(record, start, end, metadata['github_user'])
+        except (KeyError, ValueError, TypeError, AttributeError):
+            negative = False
+        require(record['no_personal_edits_in_window'] == negative
+                and record['status'] == ('ok' if negative else 'partial'), 'Unproven native edit-history status')
+        if not negative:
+            require(metadata.get('github_status') == 'partial' and metadata.get('warnings'),
+                    'Missing native edit-history coverage gap')
     for event in github.get('activity', []):
         require(isinstance(event, dict) and event.get('item_url') in evidence, 'Unknown GitHub activity item')
         item = evidence[event['item_url']]

@@ -5,6 +5,7 @@ import json
 import subprocess
 from urllib.parse import urlsplit
 
+from extended_evidence import comment_history_negative, comment_node_bound
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
 
@@ -296,7 +297,7 @@ class Github:
         self._repository_aliases[key] = proof
         return proof
 
-    def _comment_edit(self, event, category, key):
+    def _comment_edit(self, event, category, key, github=None, item=None):
         """Resolve native last-edit evidence without treating updatedAt as an edit."""
         try:
             node_id = event.get('node_id')
@@ -316,13 +317,12 @@ class Github:
                 author_bound = (native_id == rest_id if native_id and rest_id else
                                 isinstance(native_author.get('login'), str) and bool(native_author['login'])
                                 and native_author['login'].casefold() == rest_author.get('login', '').casefold())
-            require(isinstance(node, dict) and node.get('id') == node_id
-                    and integer(node.get('databaseId'), 1) and node['databaseId'] == event.get('id')
-                    and node.get('url') == event.get('html_url')
-                    and 'author' in node and author_bound
-                    and timestamp(node['createdAt']) == timestamp(event['created_at'])
-                    and timestamp(node['updatedAt']) == timestamp(event['updated_at']),
-                    'Comment edit identity or observation changed')
+            comment_node_bound(node, event)
+            require(author_bound, 'Comment edit author changed')
+            if timestamp(node['updatedAt']) != timestamp(event['updated_at']):
+                require(github is not None and item is not None, 'No native history destination')
+                self._comment_history(github, item, event, category, key, node)
+                return None
             require('lastEditedAt' in node and 'editor' in node, 'Missing native edit observation')
             edited, editor = node['lastEditedAt'], node['editor']
             if edited is None:
@@ -338,6 +338,47 @@ class Github:
         except ERRORS:
             self.problem(key, 'comment edit has no verified native editor/time; edit not credited')
             return None
+
+    def _comment_history(self, github, item, event, category, key, initial):
+        """Recover only certified absence of personal edits after observation drift."""
+        record = {'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
+                  'kind': category, 'comment_id': event['id'], 'node_id': event['node_id'],
+                  'rest_observation': event, 'current_observation': initial, 'pages': [],
+                  'status': 'partial', 'no_personal_edits_in_window': False}
+        github.setdefault('comment_edit_histories', []).append(record)
+        cursor, seen = None, set()
+        try:
+            node_type = 'IssueComment' if category == 'issue_comment' else 'PullRequestReviewComment'
+            for _ in range(MAX_LIST_PAGES):
+                query = 'query($id:ID!,$after:String){node(id:$id){...on ' + node_type + """{
+                  id databaseId url body author{login ...on Node{id}} editor{login}
+                  createdAt updatedAt lastEditedAt includesCreatedEdit
+                  userContentEdits(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor}
+                    nodes{id editedAt createdAt updatedAt deletedAt editor{login ...on Node{id}}}}
+                }}}"""
+                args = ['graphql', '-f', 'query=' + query, '-f', 'id=' + event['node_id']]
+                if cursor is not None:
+                    args.extend(['-f', 'after=' + cursor])
+                response = self.graphql(*args)
+                record['pages'].append({'after': cursor, 'response': response})
+                require(isinstance(response, dict) and not response.get('errors'), 'Native history query failed')
+                node = response['data']['node']
+                comment_node_bound(node, event)
+                info = node['userContentEdits']['pageInfo']
+                require(type(info.get('hasNextPage')) is bool, 'Missing native history page status')
+                if not info['hasNextPage']:
+                    break
+                cursor = info.get('endCursor')
+                require(isinstance(cursor, str) and cursor and cursor not in seen,
+                        'Repeated native edit history cursor')
+                seen.add(cursor)
+            negative = comment_history_negative(record, self.start, self.end, self.login)
+            if negative:
+                record['status'], record['no_personal_edits_in_window'] = 'ok', True
+                return
+        except ERRORS:
+            pass
+        self.problem(key, 'native edit history incomplete or contains unresolved personal edits; edit not credited')
 
     def _retain_comment(self, github, item, event, category, key):
         """Retain native discussion references independently of actor attribution."""
@@ -582,7 +623,7 @@ class Github:
                             # after this window. Same-second edits are possible too.
                             if (edited and event.get('created_at') and timestamp(event['created_at']) <= self.end
                                     and timestamp(edited) >= self.start):
-                                proof = self._comment_edit(event, category, key)
+                                proof = self._comment_edit(event, category, key, github, item)
                                 if proof is not None:
                                     dates.append(('updated_at', category + '_edited', proof['editor']['login'], proof))
                         for field, action, event_actor, editor_evidence in dates:
