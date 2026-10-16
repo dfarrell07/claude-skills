@@ -240,6 +240,49 @@ def public_history_review_links(issue, github_host='github.com'):
     return result
 
 
+def public_field_events(jira, start, end):
+    """Yield own native field actions; a tracker change does not prove delivery."""
+    metadata = jira.get('metadata', {})
+    principal = metadata.get('account_id')
+    if (metadata.get('identity_verified') is not True or not isinstance(principal, str)
+            or not principal or start is None or end is None):
+        return
+    seen = set()
+    for issue in jira.get('issues', []):
+        record = issue.get('public_history')
+        if not isinstance(record, dict) or record.get('identity') is None:
+            continue
+        native_issue = {key: value for key, value in issue.items() if key != 'history_review_links'}
+        try:
+            validate_public_history({'jira': {'metadata': {'site': metadata.get('site')}, 'issues': [native_issue]}})
+        except (ValueError, TypeError, KeyError):
+            continue
+        for page in record['pages']:
+            values = page.get('values')
+            if not isinstance(values, list):
+                continue
+            for history in values:
+                try:
+                    require(isinstance(history, dict) and not isinstance(history.get('id'), bool)
+                            and POSITIVE_ID.fullmatch(str(history.get('id')))
+                            and isinstance(history.get('author'), dict)
+                            and history['author'].get('accountId') == principal
+                            and isinstance(history.get('items'), list) and history['items']
+                            and all(isinstance(item, dict) and isinstance(item.get('field'), str)
+                                    for item in history['items']), 'invalid_own_history_row')
+                    at = timestamp(history.get('created'))
+                    require(start <= at <= end, 'outside_requested_window')
+                except (ValueError, TypeError):
+                    continue
+                key = issue['key'], str(history['id'])
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield {'key': issue['key'], 'url': issue['url'], 'history_id': str(history['id']),
+                       'occurred_at': history['created'], 'fields': history['items'],
+                       'actor_account_id': principal}
+
+
 def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reuse=False, github_host='github.com'):
     """Preserve public history separately; never replace authenticated details/comments."""
     site = jira['metadata'].get('site')

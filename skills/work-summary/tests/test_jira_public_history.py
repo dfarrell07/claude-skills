@@ -1,6 +1,7 @@
 """Anonymous Jira history is supplemental native context, never an auth replacement."""
 
 import copy
+from datetime import datetime, timezone
 from email.message import Message
 import io
 from pathlib import Path
@@ -127,6 +128,47 @@ class JiraPublicHistoryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ph.collect_public_history(jira, self.warnings.append, reuse=True,
                                       reader=lambda *args, **kwargs: self.fail('Unexpected network read'))
+
+    def test_public_field_events_bind_exact_actor_and_native_time_boundaries(self):
+        start = datetime(2026, 10, 12, tzinfo=timezone.utc)
+        end = datetime(2026, 10, 13, tzinfo=timezone.utc)
+        rows = [history(index) for index in range(1, 7)]
+        for row, at in zip(rows, ['2026-10-12T00:00:00.000+0000', '2026-10-13T00:00:00.000+0000',
+                                 '2026-10-11T23:59:59.999+0000', '2026-10-13T00:00:00.001+0000',
+                                 '2026-10-12T12:00:00.000+0000', '2026-10-12T12:00:00.000+0000']):
+            row['created'] = at
+        rows[4]['author']['accountId'] = 'different-actor'
+        rows[5]['author'] = None
+        jira = self.collect([page(rows)])
+        jira['metadata'].update(identity_verified=True, account_id='native-account')
+        events = list(ph.public_field_events(jira, start, end))
+        self.assertEqual([event['history_id'] for event in events], ['1', '2'])
+        self.assertEqual(events[0], {'key': 'ACM-1', 'url': BASE + '/browse/ACM-1',
+                                    'history_id': '1', 'occurred_at': rows[0]['created'],
+                                    'fields': rows[0]['items'], 'actor_account_id': 'native-account'})
+        jira['metadata']['identity_verified'] = False
+        self.assertEqual(list(ph.public_field_events(jira, start, end)), [])
+
+    def test_public_field_only_partial_stream_retains_positive_and_deduplicates(self):
+        row = history(1)
+        jira = self.collect([page([row, copy.deepcopy(row), {'id': 'bad native tail'}])])
+        jira['metadata'].update(identity_verified=True, account_id='native-account')
+        start = datetime(2026, 10, 12, tzinfo=timezone.utc)
+        end = datetime(2026, 10, 13, tzinfo=timezone.utc)
+        self.assertEqual(len(list(ph.public_field_events(jira, start, end))), 1)
+        self.assertEqual(jira['activity'], [{'native': 'unchanged'}])
+        for change in ('identity', 'route', 'field'):
+            forged = copy.deepcopy(jira)
+            record = forged['issues'][0]['public_history']
+            if change == 'identity':
+                record['identity']['id'] = '999'
+            elif change == 'route':
+                record['pages'][0]['self'] = record['pages'][0]['self'].replace('ACM-1', 'ACM-2')
+            else:
+                for value in record['pages'][0]['values'][:2]:
+                    value['items'][0]['field'] = None
+            with self.subTest(change=change):
+                self.assertEqual(list(ph.public_field_events(forged, start, end)), [])
 
     def collect(self, pages=None, public=None, jira=None):
         pages = [page([history(1)])] if pages is None else pages
