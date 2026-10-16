@@ -183,7 +183,9 @@ stats, tables, an executive-summary wrapper, or a detailed inventory to this lis
 Never fabricate a counterpart. A native PR body may supply an explicit Jira
 URL even when Jira authentication is unavailable; keep that as referenced
 context without claiming verified Jira status, title or ownership. Likewise,
-Jira can supply a PR URL when GitHub is unavailable. Do not construct a Jira
+Jira can supply a PR URL when GitHub is unavailable. Selected native commit
+subjects can retain explicit Jira and configured-host PR URLs as unverified
+context without inventing remote inventory or state. Do not construct a Jira
 URL from a bare key without a known authority or equate sites by key. Local-only
 work may have no URL sub-bullets. If source gaps materially limit the summary,
 add at most one short source/coverage sentence naming the missing sources;
