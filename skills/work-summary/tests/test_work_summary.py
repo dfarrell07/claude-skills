@@ -414,6 +414,20 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertIn("&lt;script&gt;", report)
         self.assertIn("tail", report)
 
+    def test_gfm_strikethrough_cannot_change_plaintext_meaning(self):
+        text = "Shipped ~~not~~ to production"
+        repo = self.repo("gfm", text)
+        source = self.capture(repo)
+        source["github"]["prs"][0]["title"] = text
+        ref = {key: source["github"]["prs"][0][key] for key in ("repo", "number", "url")}
+        data = {**source, "analysis": {"themes": [{"name": "~~not~~", "description": text,
+                 "items": [ref], "commits": [{"repo": str(repo), "hash": source["commits"][str(repo)][0]["hash"]}]}],
+                 "in_progress": []}}
+        result = self.render_result(data, source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("~~not~~", result.stdout)
+        self.assertGreaterEqual(result.stdout.count(r"\~\~not\~\~"), 4)
+
     def test_schema_rejects_bad_shapes_counts_and_urls_before_output(self):
         source = self.capture()
         mutations = [lambda d: d["metadata"].update(days=True),
