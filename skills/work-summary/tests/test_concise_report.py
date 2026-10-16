@@ -196,9 +196,13 @@ class ConciseReportTest(unittest.TestCase):
                                  **self.reference(item), 'state': item['state'], 'proof': 'historical_head_event',
                                  'head_event_id': 'native-force-push'}]}]
         ws.validate(data)
-        event['source']['pullRequest']['url'] = item['url'].upper()
+        event['source']['pullRequest']['url'] = item['url'].replace('/org/repo/', '/ORG/REPO/')
         event['source']['afterCommit'] = None
         ws.validate(data)
+        bad_route = copy.deepcopy(data)
+        bad_route['github']['head_events'][0]['source']['pullRequest']['url'] = item['url'].replace('/pull/', '/PULL/')
+        with self.assertRaises(ValueError):
+            ws.validate(bad_route)
         del event['source']['afterCommit']
         with self.assertRaises(ValueError):
             ws.validate(data)
