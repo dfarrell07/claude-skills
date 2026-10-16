@@ -737,6 +737,53 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertTrue(all(br['pr_status'] == 'matched' for br in branches))
         self.assertEqual(client.warnings, [])
 
+    def test_local_no_remote_and_other_provider_snapshots_receive_native_global_sha_lookup(self):
+        for kind in (None, 'local', 'other'):
+            with self.subTest(kind=kind):
+                repo = repository(remotes=())
+                if kind:
+                    repo['remotes'] = [{'kind': kind, 'host': 'other.example.test' if kind == 'other' else None,
+                                        'repo': None, 'name': 'origin'}]
+                calls = []
+                def api(args):
+                    calls.append(args)
+                    self.assertIn('query:"is:pr ' + SHA, query_text(args))
+                    self.assertNotIn('repository(', query_text(args))
+                    return {'data': {'s0': connection([gql(repo='upstream/repo')])}}
+                client, branches, data = self.associate(api, repos=[repo])
+                self.assertEqual(branches[0]['pr_status'], 'matched')
+                self.assertEqual(branches[0]['association_scope'], 'github_global_without_repository')
+                self.assertEqual(branches[0]['prs'][0]['proof'], 'global_any_author_sha_search')
+                self.assertEqual(branches[0]['prs'][0]['repo'], 'upstream/repo')
+                self.assertEqual(branches[0]['association_lookups'][0]['scope'], 'github_global')
+                self.assertEqual(data['pr_index'][0]['repo'], 'upstream/repo')
+                self.assertEqual(len(calls), 1)
+
+    def test_unrouted_global_negative_does_not_claim_no_private_or_other_provider_pr(self):
+        def api(args):
+            return {'data': {'s0': connection()}}
+        client, branches, _ = self.associate(api, repos=[repository(remotes=())])
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'ok')
+        self.assertEqual(client.coverage['global_snapshot:' + SHA]['status'], 'ok')
+        self.assertEqual(client.coverage['unrouted:/local/repo']['status'], 'partial')
+        self.assertTrue(any('no configured GitHub repository' in message for message in client.warnings))
+
+    def test_global_sha_result_is_shared_across_inaccessible_fork_and_local_backup_clone(self):
+        global_calls = []
+        def api(args):
+            if 'query:"is:pr ' in query_text(args):
+                global_calls.append(args)
+                return {'data': {'s0': connection([gql(repo='upstream/repo')])}}
+            result = snapshot_data(args)
+            result['data']['c0'] = None
+            return result
+        client, branches, _ = self.associate(api, branches=[branch('/fork'), branch('/backup')],
+                                             repos=[repository('/fork'), repository('/backup', remotes=())])
+        self.assertEqual(len(global_calls), 1)
+        self.assertEqual([br['pr_status'] for br in branches], ['matched', 'matched'])
+        self.assertEqual({br['prs'][0]['url'] for br in branches}, {'https://github.com/upstream/repo/pull/1'})
+
     def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
         first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',
                  'created_at': '2026-10-12T23:32:33Z', 'updated_at': '2026-10-12T23:32:33Z',

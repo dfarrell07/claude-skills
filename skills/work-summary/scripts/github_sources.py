@@ -517,7 +517,6 @@ class Github:
             fields, aliases = [], {}
             for index, key in enumerate(tuples):
                 repo, sha = key
-                owner, name = repo.split('/')
                 for method, prefix in (('search', 's'), ('commit', 'c')):
                     state = states[key][method]
                     if state['done']:
@@ -530,6 +529,7 @@ class Github:
                                       + ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor}'
                                       ' nodes{...on PullRequest{' + PR_FIELDS + '}}}')
                     else:
+                        owner, name = repo.split('/')
                         fields.append(alias + ':repository(owner:' + json.dumps(owner) + ',name:' + json.dumps(name)
                                       + '){id nameWithOwner object(expression:' + json.dumps(sha) + '){...on Commit{'
                                       'associatedPullRequests(first:100' + after + '){pageInfo{hasNextPage endCursor}'
@@ -646,6 +646,7 @@ class Github:
         indices, pending = {}, {}
         by_path = {entry['path']: entry for entry in repositories}
         all_indexed, observations, seen_observations = {}, [], set()
+        unrouted = []
 
         def retain_index(item):
             original = all_indexed.setdefault(item['url'], item)
@@ -661,10 +662,11 @@ class Github:
             branch.setdefault('prs', [])
             remotes = {entry['repo'] for entry in by_path[branch['repo']].get('remotes', [])
                        if entry['kind'] == 'github' and entry.get('host', self.host) == self.host}
-            if not remotes:
-                branch['pr_status'] = 'unsupported'
-                continue
             branch['association_methods'], branch['association_lookups'], branch['related_prs'] = [], [], []
+            if not remotes:
+                branch['association_scope'] = 'github_global_without_repository'
+                unrouted.append(branch)
+                continue
             names = set()
             for ref in branch['refs']:
                 if ref.startswith('refs/heads/'):
@@ -728,6 +730,32 @@ class Github:
                     branch['association_methods'].extend(['any_author_sha_search:' + repo, 'commit_association:' + repo])
                     if 'global_search' in info:
                         branch['association_methods'].append('global_any_author_sha_search')
+        # Local backup clones and repositories without a GitHub remote can still
+        # share a native Git object with an accessible PR. Query each distinct
+        # SHA once globally, preserving the unresolved provider/repository scope.
+        requests = [(None, sha) for sha in sorted({branch['hash'] for branch in unrouted})
+                    if sha not in self._global_snapshots]
+        for offset in range(0, len(requests), BATCH_SIZE):
+            states = self._snapshot_batch(requests[offset:offset + BATCH_SIZE], global_search=True)
+            self._global_snapshots.update({sha: state for (_, sha), state in states.items()})
+        route_gaps = set()
+        for branch in unrouted:
+            sha = branch['hash']
+            state, info = self._global_snapshots[sha], self.coverage['global_snapshot:' + sha]
+            branch['association_methods'].append('global_any_author_sha_search')
+            branch['association_lookups'].append({'scope': 'github_global', **info})
+            for item, proof in state['matches'].values():
+                retain_index(item)
+                branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
+                                      'state': item['state'], 'proof': proof})
+            for item in state['observations']:
+                retain_index(item)
+            if branch['repo'] not in route_gaps:
+                route_gaps.add(branch['repo'])
+                self.problem('unrouted:' + branch['repo'],
+                             'global GitHub SHA search was attempted; no configured GitHub repository or '
+                             'other-provider reader establishes exhaustive PR history')
+
         # Redirects discovered while resolving snapshots also repair the all-state
         # authored index: GitHub search silently returns zero for historical names.
         for proof in list(self._repository_aliases.values()):
@@ -761,7 +789,8 @@ class Github:
             if 'association_lookups' in branch:
                 if branch['prs']:
                     branch['pr_status'] = 'matched'
-                elif any(info['status'] != 'ok' for info in branch['association_lookups']) or branch['related_prs']:
+                elif (branch.get('association_scope') == 'github_global_without_repository'
+                      or any(info['status'] != 'ok' for info in branch['association_lookups']) or branch['related_prs']):
                     branch['pr_status'] = 'partial'
                 else:
                     branch['pr_status'] = 'no_match'
