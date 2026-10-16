@@ -3,7 +3,7 @@
 import re
 from urllib.parse import quote, urlsplit
 
-from evidence import require
+from evidence import is_pr_url, require
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -87,7 +87,7 @@ def associate_work(jira, github):
     issues = {issue['key']: issue for issue in jira['issues']}
     site = jira.get('metadata', {}).get('site')
     items = github_items(github)
-    canonical = {pr_identity(item['url']): item['url'] for item in reversed(items) if '/pull/' in item['url']}
+    canonical = {pr_identity(item['url']): item['url'] for item in reversed(items) if is_pr_url(item['url'])}
     relations = {}
     for issue in issues.values():
         for pr in issue.get('pr_links', []):
@@ -97,7 +97,7 @@ def associate_work(jira, github):
                 relation['source_url'] = pr['url']
             relations.setdefault((issue['key'], url), relation)
     for item in items:
-        if '/pull/' not in item['url']:
+        if not is_pr_url(item['url']):
             continue
         for field in ('title', 'body', 'head_ref'):
             for key in mentioned_keys(item.get(field), site):

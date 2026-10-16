@@ -26,6 +26,15 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(data['github']['prs'][0]['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(data['jira']['issues'][0]['pr_links'][0]['url'], data['github']['prs'][0]['url'])
 
+    def test_issue_in_a_repository_named_pull_is_not_a_pr_link(self):
+        data = self.capture()
+        item = data['github']['prs'].pop()
+        item['url'] = 'https://github.com/org/pull/issues/42'
+        data['github']['issues'] = [item]
+        associate_work(data['jira'], data['github'])
+        validate_links(data)
+        self.assertEqual(data['jira']['issues'][0]['pr_links'], [])
+
     def test_native_jira_description_links_even_when_pr_is_inaccessible(self):
         data = self.capture()
         url = data['github']['prs'][0]['url']

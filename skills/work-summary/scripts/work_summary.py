@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
     HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso,
-    read_json, require, timestamp, valid_item,
+    read_json, require, timestamp, valid_item, is_pr_url,
 )
 from local_sources import collect_local  # noqa: E402
 from github_sources import Github  # noqa: E402
@@ -385,7 +385,7 @@ def render(data, source=None):
         original = by_url.get(item["url"], item)
         related = original.get("jira_links", [])
         suffix = " · " + ", ".join(jira_reference(entry) for entry in related) if related else (
-            " (Jira: no verified link found)" if "/pull/" in item["url"] else "")
+            " (Jira: no verified link found)" if is_pr_url(item["url"]) else "")
         return link(item) + suffix
 
     def jira_work(item):

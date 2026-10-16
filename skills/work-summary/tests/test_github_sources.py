@@ -169,6 +169,32 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(next(x for x in data['activity'] if x['action'] == 'review')['review_state'], 'APPROVED')
         self.assertEqual({x['at'] for x in data['activity']}, {'2026-10-09T00:00:00Z', '2026-10-16T00:00:00Z'})
 
+    def test_repo_named_pull_does_not_turn_issue_into_pr_actor_reads(self):
+        for kind, route, expected_reads in [('issues', 'issues', 2), ('prs', 'pull', 4)]:
+            with self.subTest(kind=kind):
+                native = rest(repo='org/pull')
+                if kind == 'issues':
+                    native.pop('pull_request')
+                native['html_url'] = f'https://github.com/org/pull/{route}/1'
+                item = rest_item(native, kind, 'github.com')
+                def api(args):
+                    if 'search/issues' in args:
+                        return {'total_count': 0, 'incomplete_results': False, 'items': []}
+                    if kind == 'issues':
+                        self.assertNotIn('repos/org/pull/pulls/', args[2])
+                    if args[2] == 'repos/org/pull/issues/1/comments':
+                        return [{'id': 1, 'user': {'login': 'me'}, 'body': 'Native issue comment',
+                                 'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z',
+                                 'html_url': item['url'] + '#issuecomment-1'}]
+                    return []
+                client = self.client(api)
+                data = {'prs': [item] if kind == 'prs' else [], 'issues': [item] if kind == 'issues' else []}
+                client.discover(data)
+                self.assertEqual(len([args for args in client.calls if 'search/issues' not in args]), expected_reads)
+                self.assertEqual(len(data['activity']), 1)
+                self.assertEqual(data['activity'][0]['url'], item['url'] + '#issuecomment-1')
+                self.assertEqual(client.warnings, [])
+
     def test_comment_edit_requires_editor_identity(self):
         for editor, expected in [(None, 0), ({'login': 'other'}, 0), ({'login': 'me'}, 1)]:
             with self.subTest(editor=editor):

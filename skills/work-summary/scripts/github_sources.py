@@ -5,7 +5,7 @@ import json
 import subprocess
 from urllib.parse import urlsplit
 
-from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, iso, require, timestamp, valid_item
+from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
 
 ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError)
@@ -195,7 +195,7 @@ class Github:
         all_items = {item['url']: item for kind in ('prs', 'issues', 'context_prs', 'context_issues')
                      for item in github.get(kind, [])}
         by_identity = {(urlsplit(item['url']).netloc.casefold(), item['repo'].casefold(), item['number']): item
-                       for item in all_items.values() if urlsplit(item['url']).path.split('/')[-2] == 'pull'}
+                       for item in all_items.values() if is_pr_url(item['url'])}
         new_items = []
         for url in urls:
             key = 'jira_links'
@@ -253,7 +253,7 @@ class Github:
                     self.problem('activity:' + item['url'], 'item creation evidence is invalid')
             route = f"repos/{item['repo']}/issues/{item['number']}"
             endpoints = [('issue_comment', route + '/comments'), ('timeline', route + '/timeline')]
-            if '/pull/' in item['url']:
+            if is_pr_url(item['url']):
                 endpoints.extend([('review', f"repos/{item['repo']}/pulls/{item['number']}/reviews"),
                                   ('review_comment', f"repos/{item['repo']}/pulls/{item['number']}/comments")])
             for category, endpoint in endpoints:

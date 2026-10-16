@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlsplit
 
 
 UTC = timezone.utc
@@ -27,6 +28,10 @@ def require(condition, message):
 
 def integer(value, minimum=0):
     return type(value) is int and value >= minimum
+
+
+def is_pr_url(url):
+    return re.fullmatch(r'/[^/]+/[^/]+/pull/[1-9][0-9]*', urlsplit(url).path) is not None
 
 
 def timestamp(value):
