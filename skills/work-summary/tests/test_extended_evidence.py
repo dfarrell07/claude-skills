@@ -211,6 +211,11 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
         data['github']['activity'][0]['body'] = 'Contradictory native body'
         with self.assertRaises(ValueError):
             self.validate(data, copy.deepcopy(evidence))
+        data = copy.deepcopy(baseline)
+        changed = data['github']['activity'][0]
+        changed['url'] = changed['editor_evidence']['url'] = event['item_url'] + '#discussion_r999'
+        with self.assertRaises(ValueError):
+            self.validate(data, copy.deepcopy(evidence))
         event['editor_evidence']['author'] = None
         baseline['github']['reference_comments'][0].update(author_login=None, author_node_id=None)
         self.validate(baseline, copy.deepcopy(evidence))

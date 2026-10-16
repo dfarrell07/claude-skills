@@ -94,6 +94,7 @@ def validate_editor_comment(event, comment):
     """A saved edit proof and its retained discussion row are one native observation."""
     proof = event['editor_evidence']
     require(comment is not None and proof['id'] == comment.get('node_id')
+            and proof['url'] == comment['url']
             and event['body'] == comment['body']
             and timestamp(proof['createdAt']) == timestamp(comment['created_at'])
             and timestamp(proof['updatedAt']) == timestamp(comment['updated_at']),
