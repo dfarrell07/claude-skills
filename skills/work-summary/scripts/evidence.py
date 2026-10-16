@@ -79,6 +79,13 @@ def valid_item(item, kind, host):
             and all(part not in (".", "..") for part in repo.split("/")), "Invalid GitHub repository")
     require(integer(item.get("number"), 1), "Invalid GitHub item number")
     require(isinstance(item.get("title"), str), "Missing GitHub item title")
+    if "body" in item:
+        require(isinstance(item["body"], str), "Invalid GitHub body")
+    if "draft" in item:
+        require(type(item["draft"]) is bool, "Invalid GitHub draft state")
+    if "author_login" in item:
+        require(item["author_login"] is None or isinstance(item["author_login"], str) and bool(item["author_login"]),
+                "Invalid GitHub native author")
     require(item.get("state") in ({"open", "closed", "merged"} if kind == "prs" else {"open", "closed"}),
             "Invalid GitHub state")
     route = "pull" if kind == "prs" else "issues"

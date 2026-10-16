@@ -96,7 +96,8 @@ def validate_jira(data, start, end):
         require(isinstance(item.get('roles'), list) and all(isinstance(role, str) for role in item['roles']),
                 'Invalid Jira roles')
         require(type(item.get('sensitive')) is bool, 'Missing Jira sensitivity evidence')
-        require(isinstance(item.get('status'), str) and isinstance(item.get('status_category'), str), 'Invalid Jira status')
+        require(isinstance(item.get('status'), str) and item.get('status_category') in {'new', 'indeterminate', 'done'},
+                'Invalid Jira status')
         result[item['key']] = item
     for event in jira.get('activity', []):
         require(isinstance(event, dict) and event.get('key') in result, 'Unknown Jira activity issue')

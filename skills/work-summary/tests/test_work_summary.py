@@ -722,7 +722,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data = self.capture()
         item = {"key":"EXAMPLE-123", "url":"https://jira.example.test/browse/EXAMPLE-123",
                 "title":"Private title must stay hidden", "status":"In Progress", "status_category":"indeterminate",
-                "roles":["assigned"], "sensitive":True}
+                "roles":["assigned"], "sensitive":True, "sensitivity_verified":True}
         data["jira"] = {"metadata":{"status":"ok", "site":"jira.example.test", "identity_verified":True,
                                     "account_id":"test-account"}, "issues":[item], "activity":[{
                     "key":item["key"], "comment_id":"42", "url":item["url"]+"?focusedCommentId=42", "kind":"comment_created",
@@ -730,6 +730,12 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         report = self.render(data).stdout
         self.assertIn("Restricted ticket", report)
         self.assertNotIn("Private title must stay hidden", report)
+        for category in ("", "unknown"):
+            broken_category = copy.deepcopy(data)
+            broken_category["jira"]["issues"][0]["status_category"] = category
+            invalid_category = self.root / "unknown-status.json"
+            invalid_category.write_text(json.dumps(broken_category))
+            self.assertNotEqual(self.run_script(RENDER, invalid_category, check=False).returncode, 0)
         broken = copy.deepcopy(data)
         broken["jira"]["metadata"]["account_id"] = None
         broken["jira"]["activity"][0]["actor_account_id"] = None
@@ -755,7 +761,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         pr = data["github"]["prs"][0]
         pr["body"] = "References EXAMPLE-123"
         issue = {"key":"EXAMPLE-123", "url":"https://jira.example.test/browse/EXAMPLE-123",
-                 "title":"Synthetic linked work", "status":"Active", "status_category":"indeterminate",
+                 "title":"Synthetic linked work", "status":"Closed", "status_category":"done",
                  "roles":["referenced_by_github"], "sensitive":False,
                  "pr_links":[{"url":pr["url"], "proof":"github_body_key", "evidence_url":pr["url"], "sensitive":False}]}
         pr["jira_links"] = [{"key":issue["key"], "url":issue["url"], "proof":"github_body_key",

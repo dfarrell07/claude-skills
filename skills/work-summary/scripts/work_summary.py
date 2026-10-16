@@ -24,7 +24,7 @@ from evidence import (  # noqa: E402
 from local_sources import collect_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
-from work_links import associate_work, referenced_keys, github_items, validate_links  # noqa: E402
+from work_links import associate_work, complete_references, github_items, validate_links  # noqa: E402
 from extended_evidence import validate_github, validate_jira, jira_reference  # noqa: E402
 
 
@@ -120,7 +120,8 @@ def collect(days_text, roots, now=None):
                                     "state": "merged" if merged else row["state"], "url": url,
                                     "created_at": row["created_at"], "updated_at": row["updated_at"],
                                     "closed_at": row["closed_at"], "merged_at": merged,
-                                    "body": row.get("body") or ""}
+                                    "body": row.get("body") or "", "draft": row.get("draft", False),
+                                    "author_login": (row.get("user") or {}).get("login")}
                             require(isinstance(item["body"], str), "Invalid GitHub body")
                             valid_item(item, kind, host)
                             require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
@@ -161,16 +162,17 @@ def collect(days_text, roots, now=None):
         discovery = ledger.coverage
         if any(info["status"] != "ok" for info in discovery.values()):
             github_status = "partial"
-    add_referenced_jira(jira, referenced_keys(github, jira["metadata"].get("site")), start, end, warn)
+    expansion = complete_references(jira, github,
+                                    lambda keys: add_referenced_jira(jira, keys, start, end, warn),
+                                    (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None)
     if github_user:
-        ledger.add_linked_prs(github, jira["linked_prs"])
         if any(info["status"] != "ok" for info in ledger.coverage.values()):
             github_status = "partial"
     associate_work(jira, github)
     return {
         "metadata": {"days": days, "since_date": start.date().isoformat(), "to_date": end.date().isoformat(),
                      "since_at": iso(start), "to_at": iso(end), **local["metadata"],
-                     "local_status": local_status, "github_discovery": discovery,
+                     "local_status": local_status, "github_discovery": discovery, "reference_expansion": expansion,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
         "github": github, "jira": jira, "commits": local["commits"], "branches": local["branches"],
@@ -355,7 +357,7 @@ def validate(data, source=None):
                 "Invalid in-progress item")
         if "key" in item:
             require(item["key"] in jira_items and item.get("url") == jira_items[item["key"]]["url"]
-                    and jira_items[item["key"]].get("status_category", "").casefold() != "done", "In-progress Jira must be active")
+                    and jira_items[item["key"]].get("status_category") in {"new", "indeterminate"}, "In-progress Jira must be active")
         else:
             require(reference(item)["state"] == "open", "In-progress citation must refer to an open item")
 
@@ -460,10 +462,11 @@ def render(data, source=None):
         lines += ["### Jira Inventory and Participation", "",
                   f"Source status: {jira['metadata']['status']}; {len(entries)} tickets captured. Assignment and watcher roles are context, not weekly accomplishments.", ""]
         for item in entries:
-            active = item.get("status_category", "").casefold() != "done"
-            if active or any(role in {"recent", "updated_by"} for role in item["roles"]):
-                title = "Restricted ticket (details retained in private capture)" if item["sensitive"] else markdown(item['title'])
-                lines.append(f"- {jira_work(item)} {title} ({markdown(item.get('status', 'unknown'))}; {', '.join(markdown(role) for role in item['roles'])})")
+            title = markdown(item['title'])
+            if item["sensitive"]:
+                title = ("Restricted ticket (details retained in private capture)" if item.get("sensitivity_verified")
+                         else "Private ticket (sensitivity unverified; details retained in capture)")
+            lines.append(f"- {jira_work(item)} {title} ({markdown(item.get('status', 'unknown'))}; {', '.join(markdown(role) for role in item['roles'])})")
         lines += ["", f"Verified Jira actor events: {len(jira.get('activity', []))}.", ""]
         for event in jira.get("activity", []):
             lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}) {markdown(event['kind'])} — {jira_work(jira_by_key[event['key']])}")

@@ -16,7 +16,7 @@ def mentioned_keys(text, site):
     text = text or ''
     explicit = set()
     for match in URL.finditer(text):
-        parts = urlsplit(match.group())
+        parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
         key = parts.path.removeprefix('/browse/')
         if parts.hostname == site and parts.path.startswith('/browse/') and KEY.fullmatch(key):
             explicit.add(key.upper())
@@ -57,6 +57,24 @@ def referenced_keys(github, site=None):
                 if key.rsplit('-', 1)[0].upper() not in NON_JIRA:
                     result.add(key.upper())
     return sorted(result)
+
+
+def complete_references(jira, github, read_tickets, read_prs=None):
+    """Follow explicit captured references to exhaustion, attempting failures once."""
+    attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github)}
+    while True:
+        keys = set(referenced_keys(github, jira.get('metadata', {}).get('site'))) - attempted_keys
+        urls = set(jira.get('linked_prs', [])) - attempted_urls
+        if not keys and not urls:
+            break
+        if keys:
+            attempted_keys.update(keys)
+            read_tickets(sorted(keys))
+        urls = set(jira.get('linked_prs', [])) - attempted_urls
+        attempted_urls.update(urls)
+        if urls and read_prs is not None:
+            read_prs(sorted(urls))
+    return {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_urls)}
 
 
 def associate_work(jira, github):

@@ -7,7 +7,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from work_links import associate_work, referenced_keys, validate_links  # noqa: E402
+from work_links import associate_work, complete_references, referenced_keys, validate_links  # noqa: E402
 
 
 class WorkLinksTest(unittest.TestCase):
@@ -55,10 +55,43 @@ class WorkLinksTest(unittest.TestCase):
         pr = data['github']['prs'][0]
         pr['title'], pr['body'] = '', '[ticket](https://jira.example.test/browse/TEST-123)'
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
-        pr['body'] = ''
+
+    def test_browse_links_keep_keys_with_sentence_punctuation_or_code_quotes(self):
+        for suffix in ('.', ', then verify.', '`', ';', '!', '?', "'.", '’', '”'):
+            for host in ('jira.example.test', 'other-jira.example'):
+                data = self.capture()
+                pr = data['github']['prs'][0]
+                pr['title'], pr['body'] = '', 'See `https://' + host + '/browse/TEST-123' + suffix
+                expected = ['TEST-123'] if host == 'jira.example.test' else []
+                self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), expected)
+
+    def test_selected_index_head_ref_seeds_native_ticket_lookup(self):
+        data = self.capture()
+        pr = data['github']['prs'][0]
+        pr['title'], pr['body'] = '', ''
         data['github']['pr_index'] = [{**pr, 'head_ref': 'fix/test-123-retry'},
                                       {'url': 'https://github.com/org/repo/pull/99', 'head_ref': 'OLD-77'}]
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
+
+    def test_newly_fetched_pr_ticket_frontiers_complete_and_cycles_terminate(self):
+        data = self.capture()
+        github, jira = data['github'], data['jira']
+        github['prs'][0]['title'] = 'TEST-2'
+        jira['linked_prs'] = []
+        calls = []
+        def tickets(keys):
+            calls.extend(('jira', key) for key in keys)
+            for key in keys:
+                if key == 'TEST-2':
+                    jira['linked_prs'].append('https://github.com/org/repo/pull/99')
+        def prs(urls):
+            calls.extend(('pr', url) for url in urls)
+            github.setdefault('context_prs', []).append({'url': urls[0], 'body': 'TEST-3 and TEST-2'})
+        result = complete_references(jira, github, tickets, prs)
+        self.assertEqual(result['attempted_jira_keys'], ['TEST-2', 'TEST-3'])
+        self.assertEqual(calls.count(('jira', 'TEST-2')), 1)
+        self.assertEqual(calls.count(('jira', 'TEST-3')), 1)
+        self.assertEqual(len([call for call in calls if call[0] == 'pr']), 1)
 
     def test_restricted_ticket_links_remain_marked_private(self):
         data = self.capture()

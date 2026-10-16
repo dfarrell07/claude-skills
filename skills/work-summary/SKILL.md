@@ -85,8 +85,10 @@ lookups, name-only matches, unsupported remotes, and unchecked refs remain unres
 Completed negative lookups mean only that no PR was found for that exact snapshot.
 They do not prove that the work was unpublished or never included in another PR.
 
-Jira collection retains the complete accessible assigned/reported/watched/former-assignee inventories
-and recent participation leads, with independent count checks. Assignment, reporting, watching,
+Jira collection retains the complete accessible assigned/reported/created/watched/former-assignee inventories
+and recent participation leads, with independent count checks. Read native details
+and comments for every captured ticket, including completed history, to retain its
+PR links; list all captured tickets with current states in the detailed report. Assignment, reporting, watching,
 former assignment, and updatedBy matches are discovery context. Credit exact-window
 comments only with native account and timestamp evidence. Day-granularity updatedBy
 queries cannot prove exact field-change times without changelog evidence. Preserve
@@ -105,7 +107,10 @@ PR mentions also seed targeted native Jira reads for tickets absent from those
 inventories. Join sources using explicit native Jira PR URLs or captured GitHub
 references to verified Jira keys. Keep provenance for each relation; foreign Jira
 site URLs do not establish a link to a same-key ticket on this site. Indexed head
-refs may supply keys for selected PRs. Do not crawl the entire historical link graph.
+refs may supply keys for selected PRs. Follow newly captured explicit Jira/PR
+references until no new keys or URLs remain; attempt each failed reference once
+and preserve its coverage gap. Never search unrelated projects merely to enlarge
+the report.
 
 When listing work, show **both Jira and PR links** when a verified relation exists.
 Use the same paired links in themes, ongoing work, actor events, and detailed lists.
