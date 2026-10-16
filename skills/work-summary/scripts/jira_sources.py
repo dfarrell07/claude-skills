@@ -188,7 +188,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
         comments, complete, restricted_comments = {}, False, set()
         try:
             require(isinstance(native, dict) and isinstance(native.get("comments"), list)
-                    and integer(native.get("total")) and native.get("startAt") == 0,
+                    and integer(native.get("total")) and integer(native.get("startAt")),
                     "Missing native comment page")
             for comment in native["comments"]:
                 require(isinstance(comment, dict) and isinstance(comment.get("id"), str)
@@ -196,8 +196,10 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                 comments[comment["id"]] = comment
                 if comment.get("visibility"):
                     restricted_comments.add(comment["id"])
-            complete = len(comments) == native["total"]
-            require(len(comments) <= native["total"], "Native comment count mismatch")
+            # Native detail responses may contain the final page rather than a
+            # prefix. Retain that evidence and request the missing history.
+            consistent = native["startAt"] + len(comments) <= native["total"]
+            complete = consistent and native["startAt"] == 0 and len(comments) == native["total"]
             if not complete:
                 failed = False
                 try:
@@ -207,7 +209,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                     failed = True
                 pages, complete = _comment_pages(raw_pages)
                 item["comment_pages"] = pages
-                if failed or not pages or pages[0]["total"] != native["total"]:
+                if failed or not pages or pages[0]["total"] != native["total"] or not consistent:
                     complete = False
                 for page in pages:
                     for comment in page["comments"]:

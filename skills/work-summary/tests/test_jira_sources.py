@@ -460,6 +460,65 @@ else:
         self.assertFalse(coverage["native_fidelity"])
         self.assertTrue(any("cannot prove" in warning for warning in self.warnings))
 
+    def test_native_suffix_page_merges_projected_prefix_without_inventing_activity(self):
+        suffix = comment("c2", body="Native https://github.com/org/repo/pull/2",
+                         visibility={"type": "role", "value": "reviewers"})
+        native = detail(issue(), [suffix], total=2)
+        native["fields"]["comment"].update(startAt=1, maxResults=1)
+        original = copy.deepcopy(native)
+        self.data["details"]["TEST-1"] = native
+        projected = [{"id": "c1", "author": "Person", "body": "Earlier https://github.com/org/repo/pull/1",
+                      "visibility": {"type": "role", "value": "reviewers"}},
+                     {"id": "c2", "author": "Person", "body": "Projected content differs", "visibility": None}]
+        self.data["comment_pages"] = [{"comments": projected, "startAt": 0, "maxResults": 50,
+                                      "total": 2, "isLast": True}]
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual(item["detail"], original)
+        self.assertEqual({pr["url"] for pr in item["pr_links"]},
+                         {"https://github.com/org/repo/pull/1", "https://github.com/org/repo/pull/2"})
+        self.assertTrue(all(pr["sensitive"] for pr in item["pr_links"]))
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["c2"])
+        self.assertEqual(result["activity"][0]["source"], suffix)
+        self.assertEqual(item["comment_coverage"], {"complete": True, "native_fidelity": False,
+                                                   "captured_count": 2, "total": 2})
+        self.assertTrue(any("comment" in call and "list" in call for call in self.calls()))
+
+    def test_native_suffix_survives_unavailable_comment_pagination(self):
+        suffix = comment("c2", body="Available https://github.com/org/repo/pull/2")
+        native = detail(issue(), [suffix], total=2)
+        native["fields"]["comment"].update(startAt=1, maxResults=1)
+        original = copy.deepcopy(native)
+        self.data["details"]["TEST-1"] = native
+        self.data["comment_pages"] = {"_exit": 1}
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual(item["detail"], original)
+        self.assertEqual([pr["url"] for pr in item["pr_links"]], ["https://github.com/org/repo/pull/2"])
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["c2"])
+        self.assertEqual(item["comment_coverage"], {"complete": False, "native_fidelity": True,
+                                                   "captured_count": 1, "total": 2})
+        self.assertEqual(result["metadata"]["status"], "partial")
+        self.assertTrue(any("comment" in call and "list" in call for call in self.calls()))
+
+    def test_native_suffix_count_drift_keeps_positive_comment_evidence(self):
+        suffix = comment("c2", body="Retain https://github.com/org/repo/pull/2")
+        native = detail(issue(), [suffix], total=1)
+        native["fields"]["comment"].update(startAt=1, maxResults=1)
+        original = copy.deepcopy(native)
+        self.data["details"]["TEST-1"] = native
+        self.data["comment_pages"] = {"_exit": 1}
+        result = self.collect()
+        item = result["issues"][0]
+        self.assertEqual(item["detail"], original)
+        self.assertEqual([pr["url"] for pr in item["pr_links"]], ["https://github.com/org/repo/pull/2"])
+        self.assertEqual(len(result["activity"]), 1)
+        self.assertEqual(result["activity"][0]["source"], suffix)
+        self.assertEqual(item["comment_coverage"]["captured_count"], 1)
+        self.assertFalse(item["comment_coverage"]["complete"])
+        self.assertEqual(result["metadata"]["status"], "partial")
+        self.assertTrue(any("available native comments were retained" in warning for warning in self.warnings))
+
     def test_duplicate_or_changed_comment_pages_keep_available_native_activity(self):
         first = comment()
         self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
