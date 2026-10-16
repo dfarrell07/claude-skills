@@ -425,6 +425,24 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data = {**source, "analysis": {"themes": [], "in_progress": []}}
         self.assertIn("No evidence-backed accomplishments", self.render_result(data, source).stdout)
 
+    def test_large_coverage_log_keeps_summary_visible_and_preserves_every_warning(self):
+        data = self.capture()
+        warnings = [f"Read {index} incomplete <source> [details]" for index in range(128)]
+        data["metadata"]["warnings"] = warnings
+        original = copy.deepcopy(data)
+        report = self.render(data).stdout
+        summary_at = report.index("## Executive Summary")
+        detail_at = report.index("## Detailed Work Log")
+        coverage_at = report.index("## Coverage Gaps")
+        self.assertIn("Coverage is incomplete: 128 recorded warnings", report[:summary_at])
+        self.assertLess(summary_at, detail_at)
+        self.assertLess(detail_at, coverage_at)
+        self.assertNotIn("Read 0 incomplete", report[:coverage_at])
+        self.assertNotIn("<source>", report)
+        for index in range(128):
+            self.assertIn(f"Read {index} incomplete &lt;source&gt; \\[details\\]", report[coverage_at:])
+        self.assertEqual(data, original)
+
     def test_untrusted_titles_and_subjects_cannot_change_report_structure(self):
         repo = self.repo("text", "A [link](javascript:bad) <script> & `code` | tail")
         data = self.capture(repo)

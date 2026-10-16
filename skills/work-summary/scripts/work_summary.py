@@ -413,7 +413,8 @@ def render(data, source=None):
     if "since_at" in m:
         lines += [f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.", ""]
     if m.get("warnings"):
-        lines += ["## Coverage Gaps", "", *[f"- {markdown(warning)}" for warning in m["warnings"]], ""]
+        lines += [f"Coverage is incomplete: {len(m['warnings'])} recorded warnings. "
+                  "Full coverage details follow the work log.", ""]
     lines += ["## Executive Summary", ""]
     if "analysis" in data:
         lines += ["### Key Accomplishments", ""]
@@ -443,7 +444,7 @@ def render(data, source=None):
         lines += [f"#### {title} ({len(entries)} total)", ""]
         lines += [f"- {linked(item)} {markdown(item['title'])} ({item['state']})" for item in entries]
         if not entries:
-            lines.append(f"No authored {title.lower()} found in this capture. Coverage gaps, if any, are listed above.")
+            lines.append(f"No authored {title.lower()} found in this capture. Check the coverage details for any gaps.")
         lines.append("")
     for kind in ("prs", "issues"):
         entries = data["github"].get("context_" + kind, [])
@@ -512,6 +513,8 @@ def render(data, source=None):
         for item in data["unattributed_commits"]:
             lines.append(f"- {markdown(item['repo'])} `{item['hash'][:12]}` {markdown(item['author_email'])}")
         lines.append("")
+    if m.get("warnings"):
+        lines += ["## Coverage Gaps", "", *[f"- {markdown(warning)}" for warning in m["warnings"]], ""]
     return "\n".join(lines)
 
 
