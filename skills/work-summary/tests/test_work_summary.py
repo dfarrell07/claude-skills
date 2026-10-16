@@ -511,7 +511,14 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
             if os.access(root, os.R_OK | os.X_OK):
                 self.skipTest("This user bypasses directory permissions")
             data = self.capture(root)
-            self.assertEqual(data["metadata"]["local_status"], "partial")
+            recovered = [entry for entry in data['metadata'].get('local_recoveries', [])
+                         if entry['path'] == str(root) and entry['status'] == 'ok']
+            self.assertEqual(data["metadata"]["local_status"], "ok" if recovered else "partial")
+            if recovered:
+                self.assertEqual(recovered[0]['repository_candidates'], [])
+                self.assertEqual(recovered[0]['symlinks'], [])
+                self.assertTrue(recovered[0]['complete'])
+            self.assertEqual(root.stat().st_mode & 0o777, 0)
             self.assertEqual(len(data["github"]["prs"]), 1)
             self.assertTrue(data["metadata"]["warnings"])
         finally:
@@ -640,9 +647,13 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.git(repo, "worktree", "add", "--detach", str(tree))
         shutil.rmtree(tree)
         data = self.capture(repo)
-        self.assertEqual(data["metadata"]["local_status"], "partial")
-        self.assertTrue(any("Registered worktree is missing" in warning for warning in data["metadata"]["warnings"]))
-        self.assertTrue(any(not item["exists"] for item in data["metadata"]["repositories"][0]["worktrees"]))
+        self.assertEqual(data["metadata"]["local_status"], "ok")
+        self.assertFalse(any("Registered worktree is missing" in warning for warning in data["metadata"]["warnings"]))
+        retained = [item for item in data["metadata"]["repositories"][0]["worktrees"] if not item['exists']]
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]['recovery']['status'], 'ok')
+        self.assertIn(self.git(repo, 'rev-parse', 'HEAD'), retained[0]['recovery']['available_heads'])
+        self.assertFalse(tree.exists())
 
     def test_hidden_backup_and_symlink_workspace_cycles(self):
         repo = self.repo(".backups/project", "Hidden backup work")
