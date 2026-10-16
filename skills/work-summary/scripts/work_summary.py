@@ -529,9 +529,10 @@ def render_topic_lines(data, topic, depth=0, detailed=False):
         label = f"**{markdown(topic['name'])}**: " + label
     lines = ['  ' * depth + '- ' + label]
     for url in display_urls(data, topic):
-        # Autolinks keep Markdown-sensitive repository paths literal.
+        # Intraword underscores (merge_requests) are already literal Markdown.
+        # Delimiter-position underscores and tildes may still need an autolink.
         lines.append('  ' * (depth + 1) + '- ' +
-                     (f'<{url}>' if any(char in url for char in '_~') else url))
+                     (f'<{url}>' if re.search(r'(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|~', url) else url))
     for child in topic.get('subtopics', []):
         lines.extend(render_topic_lines(data, child, depth + 1, detailed))
     return lines
@@ -634,11 +635,14 @@ def render(data, source=None, detailed=False):
     states = [('GitHub', data['metadata'].get('github_status')),
               ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
               ('local Git', data['metadata'].get('local_status'))]
-    gaps = [name + ' ' + status for name, status in states if status in {'partial', 'unavailable'}]
-    if gaps:
-        notes.append('Coverage is incomplete: ' + '; '.join(gaps) + '.')
-    elif data['metadata'].get('warnings'):
-        notes.append('Coverage is incomplete; some work may be missing.')
+    unavailable = [name + ' unavailable' for name, status in states if status == 'unavailable']
+    if unavailable:
+        notes.append('Coverage is incomplete: ' + '; '.join(unavailable) + '.')
+    if any(status == 'partial' for _, status in states):
+        notes.append('Some history or cross-references could not be fully verified; '
+                     'details are in the private audit.')
+    elif not unavailable and data['metadata'].get('warnings'):
+        notes.append('Additional verification limits are recorded in the private audit.')
     if notes:
         lines += ['', ' '.join(notes)]
     return '\n'.join(lines)

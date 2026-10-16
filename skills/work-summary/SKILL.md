@@ -222,6 +222,9 @@ URL from a bare key without a known authority or equate sites by key. Local-only
 work may have no URL sub-bullets. If source gaps materially limit the summary,
 add at most one short source/coverage sentence naming the missing sources;
 keep the long diagnostics in the private detailed evidence.
+Distinguish unavailable access from incomplete verification. Working tools and
+authentication can still leave history or reference checks unresolved; explain
+those limits without implying the source is unavailable or the machine is broken.
 
 ## Analyze and Render Captured Evidence
 

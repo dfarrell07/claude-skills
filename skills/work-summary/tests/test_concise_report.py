@@ -267,7 +267,9 @@ class ConciseReportTest(unittest.TestCase):
         source['metadata'].update(github_status='partial',local_status='unavailable',
                                   warnings=['Private failure detail '+str(n) for n in range(2000)])
         report=ws.render(source)
-        self.assertIn('GitHub partial; local Git unavailable',report)
+        self.assertIn('local Git unavailable',report)
+        self.assertIn('Some history or cross-references could not be fully verified',report)
+        self.assertNotIn('GitHub unavailable',report)
         self.assertNotIn('Private failure',report)
         self.assertLess(len(report.splitlines()),8)
 
@@ -348,6 +350,30 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('  - <'+url+'>',report)
         self.assertNotIn('MR merged',report)
         self.assertEqual(issue['review_links'][0]['proof'],'description')
+
+    def test_normal_gitlab_url_uses_plain_text_despite_intraword_underscore(self):
+        source=self.capture()
+        issue=self.add_jira(source)
+        url='https://git.example.test/group/project/-/merge_requests/17'
+        issue['detail']['fields']['description']+='\n'+url
+        associate_work(source['jira'],source['github'])
+        enriched=self.enrich(source)
+        enriched['analysis']['themes'][0]['links']=[url]
+        report=ws.render(enriched,source)
+        self.assertIn('  - '+url,report)
+        self.assertNotIn('<'+url+'>',report)
+
+    def test_partial_verification_is_distinct_from_unavailable_sources(self):
+        source=self.capture()
+        source['metadata'].update(github_status='partial',local_status='partial',
+                                  warnings=['Historical reference could not be verified.'])
+        source['jira']={'metadata':{'status':'partial','site':'jira.example.test'},
+                        'issues':[],'activity':[]}
+        report=ws.render(source)
+        self.assertIn('Some history or cross-references could not be fully verified',report)
+        self.assertNotIn('unavailable',report)
+        self.assertNotIn('Coverage is incomplete:',report)
+        self.assertEqual(source['metadata']['github_status'],'partial')
 
     def test_repository_name_cannot_turn_a_raw_url_into_active_emphasis(self):
         source=self.capture()
