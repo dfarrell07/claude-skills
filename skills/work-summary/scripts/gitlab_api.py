@@ -1,5 +1,6 @@
 """Anonymous native GitLab MR reads; public access is independent of /user login."""
 
+import json
 import re
 import ssl
 from datetime import datetime
@@ -13,6 +14,34 @@ from gitlab_sources import project_path
 
 SCOPE = 'explicit_public_merge_requests_and_verified_identity_inventories'
 MAX_PAGES, MAX_REDIRECTS, MAX_BYTES = 100, 5, 20 * 1024 * 1024
+
+NOTES_QUERY = """query WorkSummaryNotes($fullPath:ID!,$iid:String!,$after:String){
+  project(fullPath:$fullPath){id fullPath mergeRequest(iid:$iid){id iid webUrl createdAt updatedAt
+    notes(first:100,after:$after){count pageInfo{hasNextPage endCursor}
+      nodes{id body createdAt updatedAt system internal url noteableId noteableType
+        project{id fullPath} author{id username} lastEditedAt lastEditedBy{id username}}}}}}"""
+
+
+def graphql_notes_url(host, repo, number, cursor=None):
+    variables = {'fullPath': repo, 'iid': str(number), 'after': cursor}
+    return f'https://{host}/api/graphql?' + urlencode({'query': NOTES_QUERY,
+        'variables': json.dumps(variables, separators=(',', ':'))})
+
+
+def graphql_variables(url):
+    pairs = parse_qsl(urlsplit(url).query)
+    params = dict(pairs)
+    require(len(params) == len(pairs) and set(params) == {'query', 'variables'}
+            and params['query'] == NOTES_QUERY, 'Unsafe native GraphQL operation')
+    variables = json.loads(params['variables'])
+    require(isinstance(variables, dict) and set(variables) == {'fullPath', 'iid', 'after'}
+            and project_path(variables['fullPath']) and isinstance(variables['iid'], str)
+            and re.fullmatch(r'[1-9][0-9]{0,19}', variables['iid'])
+            and (variables['after'] is None or isinstance(variables['after'], str)
+                 and 0 < len(variables['after']) <= 4096
+                 and not any(char in variables['after'] for char in '\r\n\x00')),
+            'Invalid native GraphQL notes scope')
+    return variables
 
 
 def mr_route(url):
@@ -28,8 +57,10 @@ def mr_route(url):
 def safe_api(url, host):
     p = urlsplit(url)
     require(p.scheme == 'https' and p.netloc == host and p.hostname == host
-            and p.path.startswith('/api/v4/') and not p.fragment
+            and (p.path.startswith('/api/v4/') or p.path == '/api/graphql') and not p.fragment
             and not any(c in url for c in '\r\n\x00'), 'Unsafe native API route')
+    if p.path == '/api/graphql':
+        graphql_variables(url)
     return url
 
 
@@ -89,7 +120,51 @@ def valid_mr(source):
     return host, repo, number
 
 
+def graphql_time_matches(graphql_value, rest_value):
+    native, rest = timestamp(graphql_value), timestamp(rest_value)
+    # GitLab GraphQL serializes second precision while REST retains milliseconds.
+    return native == rest or (isinstance(graphql_value, str)
+            and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', graphql_value)
+            and native == rest.replace(microsecond=0))
+
+
+def native_graphql_note(node, host, repo, source):
+    """Keep native GIDs and full camelCase source; never invent numeric REST IDs."""
+    require(isinstance(node, dict) and isinstance(node.get('id'), str)
+            and re.fullmatch(r'gid://gitlab/Note/[1-9][0-9]*', node['id'])
+            and isinstance(node.get('body'), str), 'Invalid native GraphQL note')
+    require(node.get('project') == {'id': 'gid://gitlab/Project/' + str(source['project_id']), 'fullPath': repo}
+            and node.get('noteableType') == 'MergeRequest' and node.get('noteableId') == source['id']
+            and node.get('url') == source['web_url'] + '#note_' + node['id'].rsplit('/', 1)[1],
+            'GraphQL note target mismatch')
+    require(timestamp(node.get('createdAt')) <= timestamp(node.get('updatedAt')),
+            'Invalid native GraphQL note dates')
+    require(type(node.get('system')) is bool and type(node.get('internal')) is bool,
+            'Missing native GraphQL privacy or system fields')
+    for field in ('author', 'lastEditedBy'):
+        require(field in node and (node[field] is None or isinstance(node[field], dict)
+                and isinstance(node[field].get('id'), str)
+                and re.fullmatch(r'gid://gitlab/User/[1-9][0-9]*', node[field]['id'])
+                and isinstance(node[field].get('username'), str) and bool(node[field]['username'])),
+                'Invalid native GraphQL note actor')
+    require('lastEditedAt' in node, 'Missing native GraphQL edit observation')
+    if node['lastEditedAt'] is not None:
+        require(timestamp(node['createdAt']) <= timestamp(node['lastEditedAt']) <= timestamp(node['updatedAt']),
+                'Invalid native GraphQL edit time')
+    if node['lastEditedBy'] is not None:
+        require(node['lastEditedAt'] is not None, 'Native GraphQL editor lacks edit time')
+    return {'id': node['id'], 'node_id': node['id'], 'source_kind': 'graphql', 'source': node,
+            'body': node['body'], 'author': node['author'], 'created_at': node['createdAt'],
+            'updated_at': node['updatedAt'], 'system': node['system'], 'internal': node['internal'],
+            'url': node['url'], 'last_edited_at': node['lastEditedAt'], 'last_edited_by': node['lastEditedBy']}
+
+
 def valid_note(note):
+    if isinstance(note, dict) and note.get('source_kind') == 'graphql':
+        require(isinstance(note.get('id'), str) and note.get('node_id') == note['id']
+                and re.fullmatch(r'gid://gitlab/Note/[1-9][0-9]*', note['id'])
+                and isinstance(note.get('source'), dict), 'Invalid normalized GraphQL note')
+        return
     require(isinstance(note, dict) and integer(note.get('id'), 1) and isinstance(note.get('body'), str)
             and 'author' in note and (note['author'] is None or isinstance(note['author'], dict)
             and integer(note['author'].get('id'), 1)), 'Invalid native note')
@@ -108,6 +183,76 @@ def valid_inventory_row(row, host, actor, role):
                 'Inventory participant mismatch')
     if role != 'authored_updates':
         require(row['state'] == 'opened', 'Open inventory state mismatch')
+
+
+def read_graphql_notes(reader, host, repo, source):
+    """Bound every complete native notes connection to its REST MR and project."""
+    notes, seen, cursors, cursor, snapshot, total = [], set(), set(), None, None, None
+    partial = False
+    for _ in range(MAX_PAGES):
+        url = graphql_notes_url(host, repo, source['iid'], cursor)
+        try:
+            response = reader.get(url)
+            require(urlsplit(response['url']).path == '/api/graphql'
+                    and graphql_variables(response['url']) == graphql_variables(url),
+                    'GraphQL response scope changed')
+            result = response['source']
+            require(isinstance(result, dict), 'Invalid native GraphQL response')
+            errors = result.get('errors') or []
+            require(isinstance(errors, list), 'Invalid native GraphQL errors')
+            if errors:
+                partial = True
+                reader.fail(url, 'native_graphql_errors')
+            project = result['data']['project']
+            require(isinstance(project, dict) and project.get('id') == 'gid://gitlab/Project/' + str(source['project_id'])
+                    and project.get('fullPath') == repo, 'GraphQL project identity mismatch')
+            mr = project['mergeRequest']
+            require(isinstance(mr, dict) and mr.get('id') == 'gid://gitlab/MergeRequest/' + str(source['id'])
+                    and str(mr.get('iid')) == str(source['iid']) and mr.get('webUrl') == source['web_url']
+                    and graphql_time_matches(mr.get('createdAt'), source['created_at'])
+                    and timestamp(mr.get('createdAt')) <= timestamp(mr.get('updatedAt')),
+                    'GraphQL MR identity mismatch')
+            current = {field: mr[field] for field in ('id', 'iid', 'webUrl', 'createdAt', 'updatedAt')}
+            if snapshot is not None and current != snapshot:
+                partial = True
+                reader.fail(url, 'GraphQL MR changed during notes paging')
+            snapshot = current
+            connection = mr['notes']
+            require(isinstance(connection, dict) and isinstance(connection.get('nodes'), list)
+                    and len(connection['nodes']) <= 100, 'Invalid native GraphQL notes page')
+            if not integer(connection.get('count')) or total is not None and total != connection['count']:
+                partial = True
+                reader.fail(url, 'Native GraphQL note count missing or changed')
+            if integer(connection.get('count')):
+                total = connection['count']
+            for node in connection['nodes']:
+                try:
+                    note = native_graphql_note(node, host, repo, source)
+                    require(note['id'] not in seen, 'Duplicate native GraphQL note')
+                    seen.add(note['id'])
+                    notes.append(note)
+                except (ValueError, TypeError, KeyError, AttributeError) as error:
+                    partial = True
+                    reader.fail(url, str(error) if isinstance(error, ValueError) else type(error).__name__)
+            info = connection.get('pageInfo')
+            require(isinstance(info, dict) and type(info.get('hasNextPage')) is bool,
+                    'Invalid native GraphQL pagination')
+            if not info['hasNextPage']:
+                require(len(notes) == total, 'Native GraphQL note count disagrees with retained rows')
+                expected = source.get('user_notes_count')
+                require(not integer(expected) or expected == sum(not note['system'] for note in notes),
+                        'Native GraphQL user note count disagrees or visibility differs')
+                return notes, 'partial' if partial else 'ok'
+            cursor = info.get('endCursor')
+            require(isinstance(cursor, str) and cursor and cursor not in cursors
+                    and connection['nodes'] and (total is None or len(notes) < total),
+                    'Native GraphQL cursor did not advance')
+            cursors.add(cursor)
+        except (OSError, URLError, ValueError, TypeError, KeyError, AttributeError) as error:
+            reader.fail(url, str(error) if isinstance(error, ValueError) else type(error).__name__)
+            return notes, 'partial'
+    reader.fail(url, 'native_graphql_page_limit')
+    return notes, 'partial'
 
 
 def read_notes(reader, host, repo, source):
@@ -138,8 +283,16 @@ def read_notes(reader, host, repo, source):
             count = sum(not note.get('system', False) for note in notes.values())
             if status == 'ok' and (not integer(expected) or count == expected):
                 return list(notes.values()), 'ok', sources
-    if integer(expected) and expected != sum(not note.get('system', False) for note in notes.values()):
-        reader.fail(sources[-1]['endpoint'], 'native_user_note_count_disagrees_or_visibility_differs')
+    recovered, status = read_graphql_notes(reader, host, repo, source)
+    sources.append({'endpoint': graphql_notes_url(host, repo, source['iid']), 'kind': 'graphql_notes', 'status': status})
+    graph_ids = {note['id'].rsplit('/', 1)[1] for note in recovered}
+    for note in recovered:
+        notes[note['id']] = note
+    if status == 'ok' and all(str(identity) in graph_ids for identity in notes if isinstance(identity, int)):
+        return list(notes.values()), 'ok', sources
+    if status == 'ok':
+        reader.fail(sources[-1]['endpoint'], 'readable_rest_note_absent_from_graphql_connection')
+        sources[-1]['status'] = 'partial'
     return list(notes.values()), 'partial', sources
 
 
@@ -257,6 +410,24 @@ class PublicReader:
         self.result['metadata']['failures'].append({'url': url, 'reason': reason})
 
 
+def notes_failure_scope(url):
+    parsed = urlsplit(url)
+    if parsed.path == '/api/graphql':
+        variables = graphql_variables(url)
+        return parsed.hostname, parsed.path, variables['fullPath'], variables['iid']
+    return parsed.hostname, parsed.path
+
+
+def unresolved_failures(capture):
+    recovered = set()
+    for item in capture['items']:
+        if item['notes_status'] == 'ok':
+            recovered.update(notes_failure_scope(source['endpoint'])
+                             for source in item.get('notes_sources', []))
+    return [failure for failure in capture['metadata']['failures']
+            if notes_failure_scope(failure['url']) not in recovered]
+
+
 def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
     verified_emails = tuple(verified_emails)
     result = {'items': [], 'metadata': {'status': 'not_applicable', 'scope': SCOPE,
@@ -363,8 +534,8 @@ def collect_gitlab(urls, warn, *, verified_emails=(), since=None, read=None):
                             attempted.discard(row['web_url'])
                             pending.append(row['web_url'])
             actors.clear()
-    result['metadata']['status'] = ('partial' if result['metadata']['failures'] else 'ok') if attempted else (
-        'partial' if result['metadata']['failures'] else 'not_applicable')
+    result['metadata']['status'] = ('partial' if unresolved_failures(result) else 'ok') if attempted else (
+        'partial' if unresolved_failures(result) else 'not_applicable')
     if result['metadata']['status'] == 'partial':
         warn('GitLab public MR reads are incomplete; readable native details and notes were retained.')
     return result
@@ -385,7 +556,7 @@ def validate_gitlab_api(data):
             and isinstance(meta.get('verified_aliases'), list)
             and all(isinstance(value, str) and value for value in meta['verified_aliases']),
             'Invalid GitLab API coverage')
-    require(meta['status'] != 'ok' or not meta['failures'], 'Incomplete public GitLab reads marked complete')
+    require(meta['status'] != 'ok' or not unresolved_failures(capture), 'Incomplete public GitLab reads marked complete')
     trusted = {row['email'].casefold() for row in data.get('metadata', {}).get('author_aliases', [])
                if isinstance(row, dict) and row.get('source') in {
                    'authenticated_github_profile', 'authenticated_github_noreply', 'github_commit_account'}
@@ -528,7 +699,7 @@ def validate_gitlab_api(data):
                         and (item['source'].get('author') or {}).get('id') == lead['user_id']
                         and not (item['source'].get('author') or {}).get('public_email')
                         for item in capture['items']), 'Unbound GitLab public identity lead')
-    incomplete = (bool(meta['failures'])
+    incomplete = (bool(unresolved_failures(capture))
                   or any(item['notes_status'] == 'partial' or item['source_kind'] == 'inventory'
                          for item in capture['items'])
                   or any(inventory['status'] == 'partial' for inventory in meta['inventories']))

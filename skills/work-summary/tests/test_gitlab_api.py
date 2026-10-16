@@ -344,5 +344,147 @@ class GitLabApiTest(unittest.TestCase):
             api.validate_gitlab_api({'gitlab': populated})
 
 
+class GraphqlNotesTest(unittest.TestCase):
+    collect = GitLabApiTest.collect
+    checked = GitLabApiTest.checked
+
+    def native_note(self, number=1):
+        return {'id': f'gid://gitlab/Note/{number}', 'body': 'Other-author native TASK-73',
+                'createdAt': '2026-10-10T01:00:00Z', 'updatedAt': '2026-10-11T01:00:00Z',
+                'system': False, 'internal': False, 'url': WEB + f'#note_{number}',
+                'noteableId': 107, 'noteableType': 'MergeRequest',
+                'project': {'id': 'gid://gitlab/Project/12', 'fullPath': 'group/project'},
+                'author': {'id': 'gid://gitlab/User/999', 'username': 'other'},
+                'lastEditedAt': '2026-10-11T01:00:00Z',
+                'lastEditedBy': {'id': 'gid://gitlab/User/999', 'username': 'other'}}
+
+    def graph(self, nodes, more=False, cursor=None, count=None):
+        return {'data': {'project': {'id': 'gid://gitlab/Project/12', 'fullPath': 'group/project',
+            'mergeRequest': {'id': 'gid://gitlab/MergeRequest/107', 'iid': '7', 'webUrl': WEB,
+                'createdAt': mr()['created_at'], 'updatedAt': mr()['updated_at'],
+                'notes': {'nodes': nodes, 'count': len(nodes) if count is None else count,
+                          'pageInfo': {'hasNextPage': more, 'endCursor': cursor}}}}}}
+
+    def graph_capture(self, graph_read):
+        def read(url):
+            if urlsplit(url).path == '/api/graphql':
+                return response(url, graph_read(api.graphql_variables(url)))
+            return response(url, mr()) if url == DETAIL else response(url, None, status=401)
+        return self.collect(read)
+
+    def test_denied_rest_recovers_complete_native_graphql_notes_with_all_receipts(self):
+        native = self.native_note()
+        result, calls, warnings = self.graph_capture(lambda variables: self.graph([native]))
+        item = result['items'][0]
+        self.assertEqual(item['notes_status'], 'ok')
+        self.assertEqual(result['metadata']['status'], 'ok')
+        self.assertFalse(warnings)
+        self.assertEqual(item['notes'][0]['source'], native)
+        self.assertEqual(item['notes'][0]['id'], native['id'])
+        self.assertEqual(item['notes'][0]['url'], native['url'])
+        self.assertFalse(item['notes'][0]['internal'])
+        self.assertEqual(len(result['metadata']['failures']), 4)
+        self.assertEqual(len(calls), 6)
+        for field in ('body', 'author', 'internal', 'last_edited_at', 'url', 'source'):
+            forged = copy.deepcopy(result)
+            forged['items'][0]['notes'][0][field] = 'forged'
+            with self.assertRaises(ValueError, msg=field):
+                self.checked(forged)
+
+    def test_graphql_paginates_native_cursor_and_binds_every_note(self):
+        def graph(variables):
+            return self.graph([self.native_note(2 if variables['after'] else 1)],
+                              more=variables['after'] is None, cursor='native-next', count=2)
+        result, calls, _ = self.graph_capture(graph)
+        self.assertEqual(result['items'][0]['notes_status'], 'ok')
+        self.assertEqual([n['id'] for n in result['items'][0]['notes']],
+                         ['gid://gitlab/Note/1', 'gid://gitlab/Note/2'])
+        self.assertEqual(api.graphql_variables(calls[-1])['after'], 'native-next')
+
+    def test_invalid_actor_privacy_target_time_and_graphql_errors_preserve_siblings(self):
+        for kind in ('actor', 'privacy', 'target', 'time', 'errors'):
+            bad = self.native_note(2)
+            if kind == 'actor':
+                bad['author']['id'] = '999'
+            elif kind == 'privacy':
+                bad.pop('internal')
+            elif kind == 'target':
+                bad['noteableId'] = 999
+            elif kind == 'time':
+                bad['lastEditedAt'] = '2027-01-01T00:00:00Z'
+            graph = self.graph([self.native_note(), bad])
+            if kind == 'errors':
+                graph['errors'] = [{'message': 'native partial'}]
+            result, _, _ = self.graph_capture(lambda variables: graph)
+            self.assertEqual(result['items'][0]['notes_status'], 'partial', kind)
+            self.assertEqual(result['items'][0]['notes'][0]['id'], 'gid://gitlab/Note/1')
+            self.assertEqual(result['metadata']['status'], 'partial')
+
+    def test_graphql_missing_repeated_cursor_count_and_wrong_mr_cannot_claim_complete(self):
+        for kind in ('missing', 'repeat', 'count', 'mr', 'project'):
+            def graph(variables):
+                value = self.graph([self.native_note()], more=kind in {'missing', 'repeat'},
+                                   cursor=None if kind == 'missing' else 'same', count=2)
+                target = value['data']['project']
+                if kind == 'mr':
+                    target['mergeRequest']['id'] = 'gid://gitlab/MergeRequest/999'
+                elif kind == 'project':
+                    target['id'] = 'gid://gitlab/Project/999'
+                return value
+            result, _, _ = self.graph_capture(graph)
+            self.assertEqual(result['items'][0]['notes_status'], 'partial', kind)
+
+    def test_same_host_other_mr_graphql_failure_is_not_recovered_by_success(self):
+        result, _, _ = self.graph_capture(lambda variables: self.graph([self.native_note()]))
+        failure = {'url': api.graphql_notes_url(HOST, 'group/project', 8, 'second-page'), 'reason': 'native_http_403'}
+        result['metadata']['failures'].append(failure)
+        self.assertEqual(api.unresolved_failures(result), [failure])
+        result['metadata']['status'] = 'ok'
+        with self.assertRaises(ValueError):
+            self.checked(result)
+
+    def test_native_count_or_snapshot_drift_keeps_readable_later_notes(self):
+        for kind in ('count', 'snapshot'):
+            def graph(variables):
+                later = variables['after'] is not None
+                value = self.graph([self.native_note(2 if later else 1)], more=not later,
+                                   cursor='next', count=3 if later and kind == 'count' else 2)
+                if later and kind == 'snapshot':
+                    value['data']['project']['mergeRequest']['updatedAt'] = '2026-10-13T00:00:00Z'
+                return value
+            result, _, _ = self.graph_capture(graph)
+            self.assertEqual(result['items'][0]['notes_status'], 'partial')
+            self.assertEqual([note['id'] for note in result['items'][0]['notes']],
+                             ['gid://gitlab/Note/1', 'gid://gitlab/Note/2'])
+
+    def test_rest_positive_is_preserved_when_complete_graph_connection_omits_it(self):
+        def read(url):
+            if url == DETAIL:
+                return response(url, mr())
+            if urlsplit(url).path == '/api/graphql':
+                return response(url, self.graph([self.native_note()]))
+            if urlsplit(url).path.endswith('/notes'):
+                if 'page=2' in url:
+                    return response(url, None, status=401)
+                return response(url, [note(42)], headers={'x-next-page': '2'})
+            return response(url, None, status=401)
+        result, _, _ = self.collect(read)
+        self.assertEqual(result['items'][0]['notes_status'], 'partial')
+        self.assertEqual([note['id'] for note in result['items'][0]['notes']], [42, 'gid://gitlab/Note/1'])
+
+    def test_native_second_precision_is_bound_without_arbitrary_time_tolerance(self):
+        self.assertTrue(api.graphql_time_matches('2026-10-10T00:00:00Z', '2026-10-10T00:00:00.632Z'))
+        self.assertFalse(api.graphql_time_matches('2026-10-10T00:00:01Z', '2026-10-10T00:00:00.632Z'))
+        self.assertFalse(api.graphql_time_matches('2026-10-10T00:00:00.001Z', '2026-10-10T00:00:00.632Z'))
+
+    def test_only_exact_native_read_query_is_allowed(self):
+        url = api.graphql_notes_url(HOST, 'group/project', 7)
+        api.safe_api(url, HOST)
+        for forged in (url.replace('WorkSummaryNotes', 'mutation'), url + '&query=mutation',
+                       url.replace('group%2Fproject', '..%2Fproject')):
+            with self.assertRaises((ValueError, json.JSONDecodeError)):
+                api.safe_api(forged, HOST)
+
+
 if __name__ == '__main__':
     unittest.main()

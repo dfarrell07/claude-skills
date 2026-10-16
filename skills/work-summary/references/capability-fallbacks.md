@@ -117,7 +117,18 @@ persisted authentication. If a native TLS error names a missing configured CA
 file, a command-local installed OS CA bundle can restore that read while keeping
 certificate verification enabled. Retain both attempts; never disable TLS checks.
 For explicit GitLab MR URLs, try verified-TLS native public detail reads, native
-repository redirects, and paginated notes/discussions. A native public email
+repository redirects, and paginated notes/discussions. If the numeric and encoded
+project REST notes/discussions routes fail, try the native anonymous read-only
+GraphQL notes connection independently. Bind its native project and MR IDs, full
+note IDs, target URLs, counts and cursor pagination; retain all failed REST
+observations alongside readable GraphQL notes. A complete connection can recover
+note coverage without claiming private-account visibility. Preserve native
+`system` and `internal` values and full note observations; confidentiality fields
+that the native schema does not expose remain unknown. Keep native author GIDs
+separate from REST numeric IDs and bind their numeric user identity before
+crediting personal activity. Current bodies are context, and `updatedAt` alone
+does not prove a personal edit: retain distinct native creation and edit times
+and any explicit native editor. A native public email
 matching an already verified account alias can establish the target's numeric
 GitLab identity for public authored, assigned and review inventories. GitLab
 requires a public email to be verified; retain the native identity object and
