@@ -15,6 +15,39 @@ from extended_evidence import (  # noqa: E402
 
 
 class ExtendedGithubEvidenceTest(unittest.TestCase):
+    def test_related_only_keeps_native_name_lead_separate_from_read_failure(self):
+        data, evidence = self.capture()
+        url = 'https://github.com/org/project/pull/7'
+        item = {'repo': 'org/project', 'number': 7, 'url': url, 'title': 'Work', 'body': '', 'state': 'open',
+                'created_at': '2026-01-10T12:00:00Z', 'updated_at': '2026-01-11T12:00:00Z',
+                'closed_at': None, 'merged_at': None, 'head_sha': 'a' * 40, 'merge_sha': None, 'head_ref': 'work'}
+        data['github']['pr_index'] = [item]
+        data['metadata'].update(github_status='ok', repositories=[{'path': '/work/local',
+            'remotes': [{'kind': 'github', 'host': 'github.com', 'repo': 'org/project'}]}],
+            github_discovery={'head_history:' + url: {'status': 'ok', 'pages': 1, 'count': 0}})
+        data['branches'] = [{'repo': '/work/local', 'refs': ['refs/heads/work'], 'pr_status': 'related_only',
+            'prs': [], 'related_prs': [{**{key: item[key] for key in ('repo', 'number', 'url', 'state')},
+                                      'proof': 'head_name_only'}],
+            'association_lookups': [{'repo': 'org/project', 'status': 'ok'}]}]
+        self.validate(data, evidence)
+        for mutation in ('no_candidate', 'wrong_name', 'failed_sha', 'failed_history', 'wrong_state', 'unrouted'):
+            broken = copy.deepcopy(data)
+            if mutation == 'no_candidate':
+                broken['branches'][0]['related_prs'] = []
+            elif mutation == 'wrong_name':
+                broken['branches'][0]['refs'] = ['refs/heads/other-work']
+            elif mutation == 'failed_sha':
+                broken['branches'][0]['association_lookups'][0]['status'] = 'partial'
+            elif mutation == 'failed_history':
+                broken['metadata'].update(github_status='partial', warnings=['native history failed'])
+                broken['metadata']['github_discovery']['head_history:' + url]['status'] = 'partial'
+            elif mutation == 'wrong_state':
+                broken['branches'][0]['related_prs'][0]['state'] = 'merged'
+            else:
+                broken['metadata']['repositories'][0]['remotes'] = []
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.validate(broken, evidence)
+
     def test_html_head_requires_complete_page_replay_and_native_api_binding(self):
         from github_timeline import collect_timeline
         item = {'repo': 'org/project', 'number': 12, 'url': 'https://github.com/org/project/pull/12'}

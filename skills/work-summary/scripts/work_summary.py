@@ -345,7 +345,7 @@ def validate(data, source=None):
             require(all((name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")})
                         or (name in worktrees and worktrees[name] == branch["hash"])
                         for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
-            require(branch.get("pr_status") in {"unchecked", "not_applicable", "matched", "no_match", "partial", "unsupported"},
+            require(branch.get("pr_status") in {"unchecked", "not_applicable", "matched", "no_match", "partial", "unsupported", "related_only"},
                     "Invalid branch PR coverage")
     if "unattributed_commits" in data:
         leads = data["unattributed_commits"]

@@ -257,6 +257,10 @@ unrelated personal projects and low-value audit detail in the saved evidence.
 Judge relevance from the work's purpose and the supplied reference, rather than
 the repository name or namespace; a personal repository can support professional
 work explicitly relevant to the destination.
+Before finalizing, compare each destination workstream with the native authored
+deliverables, including tools that support recurring Jira cleanup or handoffs.
+Use the reference to recognize relevant work; require fresh evidence for what
+was actually done.
 
 Each bullet's description is one clear line about what was done or investigated.
 Ongoing work may be included when actual activity supports it; phrase its state

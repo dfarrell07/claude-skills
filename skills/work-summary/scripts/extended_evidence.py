@@ -574,6 +574,26 @@ def validate_github(data, evidence, start, end):
                     and bool(lookups) and all(info.get('status') == 'ok' for info in lookups)
                     and any(info.get('scope') == 'github_global' for info in lookups)
                     and not prs, 'Unsupported branch needs completed global lookups without repository scope')
+        if branch['pr_status'] == 'related_only':
+            lookups, related = branch.get('association_lookups', []), branch.get('related_prs', [])
+            require(branch.get('repo') in inventory and branch['repo'] not in unrouted
+                    and bool(lookups) and all(info.get('status') == 'ok' for info in lookups)
+                    and isinstance(related, list) and bool(related) and not prs,
+                    'Related-only branch needs completed repository lookups and native candidates')
+            names = {ref.removeprefix('refs/heads/') for ref in branch.get('refs', [])
+                     if ref.startswith('refs/heads/')}
+            names.update(ref.removeprefix('refs/remotes/').split('/', 1)[1]
+                         for ref in branch.get('refs', []) if ref.startswith('refs/remotes/')
+                         and '/' in ref.removeprefix('refs/remotes/'))
+            for candidate in related:
+                require(isinstance(candidate, dict) and candidate.get('proof') == 'head_name_only'
+                        and any(row.get('head_ref') in names and all(candidate.get(field) == row.get(field)
+                                for field in ('repo', 'number', 'url', 'state'))
+                                for row in indexed_observations.get(candidate.get('url'), [])),
+                        'Related-only candidate lacks a captured native matching branch name')
+                require(all(metadata.get('github_discovery', {}).get(prefix + candidate['url'], {}).get('status', 'ok') == 'ok'
+                            for prefix in ('head_history:', 'rest_head_history:', 'html_head_history:')),
+                        'Related-only candidate has an incomplete historical read')
     # Indexed snapshots remain citations, but use the primary observed state when available.
     for url, item in indexed.items():
         evidence.setdefault(url, item)
