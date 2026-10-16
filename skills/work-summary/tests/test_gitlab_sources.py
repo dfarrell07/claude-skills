@@ -103,6 +103,22 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertIn('UpdateHostKeys=no', env['GIT_SSH_COMMAND'])
         self.assertEqual(env['GIT_TERMINAL_PROMPT'], '0')
 
+    def test_native_credential_fill_cannot_launch_configured_askpass(self):
+        helper, marker = self.root / 'askpass', self.root / 'asked'
+        helper.write_text('#!/usr/bin/env python3\nfrom pathlib import Path\n'
+                          + f'Path({str(marker)!r}).write_text("invoked")\nprint("fixture-value")\n')
+        helper.chmod(0o700)
+        args = ['git', '-C', str(self.repo), '-c', 'credential.helper=',
+                '-c', 'core.askPass=' + str(helper), 'credential', 'fill']
+        request = b'protocol=https\nhost=gitlab.example.test\n\n'
+        positive = subprocess.run(args, input=request, env=self.env, capture_output=True, timeout=10)
+        self.assertEqual(positive.returncode, 0)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        blocked = subprocess.run(args, input=request, env=gl.git_env(), capture_output=True, timeout=10)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertFalse(marker.exists())
+
     def test_malformed_row_retains_other_positive_and_exact_parse_gap(self):
         data = self.collect(HEAD + 'bad native row\n' + MERGE)
         query = data['metadata']['gitlab_discovery']['queries'][0]
@@ -147,6 +163,23 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertEqual(data['metadata']['gitlab_discovery']['failures'][0]['reason'],
                          'additional_url_not_addressable_by_remote_name')
         self.assertEqual(len(data['branches'][0]['merge_requests']), 1)
+
+    def test_same_project_https_push_and_ssh_fetch_do_not_make_a_false_gap(self):
+        self.git('remote', 'set-url', '--push', 'origin', 'https://gitlab.example.test/group/sub/project.git')
+        data = self.collect()
+        self.assertEqual(data['metadata']['gitlab_discovery']['status'], 'ok')
+        self.assertFalse(data['metadata']['gitlab_discovery']['failures'])
+
+    def test_deleting_an_entire_selected_project_query_cannot_claim_complete(self):
+        data = self.collect()
+        data['metadata']['repositories'].append({'path': '/second/repository', 'remotes': [
+            {'name': 'origin', 'host': 'gitlab.example.test', 'repo': 'different/project'}]})
+        data['branches'].append({'repo': '/second/repository', 'hash': OTHER, 'object_type': 'commit'})
+        with self.assertRaisesRegex(ValueError, 'lacks a complete'):
+            gl.validate_gitlab(data)
+        data['metadata']['repositories'][-1]['remotes'][0]['repo'] = None
+        with self.assertRaisesRegex(ValueError, 'lacks a complete'):
+            gl.validate_gitlab(data)
 
     def test_deduplicate_complete_project_advertisements(self):
         branches, repos = self.inputs()

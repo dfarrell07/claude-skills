@@ -80,20 +80,22 @@ def source_key(host, repo, local_repo, remote):
 
 def git_env():
     return {**GIT_ENV, 'GIT_ALLOW_PROTOCOL': 'ssh:https', 'GIT_TERMINAL_PROMPT': '0',
+            'GIT_ASKPASS': 'false', 'SSH_ASKPASS': 'false', 'SSH_ASKPASS_REQUIRE': 'never',
             'GIT_SSH_COMMAND': ('ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no '
                                 '-o ConnectTimeout=10 -o ClearAllForwardings=yes'),
             'GIT_SSH_VARIANT': 'ssh'}
 
 
 def native_git(repo, *args, timeout=90):
-    return subprocess.run(['git', '--no-pager', '--no-optional-locks', '-C', repo, *args],
+    return subprocess.run(['git', '--no-pager', '--no-optional-locks', '-c', 'credential.interactive=false',
+                           '-C', repo, *args],
                           env=git_env(), capture_output=True, timeout=timeout, check=False)
 
 
 def collect_gitlab_refs(branches, repositories, warn):
     """Add native head matches without inventing MR state, authorship, or dates."""
     selected = {branch['repo'] for branch in branches if branch['object_type'] == 'commit'}
-    result = {'status': 'not_applicable', 'scope': SCOPE, 'queries': [], 'failures': []}
+    result = {'status': 'not_applicable', 'scope': SCOPE, 'queries': [], 'routes': [], 'failures': []}
     candidates = [(entry, remote) for entry in repositories if entry['path'] in selected
                   for remote in entry.get('remotes', []) if gitlab_host(remote.get('host'))]
     if not candidates:
@@ -118,11 +120,15 @@ def collect_gitlab_refs(branches, repositories, warn):
             # Preserve other configured routes as explicit unsearched scopes.
             expected = remote.get('repo')
             require(expected is None or expected == route['repo'], 'effective_remote_route_mismatch')
+            route_record = {'local_repo': path, 'remote': name, **route}
+            if route_record not in result['routes']:
+                result['routes'].append(route_record)
             push_result = native_git(path, 'remote', 'get-url', '--push', '--all', '--', name, timeout=15)
             require(push_result.returncode == 0, 'push_remote_scope_unavailable')
             extra_urls = urls[1:] + push_result.stdout.decode('utf-8').splitlines()
             for alternative in {tuple(sorted(value.items())) for url in extra_urls
-                                if (value := remote_route(url)) is not None and value != route}:
+                                if (value := remote_route(url)) is not None
+                                and (value['host'], value['repo']) != (route['host'], route['repo'])}:
                 other = dict(alternative)
                 result['failures'].append({**failure, 'host': other['host'], 'repo': other['repo'],
                                            'reason': 'additional_url_not_addressable_by_remote_name'})
@@ -187,9 +193,21 @@ def validate_gitlab(data):
         return
     require(isinstance(discovery, dict) and discovery.get('scope') == SCOPE
             and discovery.get('status') in {'ok', 'partial', 'not_applicable', 'unavailable'}
-            and isinstance(discovery.get('queries'), list) and isinstance(discovery.get('failures'), list),
+            and isinstance(discovery.get('queries'), list) and isinstance(discovery.get('failures'), list)
+            and isinstance(discovery.get('routes'), list),
             'Invalid GitLab discovery')
     repositories = {entry['path']: entry for entry in data['metadata'].get('repositories', [])}
+    routes = []
+    for route in discovery['routes']:
+        require(isinstance(route, dict) and set(route) == {'local_repo', 'remote', 'host', 'repo', 'transport'}
+                and route['local_repo'] in repositories and gitlab_host(route['host'])
+                and project_path(route['repo']) and route['transport'] in {'ssh', 'https'}
+                and route not in routes, 'Invalid effective GitLab route evidence')
+        require(any(remote.get('name') == route['remote'] and isinstance(remote.get('host'), str)
+                    and remote['host'].casefold() == route['host'] and remote.get('repo') in {None, route['repo']}
+                    for remote in repositories[route['local_repo']].get('remotes', [])),
+                'Effective GitLab route absent from native inventory')
+        routes.append(route)
     queries, requested, complete = {}, set(), set()
     for query in discovery['queries']:
         require(isinstance(query, dict) and query.get('local_repo') in repositories, 'Unknown GitLab local repository')
@@ -198,6 +216,8 @@ def validate_gitlab(data):
                 'Invalid GitLab project route')
         require(query.get('effective_remote') == {'host': host, 'repo': repo, 'transport': query.get('transport')}
                 and query.get('transport') in {'ssh', 'https'}, 'Invalid effective GitLab route')
+        require({'local_repo': query['local_repo'], 'remote': query.get('remote'), 'host': host, 'repo': repo,
+                 'transport': query.get('transport')} in routes, 'GitLab query lacks effective route evidence')
         require(isinstance(query.get('remote'), str) and REMOTE.fullmatch(query['remote']), 'Invalid GitLab remote name')
         key = source_key(host, repo, query['local_repo'], query.get('remote', ''))
         require(query.get('source_key') == key and key not in queries, 'Duplicate or invalid GitLab source key')
@@ -228,6 +248,20 @@ def validate_gitlab(data):
             complete.add(pair)
     if discovery['status'] == 'ok':
         require(requested and requested == complete and not discovery['failures'], 'Incomplete GitLab discovery marked complete')
+        selected = {branch['repo'] for branch in data.get('branches', []) if branch['object_type'] == 'commit'}
+        for path in selected & repositories.keys():
+            for remote in repositories[path].get('remotes', []):
+                if not gitlab_host(remote.get('host')):
+                    continue
+                project = remote.get('repo')
+                if project is not None:
+                    require((remote['host'].casefold(), project) in complete,
+                            'Configured GitLab project lacks a complete native advertisement')
+                else:
+                    require(any(route['local_repo'] == path and route['remote'] == remote.get('name')
+                                and route['host'] == remote['host'].casefold()
+                                and (route['host'], route['repo']) in complete for route in routes),
+                            'Unknown GitLab project lacks a complete effective-route read')
     if discovery['status'] in {'unavailable', 'not_applicable'}:
         require(not queries, 'Unavailable GitLab discovery has native queries')
     for branch in data.get('branches', []):
