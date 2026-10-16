@@ -136,7 +136,7 @@ def collect(days_text, roots, now=None):
         try:
             identity = api("user")
             github_user = identity["login"]
-            require(isinstance(github_user, str) and re.fullmatch(r"[A-Za-z0-9-]+", github_user),
+            require(isinstance(github_user, str) and re.fullmatch(r"[A-Za-z0-9_-]+", github_user),
                     "Invalid GitHub login")
         except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
             warn("GitHub identity lookup failed; GitHub activity is unavailable.")

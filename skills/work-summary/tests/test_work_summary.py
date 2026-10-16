@@ -44,7 +44,7 @@ with open(os.environ["GH_LOG"], "a") as log:
 if args[-1] == "user":
     if os.environ.get("GH_FAIL") in ("auth", "identity"):
         sys.exit(1)
-    print(json.dumps({"login": "test-user"}))
+    print(json.dumps({"login": os.environ.get("GH_LOGIN", "test-user")}))
     sys.exit(0)
 query = next(value[2:] for value in args if value.startswith("q="))
 kind = "prs" if "is:pr " in query else "issues"
@@ -266,6 +266,17 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data = self.capture()
         self.assertEqual(data["metadata"]["github_status"], "partial")
         self.assertTrue(any("changed while paging" in warning for warning in data["metadata"]["warnings"]))
+
+    def test_managed_user_login_is_preserved_and_queried(self):
+        self.env["GH_LOGIN"] = "mona-cat_octo"
+        data = self.capture()
+        self.assertEqual(data["metadata"]["github_user"], "mona-cat_octo")
+        self.assertEqual(data["metadata"]["github_status"], "ok")
+        self.assertEqual(len(data["github"]["prs"]), 1)
+        calls = [json.loads(line) for line in (self.root / "gh.log").read_text().splitlines()]
+        queries = [value for args in calls for value in args if value.startswith("q=")]
+        self.assertEqual(len(queries), 2)
+        self.assertTrue(all("author:mona-cat_octo" in query for query in queries))
 
     def test_enterprise_host_is_used_for_identity_and_search(self):
         self.env["GH_HOST"] = "git.example.test"
