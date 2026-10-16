@@ -135,6 +135,10 @@ class WorkLinksTest(unittest.TestCase):
             self.assertTrue(issue['review_links'][0]['sensitive'])
         for url in ('http://git.example.test/group/project/-/merge_requests/17',
                     'https://user:password@git.example.test/group/project/-/merge_requests/17',
+                    'https://git.example.test／evil/group/project/-/merge_requests/17',
+                    'https://git.example.test：443/group/project/-/merge_requests/17',
+                    'https://git.example.test:0/group/project/-/merge_requests/17',
+                    'https://git.example.test:65536/group/project/-/merge_requests/17',
                     'https://git.example.test/group/../project/-/merge_requests/17',
                     'https://git.example.test/group/%2e%2e/project/-/merge_requests/17',
                     'https://git.example.test/group/project/-/merge_requests/17suffix'):
@@ -272,6 +276,10 @@ class WorkLinksTest(unittest.TestCase):
         associate_work(data['jira'], data['github'])
         validate_links(data)
         self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
+        data['jira']['metadata']['site'] = 'jira.example.test:0'
+        pr['body'] = 'https://jira.example.test:0/browse/TEST-123'
+        associate_work(data['jira'], data['github'])
+        self.assertEqual(pr['jira_links'], [])
 
     def test_version_tokens_do_not_seed_or_pair_a_real_ticket_with_the_same_prefix(self):
         for field in ('title', 'body', 'head_ref', 'indexed_head_ref'):

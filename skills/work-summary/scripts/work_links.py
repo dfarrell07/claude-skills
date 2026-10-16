@@ -20,7 +20,8 @@ def _key_mentions(text, site, confirmed):
         try:
             parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
             # Accessing port also rejects invalid and out-of-range authorities.
-            parts.port
+            if parts.port is not None and not 1 <= parts.port <= 65535:
+                continue
         except ValueError:
             continue
         key = parts.path.removeprefix('/browse/')
@@ -105,7 +106,12 @@ def native_review_links(issue):
         for text, private in values(value, sensitive):
             for match in URL.finditer(text):
                 original = match.group().rstrip('.,;:!?`\'’”')
-                parts = urlsplit(original)
+                try:
+                    parts = urlsplit(original)
+                    if parts.port is not None and not 1 <= parts.port <= 65535:
+                        continue
+                except ValueError:
+                    continue
                 if (parts.scheme != 'https' or not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', parts.netloc)
                         or not re.fullmatch(r'/(?:[A-Za-z0-9_.~-]+/){2,}-/merge_requests/[1-9][0-9]*', parts.path)
                         or any(part in {'.', '..'} for part in parts.path.split('/'))):
