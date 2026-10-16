@@ -796,14 +796,15 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
             self.assertIn(issue["url"], line)
         enriched = copy.deepcopy(data)
         enriched["analysis"] = {"themes":[{"name":"Linked work", "description":"Investigated behavior",
-            "items":[{"repo":pr["repo"], "number":pr["number"], "url":pr["url"]}]}], "in_progress":[]}
+            "items":[{"repo":pr["repo"], "number":pr["number"], "url":pr["url"]}],
+            "links":[issue["url"],pr["url"]]}], "in_progress":[]}
         source, capture = self.root / "paired-source.json", self.root / "paired.json"
         source.write_text(json.dumps(data))
         capture.write_text(json.dumps(enriched))
         output = self.run_script(RENDER, capture, source).stdout
-        line = next(line for line in output.splitlines() if "Investigated behavior" in line)
-        self.assertIn(pr["url"], line)
-        self.assertIn(issue["url"], line)
+        summary = output.split("### In Progress", 1)[0]
+        self.assertIn("- **Linked work**: Investigated behavior\n  - " + issue["url"] +
+                      "\n  - " + pr["url"], summary)
 
     def test_jira_work_lists_native_gitlab_mr_reference_without_claiming_state(self):
         data = self.capture()

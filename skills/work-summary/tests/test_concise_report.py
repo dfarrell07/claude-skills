@@ -191,6 +191,29 @@ class ConciseReportTest(unittest.TestCase):
         enriched['analysis']['in_progress']=[{**self.reference(pr),'description':'Same proposal'}]
         self.assertEqual(len([line for line in ws.render(enriched,source).splitlines() if line.startswith('- ')]),1)
 
+    def test_ongoing_links_are_validated_selected_and_deduplicated(self):
+        source=self.capture()
+        pr=source['github']['prs'][0]
+        pr.update(state='open',merged_at=None,closed_at=None,
+                  body='https://unknown.example/browse/TEST-1')
+        context='https://unknown.example/browse/TEST-1'
+        enriched=copy.deepcopy(source)
+        ongoing={**self.reference(pr),'description':'Continue work','links':[]}
+        enriched['analysis']={'themes':[],'in_progress':[ongoing]}
+        self.assertEqual(ws.render(enriched,source),'- Ongoing: Continue work')
+        ongoing['links']=[context,pr['url'],context]
+        report=ws.render(enriched,source)
+        self.assertIn('- Ongoing: Continue work\n  - '+context+'\n  - '+pr['url'],report)
+        self.assertEqual(report.count(context),1)
+        self.assertIn('Jira state is unverified',report)
+        detailed=ws.render(enriched,source,detailed=True).split('### Activity Stats',1)[0]
+        self.assertIn('- Continue work\n  - '+context+'\n  - '+pr['url'],detailed)
+        for selected in (['https://forged.example/browse/TEST-1'],None,'invalid'):
+            with self.subTest(selected=selected):
+                ongoing['links']=selected
+                with self.assertRaises(ValueError):
+                    ws.render(enriched,source)
+
     def test_local_only_fallback_is_grounded_and_keeps_private_proof_out_of_primary_output(self):
         source=self.capture()
         source['github']['prs']=[]

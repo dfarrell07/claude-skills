@@ -358,13 +358,7 @@ def validate(data, source=None):
             theme_node(child)
         require(theme["items"] or local or jira_refs or branch_refs or children,
                 "A theme needs at least one source citation or evidenced subtopic")
-        if "links" in theme:
-            selected = theme["links"]
-            require(isinstance(selected, list) and all(isinstance(url, str) for url in selected),
-                    "Invalid selected links")
-            candidates = set(work_urls(data, theme))
-            require(all(url in candidates for url in selected),
-                    "Selected link is absent from this topic's source evidence")
+        validate_selected_links(data, theme)
 
     for theme in analysis["themes"]:
         theme_node(theme)
@@ -376,6 +370,7 @@ def validate(data, source=None):
                     and jira_items[item["key"]].get("status_category") in {"new", "indeterminate"}, "In-progress Jira must be active")
         else:
             require(reference(item)["state"] == "open", "In-progress citation must refer to an open item")
+        validate_selected_links(data, ongoing_topic(item))
 
 
 def markdown(text):
@@ -482,6 +477,28 @@ def work_urls(data, topic):
     return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
 
 
+def validate_selected_links(data, topic):
+    if 'links' not in topic:
+        return
+    selected = topic['links']
+    require(isinstance(selected, list) and all(isinstance(url, str) for url in selected),
+            "Invalid selected links")
+    candidates = set(work_urls(data, topic))
+    require(all(url in candidates for url in selected),
+            "Selected link is absent from this topic's source evidence")
+
+
+def ongoing_topic(item, prefix='Ongoing: '):
+    topic = {'description': prefix + item['description'], 'items': []}
+    if 'key' in item:
+        topic['jira'] = [{key: item[key] for key in ('key', 'url')}]
+    else:
+        topic['items'] = [{key: item[key] for key in ('repo', 'number', 'url')}]
+    if 'links' in item:
+        topic['links'] = item['links']
+    return topic
+
+
 def direct_urls(topic):
     """Exact cited artifacts establish work identity without traversing relations."""
     return list(dict.fromkeys(item['url'] for field in ('items', 'jira')
@@ -583,11 +600,7 @@ def render(data, source=None, detailed=False):
     for ongoing in data.get('analysis', {}).get('in_progress', []):
         if ongoing['url'] in represented:
             continue
-        topic = {'description': 'Ongoing: ' + ongoing['description'], 'items': []}
-        if 'key' in ongoing:
-            topic['jira'] = [{key: ongoing[key] for key in ('key', 'url')}]
-        else:
-            topic['items'] = [{key: ongoing[key] for key in ('repo', 'number', 'url')}]
+        topic = ongoing_topic(ongoing)
         topics.append(topic)
         represented.update(direct_urls(topic) + display_urls(data, topic))
     lines = []
@@ -675,8 +688,7 @@ def render_detailed(data, source=None):
             lines.append("No evidence-backed accomplishments identified in this capture.")
         lines += ["", "### In Progress", ""]
         for item in data["analysis"]["in_progress"]:
-            citation = jira_work(item) if "key" in item else linked(item)
-            lines.append(f"- {markdown(item['description'])} ({citation})")
+            lines.extend(render_topic_lines(data, ongoing_topic(item, prefix='')))
         if not data["analysis"]["in_progress"]:
             lines.append("No open items selected for this summary.")
         lines.append("")
