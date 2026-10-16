@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from github_sources import Github, PR_FIELDS, graphql_item, rest_item  # noqa: E402
+from github_sources import Github, PR_FIELDS, branch_association_status, graphql_item, rest_item  # noqa: E402
 
 START = datetime(2026, 10, 9, tzinfo=timezone.utc)
 END = datetime(2026, 10, 16, tzinfo=timezone.utc)
@@ -781,11 +781,36 @@ class GithubSourcesTest(unittest.TestCase):
         def api(args):
             return {'data': {'s0': connection()}}
         client, branches, _ = self.associate(api, repos=[repository(remotes=())])
-        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertEqual(branches[0]['pr_status'], 'unsupported')
         self.assertEqual(branches[0]['association_lookups'][0]['status'], 'ok')
         self.assertEqual(client.coverage['global_snapshot:' + SHA]['status'], 'ok')
-        self.assertEqual(client.coverage['unrouted:/local/repo']['status'], 'partial')
-        self.assertTrue(any('no configured GitHub repository' in message for message in client.warnings))
+        self.assertEqual(client.coverage['unrouted:/local/repo']['status'], 'unsupported')
+        self.assertEqual(client.coverage['unrouted:/local/repo']['scope'], 'github_global_without_repository')
+        self.assertFalse(client.warnings)
+
+    def test_failed_global_read_remains_partial_despite_unsupported_repository_scope(self):
+        def api(args):
+            raise subprocess.CalledProcessError(1, list(args), stderr='native global read unavailable')
+        client, branches, _ = self.associate(api, repos=[repository(remotes=())])
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertEqual(client.coverage['global_snapshot:' + SHA]['status'], 'partial')
+        self.assertEqual(client.coverage['unrouted:/local/repo']['status'], 'unsupported')
+        self.assertTrue(client.warnings)
+
+    def test_unrouted_classification_preserves_fixture_and_real_local_work_without_path_filters(self):
+        def api(args):
+            return {'data': {'s0': connection()}}
+        paths = ['/work/backup', '/work/implementation-fixtures/network-controller']
+        inputs = [branch(path) for path in paths]
+        _, branches, _ = self.associate(api, branches=inputs, repos=[repository(path, remotes=()) for path in paths])
+        self.assertEqual([row['repo'] for row in branches], paths)
+        self.assertEqual([row['pr_status'] for row in branches], ['unsupported', 'unsupported'])
+        self.assertTrue(all(row['association_lookups'][0]['status'] == 'ok' for row in branches))
+        incomplete = copy.deepcopy(branches[0])
+        incomplete['association_lookups'] = []
+        self.assertEqual(branch_association_status(incomplete), 'partial')
+        incomplete['association_lookups'] = [{'repo': 'unrelated/repository', 'status': 'ok'}]
+        self.assertEqual(branch_association_status(incomplete), 'partial')
 
     def test_global_sha_result_is_shared_across_inaccessible_fork_and_local_backup_clone(self):
         global_calls = []

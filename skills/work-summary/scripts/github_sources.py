@@ -22,6 +22,20 @@ PR_FIELDS = '''url title body number state createdAt updatedAt closedAt mergedAt
 repository { nameWithOwner } headRepository { nameWithOwner } mergeCommit { oid } baseRefName'''
 
 
+def branch_association_status(branch):
+    """Separate unsupported repository scope from an incomplete native read."""
+    if branch.get('object_type') != 'commit':
+        return 'not_applicable'
+    if branch.get('prs'):
+        return 'matched'
+    lookups = branch.get('association_lookups', [])
+    if not lookups or any(info['status'] != 'ok' for info in lookups):
+        return 'partial'
+    if branch.get('association_scope') == 'github_global_without_repository':
+        return 'unsupported' if any(info.get('scope') == 'github_global' for info in lookups) else 'partial'
+    return 'partial' if branch.get('related_prs') else 'no_match'
+
+
 def rest_item(row, kind, host):
     body = row.get('body')
     require(body is None or isinstance(body, str), 'Invalid GitHub body')
@@ -998,6 +1012,7 @@ class Github:
                 branch['association_scope'] = 'github_global_without_repository'
                 unrouted.append(branch)
                 continue
+            branch.pop('association_scope', None)
             names = set()
             for ref in branch['refs']:
                 if ref.startswith('refs/heads/'):
@@ -1077,9 +1092,11 @@ class Github:
                 retain_index(item)
             if branch['repo'] not in route_gaps:
                 route_gaps.add(branch['repo'])
-                self.problem('unrouted:' + branch['repo'],
-                             'global GitHub SHA search was attempted; no configured GitHub repository or '
-                             'other-provider reader establishes exhaustive PR history')
+                self.coverage['unrouted:' + branch['repo']] = {
+                    'status': 'unsupported', 'scope': 'github_global_without_repository',
+                    'reason': 'No configured GitHub repository; global SHA searches are separate '
+                              'observations and publication history remains unknown.',
+                    'pages': 0, 'count': 0}
 
         # Redirects discovered while resolving snapshots also repair the all-state
         # authored index: GitHub search silently returns zero for historical names.
@@ -1131,13 +1148,7 @@ class Github:
                 retain_index(item)
         for branch in branches:
             if 'association_lookups' in branch:
-                if branch['prs']:
-                    branch['pr_status'] = 'matched'
-                elif (branch.get('association_scope') == 'github_global_without_repository'
-                      or any(info['status'] != 'ok' for info in branch['association_lookups']) or branch['related_prs']):
-                    branch['pr_status'] = 'partial'
-                else:
-                    branch['pr_status'] = 'no_match'
+                branch['pr_status'] = branch_association_status(branch)
                 branch['prs'] = list({item['url']: item for item in branch['prs']}.values())
                 branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
         github['pr_index'] = list(all_indexed.values())
