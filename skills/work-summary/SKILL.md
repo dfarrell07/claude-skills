@@ -187,6 +187,8 @@ Current open/assigned/watched work without weekly evidence is context, not a
 weekly accomplishment. Use `merged_at` to establish merges within the window;
 present merged/closed state or an update alone is insufficient. Do not infer
 deployment, customer impact, resolved tickets, tests or ownership from mentions.
+Recording historical release receipts during the window proves documentation or
+handoff work; date the underlying execution only when native evidence supplies it.
 
 Create one concrete work topic per bullet, grouping related backports/PRs and
 avoiding duplicate delivery counts. Rank by supported significance: consequential
@@ -225,6 +227,9 @@ proposals and repetitive backports unless they matter to the specific update.
 Retain those observations privately; do not reduce discovery to make the list
 shorter. Prefer a primary PR for equivalent backports and describe branch scope
 in prose. Keep multiple PRs when they implement distinct necessary pieces.
+When describing separate component changes, retain the core links needed to
+identify those changes, or narrow the description to the work the chosen links
+actually explain. A single anchor should not obscure distinct contributions.
 Read later scope corrections before selecting a core ticket: an old native
 mention remains evidence even when newer comments establish it is the wrong
 work item. Omit disputed or superseded associations from the concise list.
