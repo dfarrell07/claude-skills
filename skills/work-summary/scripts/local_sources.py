@@ -14,6 +14,8 @@ PRUNED = {'.git', 'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.ve
 STATE_DIRS = {'.cache', '.local', '.config', '.ssh', '.gnupg', '.npm', '.cargo', '.rustup', '.mozilla',
               '.pki', '.kube', '.aws', '.azure', '.docker', '.password-store', '.claude', '.codex',
               '.android', '.gradle', '.m2', '.sdkman', '.vscode'}
+# Home-level application data (macOS Library and Trash) holds no clones and can prompt for access.
+HOME_STATE_DIRS = {'Library', '.Trash'}
 BACKUP = re.compile(r'(backup|(?:^|[/_-])bak\d*(?:$|[/_-])|archive|rescue|preserv|saved)', re.I)
 PRIVATE_NAMESPACES = ('refs/bisect/', 'refs/rewritten/', 'refs/worktree/')
 REF_FORMAT = '%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)'
@@ -368,6 +370,10 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             dependency_roots.append(candidate.absolute())
     exclusions = []
     visited = set()
+    try:
+        home_real = home.resolve() if home is not None else None
+    except (OSError, RuntimeError):
+        home_real = None
 
     def scan_error(error):
         # Respect the user's permissions: an unreadable directory is a stated gap.
@@ -384,6 +390,11 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             warn(f'Cannot access scan root {root}; local coverage is incomplete.')
             continue
         add_repo(root, marked=any(os.path.lexists(parent / '.git') for parent in (root, *root.parents)))
+        # String prefix checks: pathlib containment tests dominated large home scans.
+        root_text = str(root)
+        root_prefix = root_text.rstrip(os.sep) + os.sep
+        dependency_prefixes = [text.rstrip(os.sep) + os.sep for text in map(str, dependency_roots)
+                               if not (root_text + os.sep).startswith(text.rstrip(os.sep) + os.sep)]
         walk_targets = {root: root}
         for directory, dirs, files in os.walk(root, followlinks=True, onerror=scan_error):
             current = Path(directory)
@@ -423,11 +434,16 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                     continue
                 # Apply exclusions to symlink destinations before os.walk enters
                 # them. An innocuously named alias must not expose tool state.
-                parts = target.relative_to(root).parts if target.is_relative_to(root) else target.parts
-                dependency_cache = any(target.is_relative_to(dependency_root)
-                                       and not root.is_relative_to(dependency_root)
-                                       for dependency_root in dependency_roots)
-                hidden_state = name in STATE_DIRS or any(part in STATE_DIRS for part in parts)
+                target_text = str(target)
+                if target_text == root_text:
+                    parts = ()
+                elif target_text.startswith(root_prefix):
+                    parts = tuple(target_text[len(root_prefix):].split(os.sep))
+                else:
+                    parts = target.parts
+                dependency_cache = any((target_text + os.sep).startswith(prefix) for prefix in dependency_prefixes)
+                hidden_state = (name in STATE_DIRS or any(part in STATE_DIRS for part in parts)
+                                or (name in HOME_STATE_DIRS and real == home_real))
                 excluded_target = any(part in PRUNED or part.startswith('pytest-of-') for part in parts)
                 if name in PRUNED or name.startswith('pytest-of-') or dependency_cache or hidden_state or excluded_target:
                     if name != '.git':

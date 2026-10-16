@@ -214,6 +214,16 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertIn(str(home / 'cache-alias'), data['metadata']['scan_exclusions'])
         self.assertEqual(set(explicit['commits']), {str(cached_repo)})
 
+    def test_home_application_data_is_pruned_but_nested_library_projects_remain(self):
+        home = self.home
+        app_data = self.repo(home / 'Library' / 'Application Support' / 'tool')
+        project = self.repo(home / 'src' / 'Library')
+        with patch.object(local_sources.Path, 'home', return_value=home):
+            data = self.capture(home)
+        self.assertNotIn(str(app_data), data['commits'])
+        self.assertIn(str(project), data['commits'])
+        self.assertIn(str(home / 'Library'), data['metadata']['scan_exclusions'])
+
     def test_foreign_tip_retains_own_history_proof_and_backup_ref(self):
         repo = self.repo(self.root / 'repository')
         self.git(repo, 'update-ref', 'refs/remotes/origin/main', self.git(repo, 'rev-parse', 'HEAD'))
