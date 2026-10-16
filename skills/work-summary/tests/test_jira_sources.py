@@ -537,6 +537,19 @@ else:
         self.assertEqual(result["linked_prs"], ["https://git.example.test/team/repo/pull/7"])
         self.assertEqual(result["issues"][0]["pr_links"][0]["proof"], "description")
 
+    def test_collection_and_referenced_activity_sort_mixed_precision_chronologically(self):
+        self.data["details"]["TEST-1"] = detail(issue(), [
+            comment("micro", created="2026-01-10T12:00:00.000001Z"),
+            comment("whole", created="2026-01-10T12:00:00Z")])
+        self.data["details"]["MENTIONED-2"] = detail(issue("MENTIONED-2"), [
+            comment("later", created="2026-01-10T12:00:00.000002Z")])
+        result = self.collect()
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["whole", "micro"])
+        jira.add_referenced_jira(result, ["MENTIONED-2"], START, END, self.warnings.append)
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["whole", "micro", "later"])
+        self.assertEqual([event["occurred_at"] for event in result["activity"]], [
+            "2026-01-10T12:00:00Z", "2026-01-10T12:00:00.000001Z", "2026-01-10T12:00:00.000002Z"])
+
     def test_referenced_key_targeted_capture_reuses_inventory_and_adds_native_proof(self):
         row = issue("MENTIONED-2", "done", OTHER)
         self.data["details"]["MENTIONED-2"] = detail(row, [comment("77", ME)])

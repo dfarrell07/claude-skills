@@ -414,7 +414,7 @@ def collect_jira(start, end, warn):
     metadata["inventory_count"] = len(assigned_rows)
     metadata["issue_count"] = len(issues)
     result["issues"] = sorted(issues.values(), key=lambda item: item["key"])
-    result["activity"].sort(key=lambda event: (event["occurred_at"], event["key"], event["comment_id"], event["kind"]))
+    result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result
 
 
@@ -487,5 +487,5 @@ def add_referenced_jira(result, keys, start, end, warn):
     _detail_items(result, selected, start, end, warn, preloaded)
     metadata["issue_count"] = len(result["issues"])
     result["issues"].sort(key=lambda item: item["key"])
-    result["activity"].sort(key=lambda event: (event["occurred_at"], event["key"], event["comment_id"], event["kind"]))
+    result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result
