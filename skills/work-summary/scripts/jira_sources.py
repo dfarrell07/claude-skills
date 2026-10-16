@@ -72,7 +72,7 @@ def _comment_pages(raw):
         raise ValueError(f"Invalid JSON number: {value}")
 
     decoder = json.JSONDecoder(object_pairs_hook=unique_object, parse_constant=invalid)
-    pages, offset, expected, total, seen = [], 0, 0, None, set()
+    pages, offset, expected, total, seen, stable = [], 0, 0, None, set(), True
     while raw[offset:].strip():
         try:
             offset += len(raw[offset:]) - len(raw[offset:].lstrip())
@@ -82,7 +82,8 @@ def _comment_pages(raw):
                     and integer(page.get("maxResults"), 1) and integer(page.get("total"))
                     and type(page.get("isLast")) is bool, "Invalid comment pagination")
             require(not pages or not pages[-1]["isLast"], "Comment data after terminal page")
-            require(total is None or total == page["total"], "Comment count changed while paging")
+            if total is not None and total != page["total"]:
+                stable = False
             require(len(page["comments"]) <= page["maxResults"], "Oversized comment page")
             page_ids = set()
             for comment in page["comments"]:
@@ -90,13 +91,14 @@ def _comment_pages(raw):
                         and comment["id"] and comment["id"] not in seen
                         and comment["id"] not in page_ids, "Invalid or repeated comment")
                 page_ids.add(comment["id"])
-            total = page["total"]
+            if total is None:
+                total = page["total"]
             seen.update(page_ids)
             pages.append(page)
             expected += page["maxResults"]
         except ERRORS:
             return pages, False
-    return pages, bool(pages and pages[-1]["isLast"] and len(seen) == total)
+    return pages, bool(stable and pages and pages[-1]["isLast"] and len(seen) == total)
 
 
 def _normalize(row, site):
@@ -106,7 +108,7 @@ def _normalize(row, site):
     status = fields.get("status")
     require(isinstance(fields.get("summary"), str) and isinstance(status, dict)
             and isinstance(status.get("name"), str) and isinstance(status.get("statusCategory"), dict)
-            and isinstance(status["statusCategory"].get("key"), str), "Invalid Jira issue fields")
+            and status["statusCategory"].get("key") in {"new", "indeterminate", "done"}, "Invalid Jira issue fields")
     if row.get("self") is not None:
         require(isinstance(row["self"], str), "Invalid Jira issue self URL")
         parts = urlsplit(row["self"])
@@ -290,7 +292,7 @@ def collect_jira(start, end, warn):
         require(match is not None, "Unrecognized Jira count output")
         return int(match.group(1))
 
-    def search(role, query, checked=False):
+    def search(role, query, checked=True):
         coverage = {"query": query, "status": "ok", "returned_count": 0,
                     "pagination": "acli --paginate combined array; native pages not exposed"}
         metadata["coverage"][role] = coverage
@@ -300,7 +302,7 @@ def collect_jira(start, end, warn):
                 before = count(query)
             except ERRORS:
                 coverage["status"] = "partial"
-                gap("Assigned inventory count lookup failed; pagination completeness is unverified.")
+                gap(f"{role} count lookup failed; pagination completeness is unverified.")
         raw, rows = "", []
         try:
             raw = cli("workitem", "search", "--jql", query, "--fields", SEARCH_FIELDS, "--json", "--paginate")
@@ -336,11 +338,11 @@ def collect_jira(start, end, warn):
                 after = count(query)
             except ERRORS:
                 coverage["status"] = "partial"
-                gap("Assigned inventory recount failed; paging changes are unverified.")
+                gap(f"{role} recount failed; paging changes are unverified.")
             coverage.update(count_before=before, count_after=after)
             if before is not None and after is not None and not (before == after == len(found)):
                 coverage["status"] = "partial"
-                gap("Assigned inventory counts changed or disagree with distinct captured issues.")
+                gap(f"{role} counts changed or disagree with distinct captured issues.")
         coverage["returned_count"] = len(found)
         return found
 
@@ -378,8 +380,7 @@ def collect_jira(start, end, warn):
     metadata["coverage"]["changelog"] = {"status": "unavailable", "scope": "CLI exposes no native changelog reader"}
     gap("Native Jira changelog is unavailable through this CLI; field changes and deleted comments have no exact event proof.")
 
-    selected = [item for item in issues.values() if item["status_category"] != "done"
-                or any(role in item["roles"] for role in ("updated_by", "recent"))]
+    selected = list(issues.values())
     selected.sort(key=lambda item: ("updated_by" not in item["roles"], "recent" not in item["roles"], item["key"]))
     metadata["coverage"]["details"] = {"requested_count": len(selected), "returned_count": 0,
                                          "status": "ok"}

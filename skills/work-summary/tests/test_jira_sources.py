@@ -82,9 +82,26 @@ if args == ["jira", "auth", "status"]:
     print(data["auth"])
 elif args[:3] == ["jira", "workitem", "search"]:
     query = args[args.index("--jql") + 1]
+    if query == "assignee = currentUser() ORDER BY key":
+        role = "assigned"
+    elif "updatedBy(" in query:
+        role = "updated_by"
+    elif query.startswith("("):
+        role = "recent"
+    elif query.startswith("reporter"):
+        role = "reporter"
+    elif query.startswith("creator"):
+        role = "creator"
+    elif query.startswith("assignee WAS"):
+        role = "former_assignee"
+    elif query.startswith("watcher"):
+        role = "watcher"
+    else:
+        sys.exit(99)
     if "--count" in args:
-        index = sum("--count" in call for call in calls)
-        counts = data["counts"]
+        index = sum("--count" in call and query in call for call in calls)
+        counts = data["counts"] if role == "assigned" else data.get("role_counts", {}).get(
+            role, [len(data["searches"][role])]*2)
         count = counts[min(index, len(counts)-1)]
         if count is None:
             sys.exit(1)
@@ -92,22 +109,6 @@ elif args[:3] == ["jira", "workitem", "search"]:
     else:
         assert "--paginate" in args and "--json" in args
         assert args[args.index("--fields")+1] == "key,summary,status,assignee,reporter,labels"
-        if query == "assignee = currentUser() ORDER BY key":
-            role = "assigned"
-        elif "updatedBy(" in query:
-            role = "updated_by"
-        elif query.startswith("("):
-            role = "recent"
-        elif query.startswith("reporter"):
-            role = "reporter"
-        elif query.startswith("creator"):
-            role = "creator"
-        elif query.startswith("assignee WAS"):
-            role = "former_assignee"
-        elif query.startswith("watcher"):
-            role = "watcher"
-        else:
-            sys.exit(99)
         emit(data["searches"][role])
 elif args[:3] == ["jira", "workitem", "view"]:
     emit(data["details"].get(args[3], {"_exit": 1}))
@@ -153,15 +154,19 @@ else:
             self.assertIn(call[:3], [["jira", "auth", "status"], ["jira", "workitem", "search"],
                                     ["jira", "workitem", "view"]])
 
-    def test_all_projects_and_completed_inventory_retained_but_old_closed_not_detailed(self):
+    def test_all_projects_and_old_completed_work_get_full_details_and_pr_links(self):
         old = issue("OTHER-2", "done")
         self.data["searches"]["assigned"].append(old)
         self.data["counts"] = [2, 2]
+        self.data["details"]["OTHER-2"] = detail(old)
+        self.data["details"]["OTHER-2"]["fields"]["description"] = {
+            "text": "Historical work https://github.com/old/project/pull/37"}
         result = self.collect()
         self.assertEqual([row["key"] for row in result["issues"]], ["OTHER-2", "TEST-1"])
-        self.assertEqual(result["issues"][0]["detail_status"], "not_selected")
-        self.assertTrue(result["issues"][0]["sensitive"])
-        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 1)
+        self.assertEqual(result["issues"][0]["detail_status"], "ok")
+        self.assertFalse(result["issues"][0]["sensitive"])
+        self.assertEqual(result["issues"][0]["pr_links"][0]["url"], "https://github.com/old/project/pull/37")
+        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 2)
 
     def test_nonassigned_activity_lead_and_old_active_context_are_detailed(self):
         for role, key in [("updated_by", "SIDE-2"), ("reporter", "SIDE-3"),
@@ -220,14 +225,31 @@ else:
         for role, prefix in [("reporter", "REPORTED"), ("creator", "CREATED"),
                              ("former_assignee", "FORMER"), ("watcher", "WATCHED")]:
             self.data["searches"][role] = [issue(f"{prefix}-{n}", "done", OTHER) for n in range(1, 102)]
-        result = self.collect()
+            for row in self.data["searches"][role]:
+                self.data["details"][row["key"]] = detail(row)
+        # Searches still execute the disposable acli, exercising --paginate and
+        # its full 101-row arrays; avoid 405 redundant subprocesses for details.
+        real_command, viewed = jira.command, []
+
+        def command(args, **kwargs):
+            if args[:4] == ["acli", "jira", "workitem", "view"]:
+                viewed.append(args[4])
+                return json.dumps(self.data["details"][args[4]])
+            return real_command(args, **kwargs)
+
+        with patch.object(jira, "command", side_effect=command):
+            result = self.collect()
         self.assertEqual(len(result["issues"]), 405)
         for role in ["reporter", "creator", "former_assignee", "watcher"]:
             self.assertEqual(result["metadata"]["coverage"][role]["returned_count"], 101)
+            self.assertEqual(result["metadata"]["coverage"][role]["count_before"], 101)
+            self.assertEqual(result["metadata"]["coverage"][role]["count_after"], 101)
+            self.assertEqual(result["metadata"]["coverage"][role]["status"], "ok")
             query = result["metadata"]["coverage"][role]["query"]
             self.assertNotIn("statusCategory", query)
             self.assertNotIn("assignee !=", query)
-        self.assertEqual(sum(call[:3] == ["jira", "workitem", "view"] for call in self.calls()), 1)
+        self.assertEqual(len(viewed), 405)
+        self.assertTrue(all(item["detail_status"] == "ok" for item in result["issues"]))
         recent = result["metadata"]["coverage"]["recent"]["query"]
         self.assertIn("creator = currentUser()", recent)
 
@@ -247,6 +269,16 @@ else:
         result = self.collect()
         self.assertEqual(len(result["issues"]), 2)
         self.assertEqual(result["metadata"]["coverage"]["watcher"]["status"], "partial")
+
+    def test_each_role_inventory_count_drift_is_named_without_discarding_leads(self):
+        row = issue("SIDE-2", "done", OTHER)
+        self.data["searches"]["creator"] = [row]
+        self.data["details"]["SIDE-2"] = detail(row)
+        self.data["role_counts"] = {"creator": [1, 2]}
+        result = self.collect()
+        self.assertIn("SIDE-2", {item["key"] for item in result["issues"]})
+        self.assertEqual(result["metadata"]["coverage"]["creator"]["status"], "partial")
+        self.assertTrue(any("creator counts changed" in warning for warning in self.warnings))
 
     def test_invalid_duplicate_and_wrong_tenant_rows_are_skipped_without_losing_good_rows(self):
         wrong_site = issue("BAD-3")
@@ -374,6 +406,19 @@ else:
                 self.assertEqual(coverage["captured_count"], 2)
                 self.assertFalse(coverage["complete"])
                 self.assertEqual(len(result["issues"][0]["comment_pages"]), 1)
+
+    def test_changed_comment_total_preserves_valid_page_positive_as_partial(self):
+        first, positive = comment("1", OTHER), comment("2", ME)
+        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
+        self.data["comment_pages"] = [
+            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
+            {"comments": [positive], "startAt": 1, "maxResults": 1, "total": 3, "isLast": True}]
+        result = self.collect()
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["2"])
+        coverage = result["issues"][0]["comment_coverage"]
+        self.assertEqual(coverage["captured_count"], 2)
+        self.assertFalse(coverage["complete"])
+        self.assertEqual(len(result["issues"][0]["comment_pages"]), 2)
 
     def test_pr_links_come_from_source_not_titles_and_malformed_suffix_is_not_cited(self):
         self.data["details"]["TEST-1"]["fields"]["description"] = {
