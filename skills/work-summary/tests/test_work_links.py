@@ -373,12 +373,21 @@ class WorkLinksTest(unittest.TestCase):
                              title='Unrelated old disk validation work')
                 pr.update(title='', body='', head_ref='')
                 pr[field] = text
-                expected = [] if '.0' in text else ['PRODUCT-5']
+                expected = [] if '.0' in text or '-5-0' in text else ['PRODUCT-5']
                 self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), expected)
                 associate_work(data['jira'], data['github'])
                 validate_links(data)
                 self.assertEqual(pr['jira_links'], [])
                 self.assertEqual(issue['pr_links'], [])
+
+    def test_numeric_identifiers_are_not_truncated_into_ticket_discovery(self):
+        from work_links import discovery_keys
+        for text in ('GO-2026-6354', 'go-2026-6354', 'PRODUCT-5-0', 'PRODUCT-5.0'):
+            with self.subTest(text=text):
+                self.assertEqual(discovery_keys(text, 'jira.example.test'), set())
+        self.assertEqual(discovery_keys('fix/test-123-retry', 'jira.example.test'), {'TEST-123'})
+        self.assertEqual(discovery_keys('https://jira.example.test/browse/GO-2026',
+                                        'jira.example.test'), {'GO-2026'})
 
     def test_conventional_uppercase_and_explicit_browse_references_confirm_pairing(self):
         for field, text in [('title', 'ACM-123: fix checks'), ('head_ref', 'fix/ACM-123-checks'),

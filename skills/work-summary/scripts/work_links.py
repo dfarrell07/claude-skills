@@ -40,7 +40,9 @@ def _key_mentions(text, site, confirmed):
     bare = UUID.sub(' ', URL.sub(' ', MARKDOWN_LINK.sub(' ', text)))
     for match in KEY.finditer(bare):
         key = match.group(1)
-        if confirmed and (key != key.upper() or re.match(r'[.-][0-9]', bare[match.end():])):
+        # A numeric continuation belongs to the original identifier, such as
+        # GO-2026-6354 or product-5-0; its truncated prefix is not a ticket lead.
+        if re.match(r'[.-][0-9]', bare[match.end():]) or (confirmed and key != key.upper()):
             continue
         explicit.add(key.upper())
     return explicit
