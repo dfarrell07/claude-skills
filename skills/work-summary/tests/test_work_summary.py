@@ -825,7 +825,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         item = data["github"]["prs"][0]
         event = {"repo":item["repo"], "number":item["number"], "item_url":item["url"],
                  "url":item["url"]+"#issuecomment-1", "actor":"test-user", "action":"issue_comment",
-                 "at":data["metadata"]["to_at"], "body":"verified"}
+                 "at":data["metadata"]["to_at"], "body":"verified", "id":1}
         data["github"]["activity"] = [event]
         self.assertIn("Verified GitHub Actor Events (1)", self.render(data).stdout)
         for field, value in (("actor", "someone-else"), ("at", "2000-01-01T00:00:00Z"),
@@ -839,6 +839,28 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data["github"]["activity"][0]["actor"] = ""
         capture.write_text(json.dumps(data))
         self.assertNotEqual(self.run_script(RENDER, capture, check=False).returncode, 0)
+
+    def test_idless_native_cross_reference_renders_target_without_inventing_event_id(self):
+        data = self.capture()
+        item = data["github"]["prs"][0]
+        source_url = "https://github.com/example/source/issues/17"
+        data["github"]["activity"] = [{
+            "repo":item["repo"], "number":item["number"], "item_url":item["url"],
+            "url":item["url"], "actor":"test-user", "action":"cross-referenced",
+            "at":data["metadata"]["to_at"], "body":"", "id":None,
+            "source":{"type":"issue", "issue":{"id":9876, "number":17, "html_url":source_url}}}]
+        output = self.render(data).stdout
+        self.assertIn("Verified GitHub Actor Events (1)", output)
+        self.assertIn("cross-referenced", output)
+        self.assertIn(item["url"], output)
+        self.assertIn(f"[referencing item]({source_url})", output)
+        self.assertNotIn("#event-None", output)
+        data["github"]["activity"][0]["source"]["issue"]["number"] = 18
+        capture = self.root / "invalid-cross-reference.json"
+        capture.write_text(json.dumps(data))
+        result = self.run_script(RENDER, capture, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
 
     def test_collection_does_not_modify_working_tree(self):
         repo = self.repo("read-only")

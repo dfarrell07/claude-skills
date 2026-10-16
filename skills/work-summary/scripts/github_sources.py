@@ -55,6 +55,24 @@ def graphql_item(row, host):
     return item
 
 
+def cross_reference_source(event, host):
+    """Retain native source identity for timeline events that have no event ID."""
+    source = event['source']
+    require(source['type'] == 'issue', 'Invalid cross-reference source type')
+    issue = source['issue']
+    require(integer(issue.get('id'), 1) and integer(issue.get('number'), 1),
+            'Missing cross-reference source identity')
+    parsed = urlsplit(issue['html_url'])
+    parts = parsed.path.strip('/').split('/')
+    require(len(parts) == 4 and REPO.fullmatch('/'.join(parts[:2]))
+            and all(part not in ('.', '..') for part in parts[:2])
+            and parts[2] in {'pull', 'issues'} and parts[3] == str(issue['number'])
+            and parsed.netloc.casefold() == host.casefold()
+            and issue['html_url'] == f'https://{parsed.netloc}/{"/".join(parts)}',
+            'Invalid cross-reference source URL')
+    return {'type': 'issue', 'issue': {field: issue[field] for field in ('id', 'number', 'html_url')}}
+
+
 class Github:
     def __init__(self, api, host, login, start, end, warn):
         self.api, self.host, self.login = api, host, login
@@ -281,18 +299,28 @@ class Github:
                             when = timestamp(event[field])
                             if not self.start <= when <= self.end:
                                 continue
-                            identity = (item['url'], category, str(event.get('id')), action, iso(when))
-                            if identity in seen:
-                                continue
-                            seen.add(identity)
                             url = event.get('html_url') or item['url']
                             require(url == item['url'] or url.startswith(item['url'] + '#'), 'Invalid event URL')
                             require(isinstance(action, str) and action, 'Invalid actor action')
-                            require(integer(event.get('id'), 1), 'Missing actor event identity')
+                            source = None
+                            event_identity = event.get('id')
+                            if category == 'timeline' and action == 'cross-referenced' and event_identity is None:
+                                # REST cross-reference rows have no event ID or permalink.
+                                # Keep their native source identity, cite the target timeline,
+                                # and never manufacture a GitHub event ID.
+                                source = cross_reference_source(event, self.host)
+                                event_identity = ('source_issue', source['issue']['id'])
+                            else:
+                                require(integer(event_identity, 1), 'Missing actor event identity')
                             require(event.get('body') is None or isinstance(event['body'], str), 'Invalid event body')
+                            identity = (item['url'], category, event_identity, action, iso(when))
+                            if identity in seen:
+                                continue
+                            seen.add(identity)
                             github['activity'].append({'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
                                                        'actor': actor, 'action': action, 'at': iso(when), 'url': url,
                                                        'id': event.get('id'), 'body': event.get('body') or '',
+                                                       **({'source': source} if source is not None else {}),
                                                        **({'review_state': event.get('state')} if category == 'review' else {})})
                     except (ValueError, TypeError, KeyError, AttributeError):
                         self.problem(key, 'an invalid actor event was skipped')

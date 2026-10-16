@@ -3,7 +3,32 @@
 import re
 from urllib.parse import quote, urlsplit
 
-from evidence import HASH, HOST, integer, require, timestamp, valid_item
+from evidence import HASH, HOST, REPO, integer, require, timestamp, valid_item
+
+
+def validate_activity_identity(event, item, host):
+    """Native cross-reference rows have source identity, not an event ID."""
+    if event.get('id') is not None:
+        require(integer(event['id'], 1), 'Invalid GitHub activity identity')
+        require('source' not in event, 'Unexpected GitHub activity source')
+        return
+    require('id' in event and event['action'] == 'cross-referenced'
+            and event['url'] == item['url'], 'Missing GitHub activity identity')
+    source = event.get('source')
+    require(isinstance(source, dict) and set(source) == {'type', 'issue'}
+            and source.get('type') == 'issue', 'Invalid GitHub cross-reference source')
+    issue = source['issue']
+    require(isinstance(issue, dict) and set(issue) == {'id', 'number', 'html_url'}
+            and integer(issue.get('id'), 1) and integer(issue.get('number'), 1)
+            and isinstance(issue.get('html_url'), str), 'Invalid GitHub cross-reference identity')
+    parts = urlsplit(issue['html_url'])
+    path = parts.path.strip('/').split('/')
+    require(len(path) == 4 and REPO.fullmatch('/'.join(path[:2]))
+            and all(part not in {'.', '..'} for part in path[:2])
+            and path[2] in {'pull', 'issues'} and path[3] == str(issue['number'])
+            and parts.netloc.casefold() == host.casefold()
+            and issue['html_url'] == f'https://{parts.netloc}/{"/".join(path)}',
+            'Invalid GitHub cross-reference URL')
 
 
 def validate_github(data, evidence, start, end):
@@ -39,6 +64,7 @@ def validate_github(data, evidence, start, end):
                 or event['url'].startswith(item['url'] + '#')), 'Invalid activity URL')
         require(event['url'] == item['url'] or re.fullmatch(r'[A-Za-z0-9_-]+', urlsplit(event['url']).fragment),
                 'Invalid activity fragment')
+        validate_activity_identity(event, item, host)
     for key, info in metadata.get('github_discovery', {}).items():
         require(isinstance(key, str) and isinstance(info, dict) and info.get('status') in {'ok', 'partial'}
                 and integer(info.get('pages')) and integer(info.get('count')), 'Invalid GitHub discovery coverage')

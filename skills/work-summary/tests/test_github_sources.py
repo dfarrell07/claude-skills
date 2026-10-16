@@ -215,6 +215,47 @@ class GithubSourcesTest(unittest.TestCase):
                 elif not expected:
                     self.assertEqual(client.warnings, [])
 
+    def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
+        first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',
+                 'created_at': '2026-10-12T23:32:33Z', 'updated_at': '2026-10-12T23:32:33Z',
+                 'source': {'type': 'issue', 'issue': {'id': 123, 'number': 2,
+                            'html_url': 'https://github.com/other/source/pull/2'}}}
+        second = copy.deepcopy(first)
+        second['source']['issue'].update(id=124, number=3, html_url='https://github.com/other/source/issues/3')
+        old = copy.deepcopy(first)
+        old['created_at'] = '2026-10-01T00:00:00Z'
+        foreign = copy.deepcopy(first)
+        foreign['actor']['login'] = 'other'
+        client = self.client(lambda args: [first, second, copy.deepcopy(first), old, foreign]
+                             if args[2].endswith('/timeline') else [])
+        data = {'activity': []}
+        client._inspect_activity(data, [rest_item(rest(), 'prs', 'github.com')])
+        self.assertEqual(len(data['activity']), 2)
+        self.assertEqual([event['source'] for event in data['activity']], [first['source'], second['source']])
+        self.assertTrue(all(event['id'] is None and event['url'] == 'https://github.com/org/repo/pull/1'
+                            and event['action'] == 'cross-referenced' for event in data['activity']))
+        self.assertEqual(client.warnings, [])
+
+    def test_idless_cross_reference_requires_native_source_issue_identity(self):
+        native = {'actor': {'login': 'me'}, 'event': 'cross-referenced', 'created_at': '2026-10-12T00:00:00Z',
+                  'source': {'type': 'issue', 'issue': {'id': 123, 'number': 2,
+                             'html_url': 'https://github.com/other/source/pull/2'}}}
+        invalid = [dict(native, event='closed'), dict(native, source=None)]
+        for field, value in [('id', None), ('id', True), ('number', 3),
+                             ('html_url', 'https://other.test/other/source/pull/2'),
+                             ('html_url', 'https://github.com/other/source/pull/2#comment'),
+                             ('html_url', 'https://github.com/other/source/pull/2?x=y')]:
+            row = copy.deepcopy(native)
+            row['source']['issue'][field] = value
+            invalid.append(row)
+        for row in invalid:
+            with self.subTest(row=row):
+                client = self.client(lambda args: [row] if args[2].endswith('/timeline') else [])
+                data = {'activity': []}
+                client._inspect_activity(data, [rest_item(rest(), 'prs', 'github.com')])
+                self.assertEqual(data['activity'], [])
+                self.assertEqual(client.coverage['activity:org/repo#1:timeline']['status'], 'partial')
+
     def test_role_only_item_does_not_become_personal_activity(self):
         def api(args):
             if 'search/issues' in args:

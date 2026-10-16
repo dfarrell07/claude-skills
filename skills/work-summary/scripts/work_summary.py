@@ -459,7 +459,9 @@ def render(data, source=None):
         lines += [f"#### Verified GitHub Actor Events ({len(events)})", ""]
         for event in events:
             action = event['action'] + (": " + event['review_state'] if event.get('review_state') else "")
-            lines.append(f"- {event['at']} [{markdown(event['repo'])}#{event['number']}]({event['url']}) {markdown(action)} — {linked(by_url[event['item_url']])}")
+            reference = event.get('source', {}).get('issue')
+            source_link = f"; [referencing item]({reference['html_url']})" if reference else ""
+            lines.append(f"- {event['at']} [{markdown(event['repo'])}#{event['number']}]({event['url']}) {markdown(action)} — {linked(by_url[event['item_url']])}{source_link}")
         if not events:
             lines.append("No verified personal events captured; check coverage gaps before interpreting absence.")
         lines.append("")
