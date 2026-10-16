@@ -4,6 +4,7 @@
 import copy
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +21,7 @@ class WorkSummaryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="work-summary-test.")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home"
         self.home.mkdir()
         self.bin = self.root / "bin"
@@ -467,6 +468,95 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         replay = self.git(repo, "log", *tips, "--format=%H")
         self.assertEqual(replay.splitlines(), [first])
         self.assertEqual([commit["hash"] for commit in data["commits"][str(repo)]], [first])
+
+    def test_mailmap_does_not_change_raw_author_scope(self):
+        for direction in ("own-away", "other-to-own"):
+            with self.subTest(direction=direction):
+                repo = self.repo(direction, "Own work")
+                self.git(repo, "config", "log.mailmap", "true")
+                if direction == "own-away":
+                    mapping = "Mapped <canonical@example.test> <me@example.test>\n"
+                else:
+                    self.git(repo, "-c", "user.email=other@example.test", "commit", "--allow-empty", "-qm", "Other work")
+                    mapping = "Mapped <me@example.test> <other@example.test>\n"
+                (repo / ".mailmap").write_text(mapping)
+                data = self.capture(repo)
+                self.assertEqual(data["metadata"]["local_status"], "ok")
+                self.assertEqual([item["message"] for item in data["commits"].get(str(repo), [])], ["Own work"])
+
+    def test_signed_commits_ignore_signature_display_configuration(self):
+        keygen = shutil.which("ssh-keygen")
+        if not keygen:
+            self.skipTest("ssh-keygen is required for a disposable SSH-signed commit")
+        repo = self.repo("signed", "Initial work")
+        key = self.root / "signing-key"
+        subprocess.run([keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+                       env=self.env, check=True, capture_output=True)
+        allowed = self.root / "allowed-signers"
+        allowed.write_text("me@example.test " + key.with_suffix(".pub").read_text())
+        self.git(repo, "config", "gpg.format", "ssh")
+        self.git(repo, "config", "user.signingkey", str(key))
+        self.git(repo, "config", "gpg.ssh.allowedSignersFile", str(allowed))
+        self.git(repo, "config", "log.showSignature", "true")
+        self.git(repo, "commit", "-S", "--allow-empty", "-qm", "Signed work")
+        data = self.capture(repo)
+        self.assertEqual(data["metadata"]["local_status"], "ok")
+        self.assertEqual({item["message"] for item in data["commits"].get(str(repo), [])}, {"Initial work", "Signed work"})
+
+    def test_log_encoding_configuration_preserves_unicode_subjects(self):
+        repo = self.repo("latin", "Réparer checks café")
+        self.git(repo, "config", "i18n.logOutputEncoding", "ISO-8859-1")
+        data = self.capture(repo)
+        self.assertEqual(data["metadata"]["local_status"], "ok")
+        self.assertEqual(data["commits"][str(repo)][0]["message"], "Réparer checks café")
+
+    def test_trailing_whitespace_repository_and_worktree_paths(self):
+        repo = self.repo("repository ", "Spaced path")
+        tree = self.home / "worktree "
+        self.git(repo, "worktree", "add", "-qb", "spaced", str(tree))
+        data = self.capture(repo, tree)
+        self.assertEqual(data["metadata"]["local_status"], "ok")
+        self.assertEqual(set(data["commits"]), {str(repo)})
+        self.assertEqual(data["metadata"]["repositories"][0]["paths"], sorted([str(repo), str(tree)]))
+
+    def test_malformed_enclosing_marker_is_a_coverage_gap(self):
+        parent = self.home / "broken-enclosing"
+        sub = parent / "subdirectory"
+        sub.mkdir(parents=True)
+        (parent / ".git").write_text("gitdir: /does/not/exist")
+        data = self.capture(sub)
+        self.assertEqual(data["metadata"]["local_status"], "partial")
+        self.assertTrue(data["metadata"]["warnings"])
+        self.assertEqual(len(data["github"]["prs"]), 1)
+
+    def test_inaccessible_enclosing_repository_is_a_coverage_gap(self):
+        repo = self.repo("denied-enclosing")
+        sub = repo / "subdirectory"
+        sub.mkdir()
+        marker = repo / ".git"
+        original_mode = marker.stat().st_mode
+        marker.chmod(0)
+        try:
+            if os.access(marker, os.R_OK | os.X_OK):
+                self.skipTest("This user bypasses directory permissions")
+            data = self.capture(sub)
+            self.assertEqual(data["metadata"]["local_status"], "partial")
+            self.assertEqual(data["commits"], {})
+            self.assertTrue(data["metadata"]["warnings"])
+        finally:
+            marker.chmod(original_mode)
+
+    def test_sha256_repository_keeps_full_commit_identity(self):
+        repo = self.home / "sha256"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "--object-format=sha256")
+        self.git(repo, "config", "user.name", "Test User")
+        self.git(repo, "config", "user.email", "me@example.test")
+        self.git(repo, "commit", "--allow-empty", "-qm", "SHA-256 work")
+        data = self.capture(repo)
+        self.assertEqual(data["metadata"]["local_status"], "ok")
+        self.assertEqual(len(data["commits"][str(repo)][0]["hash"]), 64)
+        self.assertEqual(data["commits"][str(repo)][0]["hash"], self.git(repo, "rev-parse", "HEAD"))
 
     def test_collection_does_not_modify_working_tree(self):
         repo = self.repo("read-only")

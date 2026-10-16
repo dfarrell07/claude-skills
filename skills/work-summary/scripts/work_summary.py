@@ -221,11 +221,15 @@ def collect(days_text, roots, now=None):
 
     local_warning_start = len(warnings)
     repositories = {}
+    inspected_paths = set()
 
     def add_repo(directory, marked=False):
+        if directory in inspected_paths:
+            return
+        inspected_paths.add(directory)
         try:
-            canonical = Path(git(directory, "rev-parse", "--show-toplevel").strip()).resolve()
-            common = Path(git(canonical, "rev-parse", "--git-common-dir").strip())
+            canonical = Path(git(directory, "rev-parse", "--show-toplevel").removesuffix("\n")).resolve()
+            common = Path(git(canonical, "rev-parse", "--git-common-dir").removesuffix("\n"))
             common = (common if common.is_absolute() else canonical / common).resolve()
             entry = repositories.setdefault(str(common), {"path": str(canonical), "common_dir": str(common),
                                                            "identities": set(), "paths": set()})
@@ -255,7 +259,10 @@ def collect(days_text, roots, now=None):
         except (OSError, RuntimeError):
             warn(f"Cannot access scan root {root}; local coverage is incomplete.")
             continue
-        add_repo(root)
+        # A failed probe inside an enclosing repository is a coverage gap too;
+        # walking below the requested subdirectory cannot find its ancestor marker.
+        marked = any(os.path.lexists(ancestor / ".git") for ancestor in (root, *root.parents))
+        add_repo(root, marked=marked)
         for directory, dirs, files in os.walk(root, onerror=lambda error: warn(
                 f"Cannot scan {error.filename}; local coverage is incomplete.")):
             current = Path(directory)
@@ -278,7 +285,10 @@ def collect(days_text, roots, now=None):
             tips = sorted(set(git(entry["path"], "rev-list", "--all", "--no-walk=unsorted").splitlines()))
             require(all(HASH.fullmatch(tip) for tip in tips), "Invalid reference tip")
             entry["tips"] = tips
-            raw = git(entry["path"], "log", "--stdin", "--fixed-strings",
+            # Disable human log presentation and mailmap rewriting: %ae and the
+            # configured identities describe raw authors, and the stream is UTF-8.
+            raw = git(entry["path"], "log", "--stdin", "--fixed-strings", "--no-use-mailmap",
+                      "--no-show-signature", "--no-color", "--encoding=UTF-8",
                       *[f"--author=<{email}>" for email in entry["identities"]],
                       f"--since-as-filter={iso(start)}", f"--until={iso(end)}", "-z",
                       "--format=%H%x00%ct%x00%ae%x00%s", stdin="\n".join(tips) + "\n") if tips else ""

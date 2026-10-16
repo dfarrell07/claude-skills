@@ -54,8 +54,9 @@ For different locations, pass explicit roots after days; these replace the defau
 bash "$SKILL_DIR/scripts/work-summary.sh" "$DAYS" /path/to/work /path/to/another/repo > "$RUN_DIR/data.json"
 ```
 
-Local commits match discovered worktrees' configured `user.email` values across all
-refs (including detached worktree heads), filtered by committer time in the exact
+Local commits match raw author emails against discovered worktrees' configured
+`user.email` values across all refs (including detached worktree heads), filtered by
+committer time in the exact
 inclusive UTC window. They are grouped by absolute repository path; the metadata
 records common Git directories, discovered paths, author emails, and the exact commit
 tips used for collection. Commits are read from those tips so later branch movement
