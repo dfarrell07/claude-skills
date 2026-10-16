@@ -177,6 +177,11 @@ Preserve sensitivity and native relation provenance. Restricted titles must
 stay out of the work list; private links remain private. Native Jira GitLab MR
 URLs are contextual counterparts; do not infer their state/ownership or send
 them to GitHub APIs. Keep native captures outside public PRs and fixtures.
+For configured GitLab remotes, also read advertised MR head refs through existing
+native Git access. API authentication and Git SSH access are independent: an empty
+SSH agent does not rule out a configured identity. Bind the actual remote route,
+retain native ref responses and match full hashes across captured snapshots.
+These proofs can supply MR links; they cannot establish MR state or activity.
 
 ## Select and Rank Work
 

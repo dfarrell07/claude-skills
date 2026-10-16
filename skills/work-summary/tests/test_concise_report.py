@@ -19,6 +19,43 @@ from capabilities import empty_local  # noqa: E402
 
 
 class ConciseReportTest(unittest.TestCase):
+    def test_native_gitlab_heads_supply_selectable_links_without_mr_state(self):
+        data = self.capture()
+        repo, head = '/example/gitlab', 'b' * 40
+        inventory = {'path': repo, 'common_dir': repo + '/.git', 'status': 'ok', 'identities': ['own@example.test'],
+                     'paths': [repo], 'refs': [{'name': 'refs/heads/work', 'hash': head}],
+                     'remotes': [{'name': 'origin', 'host': 'gitlab.example.test', 'repo': 'group/team/project',
+                                  'kind': 'other', 'directions': ['fetch', 'push']}]}
+        data['metadata'].update(repos_searched=1, repos_with_commits=1, repositories=[inventory])
+        data['commits'] = {repo: [{'hash': head, 'message': 'Prepare catalog pipeline',
+                                   'author_name': 'Own', 'author_email': 'own@example.test',
+                                   'authored_at': '2026-01-10T12:00:00Z', 'committed_at': '2026-01-10T12:00:00Z'}]}
+        data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
+                             'refs': ['refs/heads/work'], 'pr_status': 'unsupported', 'prs': [], 'backup': True}]
+        def native(path, *args, **kwargs):
+            output = (head + '\trefs/merge-requests/42/head\n' + 'c' * 40 + '\trefs/merge-requests/42/merge\n'
+                      if args[0] == 'ls-remote' else 'git@gitlab.example.test:group/team/project.git\n')
+            return subprocess.CompletedProcess(args, 0, output.encode(), b'')
+        with patch('gitlab_sources.native_git', side_effect=native), \
+                patch('gitlab_sources.shutil.which', return_value='/git'):
+            data['metadata']['gitlab_discovery'] = ws.collect_gitlab_refs(data['branches'], [inventory], self.fail)
+        ws.validate(data)
+        url = 'https://gitlab.example.test/group/team/project/-/merge_requests/42'
+        self.assertIn('  - ' + url, ws.render(data))
+        enriched = copy.deepcopy(data)
+        enriched['analysis'] = {'themes': [{'name': 'Pipeline', 'description': 'Prepared the catalog pipeline.',
+                                           'items': [], 'branches': [{'repo': repo, 'hash': head}], 'links': [url]}],
+                                'in_progress': []}
+        self.assertIn('  - ' + url, ws.render(enriched, data))
+        detailed = ws.render(enriched, data, detailed=True)
+        self.assertIn('advertised MR heads; state unread', detailed)
+        self.assertIn('GitLab Advertised Merge-Request Refs', detailed)
+        self.assertNotIn('state', data['branches'][0]['merge_requests'][0])
+        forged = copy.deepcopy(data)
+        forged['branches'][0]['merge_requests'][0]['number'] = 999
+        with self.assertRaises(ValueError):
+            ws.validate(forged)
+
     def capture(self):
         item = {'repo':'org/repo', 'number':7, 'url':'https://github.com/org/repo/pull/7',
                 'title':'Repair the edge case', 'body':'', 'state':'merged',

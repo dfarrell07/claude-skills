@@ -27,6 +27,7 @@ from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, complete_references, github_items, validate_links  # noqa: E402
 from extended_evidence import validate_github, validate_jira, jira_reference  # noqa: E402
+from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
 
 
 def collect(days_text, roots, now=None):
@@ -152,6 +153,7 @@ def collect(days_text, roots, now=None):
     local, local_status, local_capability = collect_local_safely(
         collect_local, roots, start, end, warn, api=api if github_user else None,
         identity=identity if github_user else {})
+    gitlab_discovery = collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn)
     jira = collect_jira(start, end, warn)
     discovery = {}
     if github_user:
@@ -173,6 +175,7 @@ def collect(days_text, roots, now=None):
                      "since_at": iso(start), "to_at": iso(end), **local["metadata"],
                      "local_status": local_status, "capabilities": {"local_git": local_capability},
                      "github_discovery": discovery, "reference_expansion": expansion,
+                     "gitlab_discovery": gitlab_discovery,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
         "github": github, "jira": jira, "commits": local["commits"], "branches": local["branches"],
@@ -222,6 +225,7 @@ def validate(data, source=None):
             if start and item.get("updated_at"):
                 require(start <= timestamp(item["updated_at"]) <= end, "GitHub item outside capture window")
     validate_github(data, evidence, start, end)
+    validate_gitlab(data)
     jira_items = validate_jira(data, start, end)
     validate_links(data)
     commits = data.get("commits")
@@ -490,6 +494,17 @@ def topic_github_items(data, topic):
     return list(selected.values())
 
 
+def topic_merge_requests(data, topic):
+    """Native advertised heads identify counterparts, without supplying MR state."""
+    refs = {(item['repo'], item['hash']) for item in topic.get('commits', []) + topic.get('branches', [])}
+    selected = {}
+    for branch in data.get('branches', []):
+        if (branch['repo'], branch['hash']) in refs:
+            for mr in branch.get('merge_requests', []):
+                selected[mr['url']] = mr
+    return list(selected.values())
+
+
 def work_urls(data, topic):
     """Return only captured citations and their validated counterpart links."""
     jira = {item['key']: item for item in data.get('jira', {}).get('issues', [])}
@@ -514,6 +529,7 @@ def work_urls(data, topic):
         ticket(jira[reference['key']], True)
     for relation in local_context_links(data, topic):
         (ticket_urls if relation['provider'] == 'jira' else change_urls).add(relation['url'])
+    change_urls.update(mr['url'] for mr in topic_merge_requests(data, topic))
     return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
 
 
@@ -629,6 +645,9 @@ def fallback_topics(data, limit=12):
         if entry:
             topic = {'description': 'Local change in ' + Path(repo).name + ': ' + entry['message'], 'items': [],
                      'commits': [{'repo': repo, 'hash': entry['hash']}]}
+            native_mrs = topic_merge_requests(data, topic)
+            if native_mrs:
+                topic['links'] = [mr['url'] for mr in native_mrs]
             urls = work_urls(data, topic)
             if not any(url in candidates for url in urls):
                 add(repo, 5, timestamp(entry['committed_at']), topic)
@@ -673,7 +692,8 @@ def render(data, source=None, detailed=False):
         notes.append('GitHub state is unverified for contextual links.')
     states = [('GitHub', data['metadata'].get('github_status')),
               ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
-              ('local Git', data['metadata'].get('local_status'))]
+              ('local Git', data['metadata'].get('local_status')),
+              ('GitLab refs', data['metadata'].get('gitlab_discovery', {}).get('status'))]
     unavailable = [name + ' unavailable' for name, status in states if status == 'unavailable']
     if unavailable:
         notes.append('Coverage is incomplete: ' + '; '.join(unavailable) + '.')
@@ -823,9 +843,21 @@ def render_detailed(data, source=None):
         for item in selected:
             names = ", ".join(markdown(name) for name in item["refs"])
             associations = ", ".join(linked(pr) for pr in item.get("prs", []))
+            mr_links = ", ".join(mr['url'] for mr in item.get('merge_requests', []))
+            if mr_links:
+                associations += (", " if associations else "") + mr_links + " (advertised MR heads; state unread)"
             lines.append(f"- {markdown(item['repo'])}: {names} — `{item['hash'][:12]}` "
                          f"({item['object_type']}; PR association: {item['pr_status']})" + (f" {associations}" if associations else ""))
         lines += ["", "PR no_match means completed exact-snapshot lookups found no association; partial/unchecked/unsupported remain unresolved. It does not prove unpublished work."]
+        lines.append("")
+    gitlab = m.get('gitlab_discovery', {})
+    if gitlab.get('queries') or gitlab.get('failures'):
+        lines += ["### GitLab Advertised Merge-Request Refs", "",
+                  "Native Git refs can verify exact head associations. They do not supply MR state, authorship, discussion history or activity times.", ""]
+        for query in gitlab.get('queries', []):
+            lines.append(f"- {markdown(query['host'] + '/' + query['repo'])}: "
+                         f"{len(query['refs'])} advertised MR refs ({query['status']}); "
+                         f"source {markdown(query['local_repo'])}, remote {markdown(query['remote'])}.")
         lines.append("")
     if data.get("unattributed_commits"):
         lines += ["### Unverified Authorship Leads", "",
