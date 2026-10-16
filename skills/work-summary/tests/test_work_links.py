@@ -7,7 +7,9 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from work_links import associate_work, complete_references, referenced_keys, validate_links  # noqa: E402
+from work_links import (  # noqa: E402
+    associate_work, classify_reference_failures, complete_references, referenced_keys, validate_links,
+)
 
 
 class WorkLinksTest(unittest.TestCase):
@@ -18,6 +20,74 @@ class WorkLinksTest(unittest.TestCase):
         return {'metadata': {'github_host': 'github.com'},
                 'github': {'prs': [pr], 'issues': [], 'pr_index': []},
                 'jira': {'metadata': {'site': 'jira.example.test'}, 'issues': [issue]}}
+
+    def test_unresolved_lexical_leads_are_distinct_from_explicit_native_references(self):
+        data = self.capture()
+        jira, github = data['jira'], data['github']
+        keys = ['AES-256', 'NEWPROJECT-7', 'DIRECT-8', 'LINKED-9', 'OLD-10', 'NATIVE-11']
+        coverage = {'status': 'partial', 'requested_keys': keys, 'returned_keys': [],
+                    'failures': {key: {'stderr': 'Native issue unavailable'} for key in keys}}
+        jira['metadata'].update(status='partial', coverage={'referenced_by_github': coverage})
+        github['prs'][0]['body'] = ('Use AES-256; investigate NEWPROJECT-7. '
+                                  'https://jira.example.test/browse/DIRECT-8')
+        jira['issues'][0]['detail']['fields']['issuelinks'] = [{'outwardIssue': {
+            'id': '90', 'key': 'LINKED-9', 'self': 'https://jira.example.test/rest/api/3/issue/90'}}]
+        jira['issues'][0]['full_detail'] = {'fields': {'customfield_90': {
+            'href': 'https://jira.example.test/browse/NATIVE-11'}}}
+        before = copy.deepcopy(coverage)
+        classify_reference_failures(jira, github)
+        classified = coverage['failure_classification']
+        self.assertEqual({key: value['kind'] for key, value in classified.items()}, {
+            'AES-256': 'lexical_candidate', 'NEWPROJECT-7': 'lexical_candidate',
+            'DIRECT-8': 'explicit_jira_url', 'LINKED-9': 'native_issue_reference',
+            'OLD-10': 'unmatched_candidate', 'NATIVE-11': 'explicit_jira_url'})
+        self.assertEqual(classified['DIRECT-8']['evidence_urls'], [github['prs'][0]['url']])
+        self.assertEqual(classified['LINKED-9']['evidence_urls'], [jira['issues'][0]['url']])
+        self.assertEqual({key: value for key, value in coverage.items()
+                          if key != 'failure_classification'}, before)
+        self.assertEqual(jira['metadata']['status'], 'partial')
+        associate_work(jira, github)
+        validate_links(data)
+        classified['DIRECT-8']['kind'] = 'lexical_candidate'
+        with self.assertRaisesRegex(ValueError, 'classification'):
+            validate_links(data)
+
+    def test_failure_classification_uses_all_captured_discussions_and_gitlab_native_bodies(self):
+        data = self.capture()
+        jira, github = data['jira'], data['github']
+        keys = ['COMMENT-1', 'REVIEW-2', 'MR-3', 'FOREIGN-4']
+        jira['metadata']['coverage'] = {'referenced_by_github': {
+            'status': 'partial', 'requested_keys': keys, 'returned_keys': [], 'failures': {}}}
+        url = 'https://github.com/elsewhere/history/pull/99'
+        github['reference_comments'] = [{'item_url': url, 'url': url + '#issuecomment-1',
+            'body': 'https://jira.example.test/browse/COMMENT-1'}]
+        github['reference_reviews'] = [{'item_url': url, 'repo': 'elsewhere/history', 'number': 99,
+            'source': {'id': 2, 'html_url': url + '#pullrequestreview-2', 'body': 'REVIEW-2',
+                       'user': None, 'submitted_at': None}}]
+        gitlab = {'items': [{'url': 'https://gitlab.example.test/org/repo/-/merge_requests/1',
+            'source': {'title': 'MR-3', 'description': ''}, 'notes': [
+                {'body': 'https://elsewhere.example.test/browse/FOREIGN-4'}]}]}
+        classify_reference_failures(jira, github, gitlab)
+        kinds = {key: value['kind'] for key, value in
+                 jira['metadata']['coverage']['referenced_by_github']['failure_classification'].items()}
+        self.assertEqual(kinds, {'COMMENT-1': 'explicit_jira_url', 'REVIEW-2': 'lexical_candidate',
+                                'MR-3': 'lexical_candidate', 'FOREIGN-4': 'unmatched_candidate'})
+
+    def test_malformed_or_foreign_issue_link_cannot_promote_a_lexical_failure(self):
+        for identity, url in [(True, 'https://jira.example.test/rest/api/3/issue/1'),
+                              ('1', 'https://foreign.example.test/rest/api/3/issue/1'),
+                              ('1', 'https://jira.example.test/rest/api/3/issue/2')]:
+            with self.subTest(identity=identity, url=url):
+                data = self.capture()
+                jira, github = data['jira'], data['github']
+                github['prs'][0]['body'] = 'NEWPROJECT-7'
+                jira['metadata']['coverage'] = {'referenced_by_github': {
+                    'requested_keys': ['NEWPROJECT-7'], 'returned_keys': []}}
+                jira['issues'][0]['detail']['fields']['issuelinks'] = [{'inwardIssue': {
+                    'id': identity, 'key': 'NEWPROJECT-7', 'self': url}}]
+                classify_reference_failures(jira, github)
+                self.assertEqual(jira['metadata']['coverage']['referenced_by_github'][
+                    'failure_classification']['NEWPROJECT-7']['kind'], 'lexical_candidate')
 
     def test_native_key_reference_links_both_directions(self):
         data = self.capture()

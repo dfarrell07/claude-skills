@@ -5,7 +5,7 @@ from urllib.parse import quote, urlsplit
 
 from evidence import is_pr_url, require
 from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
-from jira_sources import _custom_pr_links
+from jira_sources import BACKEND, _custom_pr_links
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -149,26 +149,94 @@ def github_items(github, include_index=True):
     return [item for bucket in buckets for item in github.get(bucket, [])]
 
 
-def referenced_keys(github, site=None):
+def _github_reference_texts(github):
     # Old indexed snapshots are association context, not a reason to retrieve
     # every historical ticket mentioned across an account's entire PR history.
-    result = set()
     selected = github_items(github, include_index=False)
     selected_urls = {item['url'] for item in selected}
     selected += [item for item in github.get('pr_index', []) if item['url'] in selected_urls]
     selected += [item for item in github.get('pr_index_observations', []) if item['url'] in selected_urls]
 
-    def add(text):
-        result.update(discovery_keys(text, site))
-
     for item in selected:
         for field in ('title', 'body', 'head_ref'):
-            add(item.get(field))
+            yield item['url'], item.get(field) or ''
     for comment in github_reference_comments(github):
         # These bodies were deliberately read, including targeted historical
         # fallbacks. Keep their references without crawling every indexed PR body.
-        add(comment['body'])
+        yield comment.get('url', comment.get('item_url', '')), comment['body']
+
+
+def referenced_keys(github, site=None):
+    result = set()
+    for _, text in _github_reference_texts(github):
+        result.update(discovery_keys(text, site))
     return sorted(result)
+
+
+def reference_failure_classification(jira, github, gitlab=None):
+    """Qualify unresolved mentions without claiming a referenced ticket exists."""
+    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github')
+    if coverage is None:
+        return {}
+    unresolved = (set(coverage.get('requested_keys', [])) - set(coverage.get('returned_keys', [])))
+    unresolved.update(coverage.get('failures', {}))
+    site = jira.get('metadata', {}).get('site')
+    explicit, lexical, native = {}, {}, {}
+    texts = list(_github_reference_texts(github))
+    for item in (gitlab or {}).get('items', []):
+        texts.extend((item['url'], item['source'].get(field) or '') for field in ('title', 'description'))
+        texts.extend((item['url'], note.get('body') or '') for note in item.get('notes', []))
+    for url, text in texts:
+        for key in _url_keys(text, site) & unresolved:
+            explicit.setdefault(key, set()).add(url)
+        for key in discovery_keys(text, site) & unresolved:
+            lexical.setdefault(key, set()).add(url)
+    for issue in jira.get('issues', []):
+        for source_kind in ('source', 'detail', 'full_detail'):
+            fields = (issue.get(source_kind) or {}).get('fields', {})
+            for text in strings(fields):
+                for key in _url_keys(text.replace('|', ' '), site) & unresolved:
+                    explicit.setdefault(key, set()).add(issue['url'])
+            for link in fields.get('issuelinks', []) or []:
+                if not isinstance(link, dict):
+                    continue
+                for direction in ('inwardIssue', 'outwardIssue'):
+                    linked = link.get(direction)
+                    if not isinstance(linked, dict) or linked.get('key') not in unresolved:
+                        continue
+                    identity = linked.get('id')
+                    if isinstance(identity, bool) or not re.fullmatch(r'[1-9][0-9]*', str(identity)):
+                        continue
+                    try:
+                        parts = urlsplit(linked.get('self', ''))
+                    except ValueError:
+                        continue
+                    backend = (isinstance(site, str) and site.endswith('.atlassian.net')
+                               and parts.hostname and BACKEND.fullmatch(parts.hostname)
+                               and parts.netloc == parts.hostname)
+                    if (parts.scheme == 'https' and (parts.netloc == site or backend)
+                            and not parts.query and not parts.fragment
+                            and re.fullmatch(r'/rest/api/(?:2|3)/issue/' + str(identity), parts.path)):
+                        native.setdefault(linked['key'], set()).add(issue['url'])
+        for text in strings(issue.get('comment_pages', [])):
+            for key in _url_keys(text.replace('|', ' '), site) & unresolved:
+                explicit.setdefault(key, set()).add(issue['url'])
+    classified = {}
+    for key in sorted(unresolved):
+        kind, evidence = ('unmatched_candidate', set())
+        for name, mapping in (('explicit_jira_url', explicit), ('native_issue_reference', native),
+                              ('lexical_candidate', lexical)):
+            if key in mapping:
+                kind, evidence = name, mapping[key]
+                break
+        classified[key] = {'kind': kind, 'evidence_urls': sorted(evidence)}
+    return classified
+
+
+def classify_reference_failures(jira, github, gitlab=None):
+    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github')
+    if coverage is not None:
+        coverage['failure_classification'] = reference_failure_classification(jira, github, gitlab)
 
 
 def complete_references(jira, github, read_tickets, read_prs=None):
@@ -196,6 +264,7 @@ def complete_references(jira, github, read_tickets, read_prs=None):
             else:
                 attempted_urls.update(urls)
                 read_prs(sorted(urls))
+    classify_reference_failures(jira, github)
     return {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_urls),
             'unread_pr_urls': sorted(unread_urls)}
 
@@ -267,6 +336,10 @@ def associate_work(jira, github):
 
 def validate_links(data):
     jira = data.get('jira', {'issues': []})
+    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github', {})
+    if 'failure_classification' in coverage:
+        require(coverage['failure_classification'] == reference_failure_classification(
+            jira, data['github'], data.get('gitlab')), 'Jira reference failure classification lacks native context')
     issues = {issue['key']: issue for issue in jira['issues']}
     ticket_aliases = jira_key_aliases(jira)
     items = github_items(data['github'])
