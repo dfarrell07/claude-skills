@@ -1487,6 +1487,92 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(sorted(query_text(call).count(':search(') for call in client.calls), [1, 20])
 
 
+class RestHeadRecoveryTest(unittest.TestCase):
+    client = GithubSourcesTest.client
+    head_node = staticmethod(GithubSourcesTest.head_node)
+    head_result = staticmethod(GithubSourcesTest.head_result)
+
+    @staticmethod
+    def rest_head(identity=42, sha='c' * 40):
+        return {'id': identity, 'node_id': 'NATIVE' + str(identity), 'event': 'head_ref_force_pushed',
+                'created_at': '2025-01-01T00:00:00Z', 'actor': {'login': 'other'},
+                'commit_id': sha, 'url': 'https://api.github.com/repos/org/repo/issues/events/' + str(identity)}
+
+    def test_native_rest_after_hash_recovers_null_graph_object_without_clearing_before_gap(self):
+        graph = self.head_node(before=None, after=None, identity='NATIVE42')
+        native = self.rest_head()
+        comment = {'event': 'commented', 'id': 43, 'node_id': 'COMMENT43', 'user': {'login': 'other'},
+                   'html_url': gql()['url'] + '#issuecomment-43',
+                   'body': 'Context https://jira.example/browse/CORE-123',
+                   'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z'}
+        client = self.client(lambda args: self.head_result([graph]) if args[0] == 'graphql' else [native, comment])
+        data = {'pr_index': [graphql_item(gql(), 'github.com')], 'activity': []}
+        client._head_history_batch(data, data['pr_index'])
+        branches = [branch(sha='c' * 40)]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['prs'][0]['head_event_id'], 42)
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'historical_head_event')
+        self.assertEqual(data['head_events'][0]['source'], graph)
+        self.assertIsNone(data['head_events'][0]['source']['beforeCommit'])
+        self.assertIsNone(data['head_events'][0]['source']['afterCommit'])
+        self.assertEqual(data['head_events'][1]['source'], native)
+        self.assertEqual(data['head_events'][1]['source_path'], 'repos/org/repo/issues/1/timeline')
+        self.assertEqual(data['reference_comments'][0]['body'], comment['body'])
+        self.assertEqual(data['activity'], [])
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+        self.assertEqual(client.coverage['rest_head_history:' + gql()['url']]['status'], 'ok')
+        self.assertIn('page=1', client.calls[1])
+        client._head_history_batch(data, data['pr_index'])
+        client._rest_head_history(data, data['pr_index'][0])
+        self.assertEqual(len(client.calls), 2)
+
+    def test_rest_pagination_failure_keeps_earlier_hash_and_coverage_gap(self):
+        for fail in (False, True):
+            def api(args):
+                if args[0] == 'graphql':
+                    return self.head_result([self.head_node(before=None, after=None)])
+                if 'page=1' in args:
+                    return [self.rest_head()] + [{'event': 'labeled'} for _ in range(99)]
+                self.assertIn('page=2', args)
+                if fail:
+                    raise subprocess.CalledProcessError(403, 'native read')
+                return [self.rest_head(44, 'd' * 40)]
+            with self.subTest(fail=fail):
+                client = self.client(api)
+                data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+                client._head_history_batch(data, data['pr_index'])
+                branches = [branch(sha='c' * 40), branch('/second', sha='d' * 40)]
+                client.associate_head_events(branches, data)
+                self.assertEqual(branches[0]['pr_status'], 'matched')
+                self.assertEqual(branches[1]['pr_status'], 'unchecked' if fail else 'matched')
+                info = client.coverage['rest_head_history:' + gql()['url']]
+                self.assertEqual(info['status'], 'partial' if fail else 'ok')
+                self.assertEqual(info['pages'], 1 if fail else 2)
+
+    def test_wrong_rest_route_cannot_manufacture_recovery(self):
+        event = self.rest_head()
+        event['url'] = 'https://api.github.com/repos/wrong/repo/issues/events/42'
+        client = self.client(lambda args: self.head_result([self.head_node(before=None, after=None)])
+                             if args[0] == 'graphql' else [event])
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        branches = [branch(sha='c' * 40)]
+        client.associate_head_events(branches, data)
+        self.assertEqual(branches[0]['prs'], [])
+        self.assertEqual(len(data['head_events']), 1)
+        self.assertEqual(client.coverage['rest_head_history:' + gql()['url']]['status'], 'partial')
+
+    def test_null_before_only_does_not_read_rest_after_history_without_a_missing_after(self):
+        def api(args):
+            self.assertEqual(args[0], 'graphql')
+            return self.head_result([self.head_node(before=None)])
+        client = self.client(api)
+        data = {'pr_index': [graphql_item(gql(), 'github.com')]}
+        client._head_history_batch(data, data['pr_index'])
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
+
+
 class SnapshotConcurrencyTest(unittest.TestCase):
     client = GithubSourcesTest.client
     associate = GithubSourcesTest.associate

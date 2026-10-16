@@ -91,6 +91,7 @@ class Github:
         self._global_snapshots = {}
         self._head_seen = set()
         self._history_read = set()
+        self._rest_head_history_read = set()
         self._branch_snapshots = None
         self._repository_metadata = {}
         self._repository_aliases = {}
@@ -516,6 +517,8 @@ class Github:
                     info['unfiltered_total_count'] = connection['totalCount']
                     for event in connection['nodes']:
                         if self._retain_head_event(github, item, event, 'graphql_force_push', key):
+                            if event['afterCommit'] is None:
+                                state['rest_fallback'] = True
                             if event['id'] in state['ids']:
                                 self.problem(key, 'a duplicate native history event was observed')
                             state['ids'].add(event['id'])
@@ -536,6 +539,24 @@ class Github:
             if not state['done']:
                 self.problem('head_history:' + url, 'native history reached its page safety cap')
             self._history_read.add(url)
+            if state.get('rest_fallback'):
+                self._rest_head_history(github, state['item'])
+
+    def _rest_head_history(self, github, item):
+        """Recover native after hashes when GraphQL cannot resolve deleted objects."""
+        if item['url'] in self._rest_head_history_read:
+            return
+        self._rest_head_history_read.add(item['url'])
+        key = 'rest_head_history:' + item['url']
+        route = f"repos/{item['repo']}/issues/{item['number']}/timeline"
+        for event in self.listing(route, key):
+            if not isinstance(event, dict):
+                self.problem(key, 'invalid native timeline row skipped')
+                continue
+            if event.get('event') == 'head_ref_force_pushed':
+                self._retain_head_event(github, item, event, 'rest_force_push', key, route)
+            elif event.get('event') == 'commented':
+                self._retain_comment(github, item, event, 'issue_comment', key)
 
     @staticmethod
     def _head_shas(record):
