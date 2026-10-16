@@ -259,6 +259,16 @@ class GitLabApiTest(unittest.TestCase):
         self.assertFalse(result['metadata']['identities'])
         self.assertFalse(result['metadata']['identity_leads'])
 
+    def test_last_page_header_cannot_silently_truncate_notes(self):
+        def read(url):
+            if '/notes?' not in url:
+                return response(url, mr())
+            return response(url, [note()], headers={'link': '<' + url.split('?')[0]
+                            + '?per_page=100&page=9>; rel="last"'})
+        result, _, _ = self.collect(read)
+        self.assertEqual(result['items'][0]['notes_status'], 'partial')
+        self.assertTrue(result['items'][0]['notes'])
+
 
 if __name__ == '__main__':
     unittest.main()

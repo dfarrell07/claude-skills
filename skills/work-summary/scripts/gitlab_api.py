@@ -1,6 +1,5 @@
 """Anonymous native GitLab MR reads; public access is independent of /user login."""
 
-import json
 import re
 import ssl
 from datetime import datetime
@@ -190,6 +189,17 @@ class PublicReader:
                         totals[field] = headers[field]
                 next_page = headers.get('x-next-page')
                 links = re.findall(r'<([^>]+)>\s*;\s*rel="?next"?', headers.get('link', ''), re.I)
+                last_links = re.findall(r'<([^>]+)>\s*;\s*rel="?last"?', headers.get('link', ''), re.I)
+                if last_links:
+                    require(len(last_links) == 1, 'Ambiguous last page')
+                    last_url = safe_api(urljoin(url, last_links[0]), expected.hostname)
+                    last_parts = urlsplit(last_url)
+                    last_page = dict(parse_qsl(last_parts.query)).get('page')
+                    require(last_parts.path == expected.path and isinstance(last_page, str)
+                            and re.fullmatch(r'[1-9][0-9]{0,8}', last_page), 'Invalid last page scope')
+                    require(int(last_page) >= current, 'Native last page precedes current page')
+                    require(next_page or links or int(last_page) == current,
+                            'Native last page shows missing continuation')
                 if links:
                     require(len(links) == 1, 'Ambiguous next page')
                     target = safe_api(urljoin(url, links[0]), expected.hostname)
