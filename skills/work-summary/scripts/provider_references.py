@@ -48,8 +48,7 @@ def gitlab_seed_urls(jira, github, branches):
     observations = [item for item in github_items(github) if item['url'] in selected]
     texts = [item.get(field) or '' for item in observations
              for field in ('title', 'body')]
-    texts.extend(comment['body'] for comment in github_reference_comments(github)
-                 if comment['item_url'] in selected)
+    texts.extend(comment['body'] for comment in github_reference_comments(github))
     urls.update(url for text in texts for provider, url in code_urls(text) if provider == 'gitlab')
     return urls
 

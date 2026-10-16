@@ -159,8 +159,9 @@ def referenced_keys(github, site=None):
         for field in ('title', 'body', 'head_ref'):
             add(item.get(field))
     for comment in github_reference_comments(github):
-        if comment['item_url'] in selected_urls:
-            add(comment['body'])
+        # These bodies were deliberately read, including targeted historical
+        # fallbacks. Keep their references without crawling every indexed PR body.
+        add(comment['body'])
     return sorted(result)
 
 

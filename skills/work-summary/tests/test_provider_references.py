@@ -92,8 +92,10 @@ class ProviderReferencesTest(unittest.TestCase):
         github = {'prs': [{'url': selected, 'body': ''}], 'issues': [],
                   'pr_index': [{'url': selected, 'body': root + '2'},
                                {'url': 'https://github.com/org/other/pull/9', 'body': root + '99'}],
-                  'pr_index_observations': [{'url': selected, 'body': root + '3'}]}
-        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {root + '2', root + '3'})
+                  'pr_index_observations': [{'url': selected, 'body': root + '3'}],
+                  'reference_comments': [{'item_url': 'https://github.com/org/other/pull/9',
+                                          'body': root + '4'}]}
+        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {root + '2', root + '3', root + '4'})
 
     def test_native_descriptions_and_other_author_notes_close_cross_provider_frontier(self):
         root = 'https://gitlab.example.test/group/project/-/merge_requests/'

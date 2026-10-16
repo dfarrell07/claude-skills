@@ -63,6 +63,15 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
         self.assertEqual(pr['title'], 'First native observation')
 
+    def test_deliberately_captured_historical_comment_references_join_frontier(self):
+        data = self.capture()
+        url = 'https://github.com/org/other/pull/99'
+        data['github']['pr_index'] = [{'url': url, 'body': 'UNSCANNED-9'}]
+        data['github']['reference_comments'] = [{
+            'item_url': url, 'body': 'Historical native comment refers to TASK-7.'}]
+        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TASK-7', 'TEST-123'])
+        self.assertNotIn('activity', data['github'])
+
     def test_explicit_native_jira_authority_overrides_non_ticket_prefix_guess(self):
         data = self.capture()
         pr = data['github']['prs'][0]
