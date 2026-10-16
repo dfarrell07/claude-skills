@@ -13,6 +13,22 @@ from provider_references import (  # noqa: E402
 
 
 class ProviderReferencesTest(unittest.TestCase):
+    def test_native_graphql_note_keeps_its_url_and_global_id(self):
+        mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
+        jira = {'metadata': {'site': 'jira.example.test'}, 'issues': [{
+            'key': 'TEST-1', 'url': 'https://jira.example.test/browse/TEST-1', 'sensitive': False}]}
+        gitlab = {'items': [{'url': mr, 'source': {'description': ''}, 'notes': [{
+            'source_kind': 'graphql', 'id': 'gid://gitlab/Note/8', 'url': mr + '#note_8',
+            'body': 'Follow TEST-1'}]}]}
+        associate_gitlab(jira, gitlab)
+        relation = gitlab['items'][0]['jira_links'][0]
+        self.assertEqual(relation['evidence_url'], mr + '#note_8')
+        self.assertEqual(relation['note_id'], 'gid://gitlab/Note/8')
+        validate_gitlab_links({'jira': jira, 'gitlab': gitlab})
+        relation['note_id'] = 8
+        with self.assertRaises(ValueError):
+            validate_gitlab_links({'jira': jira, 'gitlab': gitlab})
+
     def test_unresolved_gitlab_ticket_url_is_not_only_a_lexical_lead(self):
         mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
         jira = {'metadata': {'site': 'jira.example.test', 'coverage': {

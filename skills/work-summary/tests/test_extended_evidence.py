@@ -1,6 +1,7 @@
 """Native GitHub actor evidence must retain a real event or source identity."""
 
 import copy
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -8,10 +9,60 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from evidence import timestamp  # noqa: E402
-from extended_evidence import repository_aliases, validate_github  # noqa: E402
+from extended_evidence import (  # noqa: E402
+    historical_head_hashes, repository_aliases, validate_github, validated_timeline_events,
+)
 
 
 class ExtendedGithubEvidenceTest(unittest.TestCase):
+    def test_html_head_requires_complete_page_replay_and_native_api_binding(self):
+        from github_timeline import collect_timeline
+        item = {'repo': 'org/project', 'number': 12, 'url': 'https://github.com/org/project/pull/12'}
+        before, after, at = 'a' * 40, 'b' * 40, '2026-01-10T12:00:00Z'
+        rest = {'id': 77, 'node_id': 'native77', 'event': 'head_ref_force_pushed',
+                'url': 'https://api.github.com/repos/org/project/issues/events/77',
+                'created_at': at, 'commit_id': after}
+        graph = {'__typename': 'HeadRefForcePushedEvent', 'id': 'native77', 'createdAt': at,
+                 'beforeCommit': None, 'afterCommit': None, 'pullRequest': {'url': item['url']}}
+        hydro = {'event_type': 'force_push_timeline_diff.click', 'payload': {
+            'event_id': 77, 'originating_url': item['url'], 'repository_id': 1, 'pull_request_id': 2}}
+        body = ('<div class="TimelineItem js-targetable-element" id="event-77">'
+                f'<a href="/org/project/commit/{before}">before</a>'
+                f'<a href="/org/project/commit/{after}">after</a>'
+                f'<a href="/org/project/compare/{before}..{after}" '
+                f"data-hydro-click='{json.dumps(hydro)}'>diff</a>"
+                f'<a href="#event-77"><relative-time datetime="{at}"></relative-time></a></div>')
+        timeline = collect_timeline(item, [rest], [77], read=lambda url: {
+            'url': url, 'status': 200, 'headers': {}, 'body': body})
+        self.assertEqual(timeline['status'], 'ok')
+        base = {key: item[key] for key in ('repo', 'number')}
+        api_heads = [{**base, 'item_url': item['url'], 'kind': 'rest_force_push', 'source': rest,
+                      'source_path': 'repos/org/project/issues/12/timeline'},
+                     {**base, 'item_url': item['url'], 'kind': 'graphql_force_push', 'source': graph}]
+        html_head = {**base, 'item_url': item['url'], 'kind': 'html_force_push', 'source': timeline['events'][0]}
+        github = {'head_events': api_heads + [html_head], 'timeline_html': [timeline]}
+        known = {item['url']: item}
+        events = validated_timeline_events(github, known)
+        self.assertEqual(historical_head_hashes(html_head, known, html_events=events), {before, after})
+        with self.assertRaises(ValueError):
+            historical_head_hashes(html_head, known)
+        forged = copy.deepcopy(html_head)
+        forged['source']['before_sha'] = 'c' * 40
+        with self.assertRaises(ValueError):
+            historical_head_hashes(forged, known, html_events=events)
+        for mutation in ('no_rest', 'different_graph_id', 'forged_pair', 'hidden_target'):
+            broken = copy.deepcopy(github)
+            if mutation == 'no_rest':
+                del broken['head_events'][0]
+            elif mutation == 'different_graph_id':
+                broken['head_events'][1]['source']['id'] = 'unrelated'
+            elif mutation == 'forged_pair':
+                broken['timeline_html'][0]['events'][0]['before_sha'] = 'c' * 40
+            else:
+                broken['timeline_html'][0]['target_event_ids'] = []
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validated_timeline_events(broken, known)
+
     def alias(self):
         return {'host':'github.com', 'requested_repo':'old/project', 'canonical_repo':'current/project',
                 'requested':{'path':'repos/old/project', 'id':123, 'full_name':'current/project',

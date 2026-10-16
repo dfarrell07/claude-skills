@@ -14,7 +14,8 @@ def gitlab_texts(gitlab):
         for field in ('title', 'description'):
             yield item, field, item['url'], item['source'].get(field) or '', None
         for note in item.get('notes', []):
-            yield item, 'note', item['url'], note.get('body') or '', note['id']
+            url = note['url'] if note.get('source_kind') == 'graphql' else item['url']
+            yield item, 'note', url, note.get('body') or '', note['id']
 
 
 def code_urls(text, github_host=None):

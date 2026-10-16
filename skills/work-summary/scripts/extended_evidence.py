@@ -294,7 +294,7 @@ def github_reference_comments(github):
                 continue
 
 
-def historical_head_hashes(record, known, host='github.com'):
+def historical_head_hashes(record, known, host='github.com', html_events=None):
     """Native force-push history proves a former head, without proving weekly work."""
     require(isinstance(record, dict), 'Invalid native head event')
     item = known.get(record.get('item_url'))
@@ -302,6 +302,11 @@ def historical_head_hashes(record, known, host='github.com'):
             and record.get('number') == item['number'], 'Native head event PR mismatch')
     source = record.get('source')
     require(isinstance(source, dict), 'Missing native head event source')
+    if record.get('kind') == 'html_force_push':
+        require(html_events is not None
+                and html_events.get((item['url'], source.get('id'))) == source,
+                'Historical HTML head lacks replayed native page and event proof')
+        return {source['before_sha'], source['after_sha']}
     if record.get('kind') == 'graphql_force_push':
         require(source.get('__typename') == 'HeadRefForcePushedEvent'
                 and isinstance(source.get('id'), str) and bool(source['id'])
@@ -333,6 +338,39 @@ def historical_head_hashes(record, known, host='github.com'):
                 'Invalid native REST head')
         heads = [head] if head is not None else []
     return set(heads)
+
+
+def validated_timeline_events(github, known, host='github.com'):
+    """Replay public pages against already validated native API event identities."""
+    from github_timeline import validate_timeline
+    timelines = github.get('timeline_html', [])
+    require(isinstance(timelines, list), 'Invalid native HTML timeline observations')
+    native, opaque = {}, {}
+    for record in github.get('head_events', []):
+        require(isinstance(record, dict), 'Invalid native head event')
+        if record.get('kind') == 'html_force_push':
+            continue
+        historical_head_hashes(record, known, host)
+        source = record['source']
+        if record['kind'] == 'rest_force_push':
+            native.setdefault(record['item_url'], []).append(source)
+        elif source['beforeCommit'] is None or source['afterCommit'] is None:
+            opaque.setdefault(record['item_url'], set()).add(source['id'])
+    events, seen = {}, set()
+    for record in timelines:
+        require(isinstance(record, dict), 'Invalid native HTML timeline')
+        item = known.get(record.get('item_url'))
+        require(item is not None and record.get('item_url') not in seen
+                and record.get('repo') == item['repo'] and record.get('number') == item['number'],
+                'Native HTML timeline PR mismatch')
+        seen.add(item['url'])
+        sources = native.get(item['url'], [])
+        targets = sorted({source['id'] for source in sources
+                          if source['node_id'] in opaque.get(item['url'], set())})
+        require(bool(targets), 'Native HTML timeline lacks unresolved API event targets')
+        validate_timeline(record, item, sources, targets)
+        events.update({(item['url'], event['id']): event for event in record['events']})
+    return events
 
 
 def validate_github(data, evidence, start, end):
@@ -372,7 +410,8 @@ def validate_github(data, evidence, start, end):
     head_events = github.get('head_events', [])
     require(isinstance(head_events, list), 'Invalid native head history')
     known = {**indexed, **evidence}
-    historical_heads = [(record, historical_head_hashes(record, known, host)) for record in head_events]
+    html_events = validated_timeline_events(github, known, host)
+    historical_heads = [(record, historical_head_hashes(record, known, host, html_events)) for record in head_events]
     comments_seen = {}
     comments = github.get('reference_comments', [])
     require(isinstance(comments, list), 'Invalid GitHub reference comments')

@@ -19,6 +19,28 @@ from capabilities import empty_local  # noqa: E402
 
 
 class ConciseReportTest(unittest.TestCase):
+    def test_graphql_note_credit_requires_native_actor_and_actual_edit(self):
+        data = self.capture()
+        data['github']['prs'] = []
+        url = 'https://gitlab.example.test/group/project/-/merge_requests/42'
+        note = {'source_kind': 'graphql', 'system': False, 'author': {
+            'id': 'gid://gitlab/User/7', 'username': 'different-provider-name'},
+            'created_at': '2026-01-10T12:00:00Z', 'updated_at': '2026-01-11T12:00:00Z',
+            'last_edited_at': None, 'last_edited_by': None}
+        data['gitlab'] = {'metadata': {'identities': [{'host': 'gitlab.example.test', 'user_id': 7}]},
+            'items': [{'url': url, 'host': 'gitlab.example.test', 'source': {
+                'author': {'id': 99}, 'title': 'Prepare catalog pipeline'}, 'notes': [note]}]}
+        self.assertEqual(ws.fallback_topics(data)[0]['description'], 'Discussed: Prepare catalog pipeline')
+        note['author']['id'] = 'gid://gitlab/User/99'
+        note['author']['username'] = 'person'
+        self.assertEqual(ws.fallback_topics(data), [])
+        note.update(created_at='2025-01-01T00:00:00Z', last_edited_at='2026-01-12T12:00:00Z',
+                    last_edited_by={'id': 'gid://gitlab/User/7', 'username': 'different-provider-name'})
+        self.assertEqual(ws.fallback_topics(data)[0]['description'],
+                         'Edited a discussion: Prepare catalog pipeline')
+        note['system'] = True
+        self.assertEqual(ws.fallback_topics(data), [])
+
     def test_native_own_field_change_supports_tracker_update_without_delivery_claim(self):
         data = self.capture()
         data['github']['prs'] = []
@@ -94,7 +116,7 @@ class ConciseReportTest(unittest.TestCase):
                                    'author_name': 'Own', 'author_email': 'own@example.test',
                                    'authored_at': '2026-01-10T12:00:00Z', 'committed_at': '2026-01-10T12:00:00Z'}]}
         data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
-                             'refs': ['refs/heads/work'], 'pr_status': 'unsupported', 'prs': [], 'backup': True}]
+                             'refs': ['refs/heads/work'], 'pr_status': 'unchecked', 'prs': [], 'backup': True}]
         def native(path, *args, **kwargs):
             output = (head + '\trefs/merge-requests/42/head\n' + 'c' * 40 + '\trefs/merge-requests/42/merge\n'
                       if args[0] == 'ls-remote' else 'git@gitlab.example.test:group/team/project.git\n')
@@ -224,7 +246,7 @@ class ConciseReportTest(unittest.TestCase):
                 'reflog_heads': [head], 'reflog_output': head + '\n'}}]}])
         data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
                              'refs': ['worktree-reflog:' + tree + ':' + head],
-                             'pr_status': 'unsupported'}]
+                             'pr_status': 'unchecked'}]
         ws.validate(data)
         for field, value in [('reflog_heads', []), ('reflog_output', 'c' * 40 + '\n')]:
             with self.subTest(field=field):

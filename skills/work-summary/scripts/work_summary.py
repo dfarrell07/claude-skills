@@ -678,6 +678,7 @@ def fallback_topics(data, limit=12):
              'jira': [{key: item[key] for key in ('key', 'url')}], 'links': [item['url']]})
     gitlab = data.get('gitlab', {})
     principals = {(row['host'], row['user_id']) for row in gitlab.get('metadata', {}).get('identities', [])}
+    graph_principals = {(host, f'gid://gitlab/User/{identity}') for host, identity in principals}
     for item in gitlab.get('items', []):
         native = item['source']
         def mr_topic(description):
@@ -687,9 +688,17 @@ def fallback_topics(data, limit=12):
                 if native.get(field) and start is not None and start <= timestamp(native[field]) <= end:
                     add(item['url'], priority, timestamp(native[field]), mr_topic(verb + ': ' + native['title']))
         for note in item.get('notes', []):
-            if (note.get('system') is False and (item['host'], (note.get('author') or {}).get('id')) in principals
+            note_principals = graph_principals if note.get('source_kind') == 'graphql' else principals
+            if (note.get('system') is False
+                    and (item['host'], (note.get('author') or {}).get('id')) in note_principals
                     and start is not None and start <= timestamp(note['created_at']) <= end):
                 add(item['url'], 3, timestamp(note['created_at']), mr_topic('Discussed: ' + native['title']))
+            if (note.get('source_kind') == 'graphql' and note.get('system') is False
+                    and (item['host'], (note.get('last_edited_by') or {}).get('id')) in graph_principals
+                    and note.get('last_edited_at') and start is not None
+                    and start <= timestamp(note['last_edited_at']) <= end):
+                add(item['url'], 3, timestamp(note['last_edited_at']),
+                    mr_topic('Edited a discussion: ' + native['title']))
     identities = {item['path']: item['identities'] for item in metadata.get('repositories', [])}
     seen_hashes = set()
     for repo, entries in sorted(data['commits'].items()):
