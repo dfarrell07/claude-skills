@@ -1268,6 +1268,13 @@ class GithubSourcesTest(unittest.TestCase):
             bad = dict(event, **{field: value})
             self.assertFalse(client._retain_head_event({}, rest_item(rest(), 'prs', 'github.com'),
                 bad, 'rest_force_push', 'test', 'repos/org/repo/issues/1/timeline'))
+        bad = dict(event)
+        del bad['commit_id']
+        retained = {}
+        self.assertFalse(client._retain_head_event(retained, rest_item(rest(), 'prs', 'github.com'),
+            bad, 'rest_force_push', 'missing-head', 'repos/org/repo/issues/1/timeline'))
+        self.assertEqual(retained, {})
+        self.assertEqual(client.coverage['missing-head']['status'], 'partial')
 
     def test_historical_positive_requires_real_native_metadata_when_not_indexed(self):
         client = self.client(lambda args: {'data': {'repository': {'pullRequest': gql(state='CLOSED')}}})

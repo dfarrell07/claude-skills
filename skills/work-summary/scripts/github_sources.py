@@ -383,7 +383,8 @@ class Github:
                         'REST head event route or native ID disagrees')
                 timestamp(source.get('created_at'))
                 sha = source.get('commit_id')
-                require(sha is None or isinstance(sha, str) and HASH.fullmatch(sha), 'Invalid historical commit SHA')
+                require('commit_id' in source and (sha is None or isinstance(sha, str) and HASH.fullmatch(sha)),
+                        'Invalid historical commit SHA')
             else:
                 require(kind == 'graphql_force_push' and source.get('__typename') == 'HeadRefForcePushedEvent'
                         and isinstance(identity, str) and identity, 'Invalid typed head event identity')
