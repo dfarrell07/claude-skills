@@ -85,7 +85,8 @@ class GithubSourcesTest(unittest.TestCase):
         def api(*args):
             calls.append(args)
             return handler(args)
-        client = Github(api, 'github.com', 'me', START, END, warnings.append)
+        client = Github(api, 'github.com', 'me', START, END, warnings.append,
+                        timeline_read=lambda url: {'url': url, 'status': 404, 'headers': {}, 'body': ''})
         client.calls, client.warnings = calls, warnings
         return client
 
@@ -1610,6 +1611,39 @@ class RestHeadRecoveryTest(unittest.TestCase):
                 'created_at': '2025-01-01T00:00:00Z', 'actor': {'login': 'other'},
                 'commit_id': sha, 'url': 'https://api.github.com/repos/org/repo/issues/events/' + str(identity)}
 
+    def test_public_native_full_before_after_resolves_only_the_null_projection_gap(self):
+        from test_github_timeline import event_html, page, WHEN
+        for other_graph_gap in (False, True):
+            with self.subTest(other_graph_gap=other_graph_gap):
+                graph = self.head_node(before=None, after=None, identity='NATIVE42')
+                graph['createdAt'] = WHEN
+                native = self.rest_head()
+                native['created_at'] = WHEN
+                result = self.head_result([graph])
+                if other_graph_gap:
+                    result['errors'] = [{'path': ['p0', 'pullRequest', 'timelineItems'], 'message': 'Native partial graph'}]
+                client = self.client(lambda args: result if args[0] == 'graphql' else [native])
+                reads = []
+                def read(url):
+                    reads.append(url)
+                    return page(event_html(after='c' * 40, page_url=url), url)
+                client.timeline_read = read
+                data = {'pr_index': [graphql_item(gql(), 'github.com')], 'activity': []}
+                client._head_history_batch(data, data['pr_index'])
+                info = client.coverage['head_history:' + gql()['url']]
+                self.assertEqual(info['status'], 'partial' if other_graph_gap else 'ok')
+                self.assertEqual(info['projection_status'], 'partial')
+                self.assertEqual(info['fallback'], 'public_native_timeline')
+                self.assertEqual(data['timeline_html'][0]['status'], 'ok')
+                self.assertEqual(data['head_events'][-1]['kind'], 'html_force_push')
+                branches = [branch(sha='a' * 40), branch('/after', sha='c' * 40)]
+                client.associate_head_events(branches, data)
+                self.assertTrue(all(row['pr_status'] == 'matched' for row in branches))
+                self.assertEqual(data['activity'], [])
+                self.assertEqual(bool(client.warnings), other_graph_gap)
+                client._head_history_batch(data, data['pr_index'])
+                self.assertEqual(reads, [gql()['url']])
+
     def test_native_rest_after_hash_recovers_null_graph_object_without_clearing_before_gap(self):
         graph = self.head_node(before=None, after=None, identity='NATIVE42')
         native = self.rest_head()
@@ -1674,14 +1708,16 @@ class RestHeadRecoveryTest(unittest.TestCase):
         self.assertEqual(len(data['head_events']), 1)
         self.assertEqual(client.coverage['rest_head_history:' + gql()['url']]['status'], 'partial')
 
-    def test_null_before_only_does_not_read_rest_after_history_without_a_missing_after(self):
+    def test_missing_before_reads_bounded_native_routes_without_clearing_an_unresolved_gap(self):
         def api(args):
-            self.assertEqual(args[0], 'graphql')
-            return self.head_result([self.head_node(before=None)])
+            if args[0] == 'graphql':
+                return self.head_result([self.head_node(before=None)])
+            self.assertIn('repos/org/repo/issues/1/timeline', args)
+            return []
         client = self.client(api)
         data = {'pr_index': [graphql_item(gql(), 'github.com')]}
         client._head_history_batch(data, data['pr_index'])
-        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(len(client.calls), 2)
         self.assertEqual(client.coverage['head_history:' + gql()['url']]['status'], 'partial')
 
 

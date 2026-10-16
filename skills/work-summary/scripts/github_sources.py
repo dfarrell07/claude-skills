@@ -9,6 +9,7 @@ from threading import BoundedSemaphore, RLock
 from urllib.parse import urlsplit
 
 from extended_evidence import comment_history_state, comment_node_bound, validate_review_context
+from github_timeline import collect_timeline
 from evidence import HASH, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
 
 
@@ -93,7 +94,7 @@ def cross_reference_source(event, host):
 
 
 class Github:
-    def __init__(self, api, host, login, start, end, warn):
+    def __init__(self, api, host, login, start, end, warn, *, timeline_read=None):
         self.api, self.host, self.login = api, host, login
         self.start, self.end, self.warn = start, end, warn
         self.coverage = {}
@@ -107,6 +108,8 @@ class Github:
         self._head_seen = set()
         self._history_read = set()
         self._rest_head_history_read = set()
+        self._html_head_history_read = set()
+        self.timeline_read = timeline_read
         self._branch_snapshots = None
         self._repository_metadata = {}
         self._repository_aliases = {}
@@ -467,6 +470,13 @@ class Github:
                 sha = source.get('commit_id')
                 require('commit_id' in source and (sha is None or isinstance(sha, str) and HASH.fullmatch(sha)),
                         'Invalid historical commit SHA')
+            elif kind == 'html_force_push':
+                require(integer(identity, 1) and isinstance(source.get('before_sha'), str)
+                        and HASH.fullmatch(source['before_sha']) and isinstance(source.get('after_sha'), str)
+                        and HASH.fullmatch(source['after_sha']), 'Invalid native HTML head hashes')
+                timestamp(source.get('created_at'))
+                require(any(record['item_url'] == item['url'] and source in record['events']
+                            for record in github.get('timeline_html', [])), 'Missing native HTML timeline proof')
             else:
                 require(kind == 'graphql_force_push' and source.get('__typename') == 'HeadRefForcePushedEvent'
                         and isinstance(identity, str) and identity, 'Invalid typed head event identity')
@@ -477,8 +487,6 @@ class Github:
                     require(field in source and (source[field] is None or isinstance(source[field], dict)
                             and isinstance(source[field].get('oid'), str) and HASH.fullmatch(source[field]['oid'])),
                             'Invalid native before/after head')
-                if source['beforeCommit'] is None or source['afterCommit'] is None:
-                    self.problem(key, 'a historical head object is unavailable; retained the other native head')
             token = kind, item['url'], identity, json.dumps(source, sort_keys=True)
             if token not in self._head_seen:
                 self._head_seen.add(token)
@@ -494,7 +502,8 @@ class Github:
 
     def _head_history_batch(self, github, items):
         """Read bounded candidate PR histories; totalCount includes other item types."""
-        states = {item['url']: {'item': item, 'cursor': None, 'cursors': set(), 'ids': set(), 'done': False}
+        states = {item['url']: {'item': item, 'cursor': None, 'cursors': set(), 'ids': set(),
+                               'missing_heads': set(), 'done': False}
                   for item in items if item['url'] not in self._history_read}
         for item in items:
             self.coverage.setdefault('head_history:' + item['url'], {'status': 'ok', 'pages': 0, 'count': 0})
@@ -544,8 +553,8 @@ class Github:
                     info['unfiltered_total_count'] = connection['totalCount']
                     for event in connection['nodes']:
                         if self._retain_head_event(github, item, event, 'graphql_force_push', key):
-                            if event['afterCommit'] is None:
-                                state['rest_fallback'] = True
+                            if event['beforeCommit'] is None or event['afterCommit'] is None:
+                                state['missing_heads'].add(event['id'])
                             if event['id'] in state['ids']:
                                 self.problem(key, 'a duplicate native history event was observed')
                             state['ids'].add(event['id'])
@@ -566,8 +575,25 @@ class Github:
             if not state['done']:
                 self.problem('head_history:' + url, 'native history reached its page safety cap')
             self._history_read.add(url)
-            if state.get('rest_fallback'):
+            if state['missing_heads']:
+                info = self.coverage['head_history:' + url]
+                info['native_null_head_events'] = len(state['missing_heads'])
+                info['projection_status'] = 'partial'
+                readable = {record['source']['id'] for record in github.get('head_events', [])
+                            if record['item_url'] == url and record['kind'] == 'graphql_force_push'
+                            and record['source']['beforeCommit'] is not None
+                            and record['source']['afterCommit'] is not None}
+                missing = state['missing_heads'] - readable
+                if not missing:
+                    info['fallback'] = 'retained_native_graphql_heads'
+                    continue
                 self._rest_head_history(github, state['item'])
+                recovered = self._html_head_history(github, state['item'], missing)
+                if recovered:
+                    info['fallback'] = 'public_native_timeline'
+                else:
+                    self.problem('head_history:' + url,
+                                 'historical head hashes remain unresolved after native REST and public timeline reads')
 
     def _rest_head_history(self, github, item):
         """Recover native after hashes when GraphQL cannot resolve deleted objects."""
@@ -587,9 +613,35 @@ class Github:
             elif event.get('event') == 'reviewed':
                 self._retain_review(github, item, event, key)
 
+    def _html_head_history(self, github, item, missing):
+        rest = [record['source'] for record in github.get('head_events', [])
+                if record['item_url'] == item['url'] and record['kind'] == 'rest_force_push']
+        mapping = {event['node_id']: event['id'] for event in rest}
+        targets = {mapping[identity] for identity in missing if identity in mapping}
+        if item['url'] not in self._html_head_history_read and targets:
+            self._html_head_history_read.add(item['url'])
+            key = 'html_head_history:' + item['url']
+            try:
+                record = collect_timeline(item, rest, targets, read=self.timeline_read)
+                github.setdefault('timeline_html', []).append(record)
+                self.coverage[key] = {'status': 'ok' if record['status'] == 'ok' else 'partial',
+                                      'pages': len(record['pages']), 'count': len(record['events']),
+                                      'target_count': len(targets)}
+                for source in record['events']:
+                    self._retain_head_event(github, item, source, 'html_force_push', key)
+                if record['status'] != 'ok':
+                    self.problem(key, 'public native timeline recovery is unavailable or incomplete; retained readable pairs')
+            except ERRORS:
+                self.problem(key, 'public native timeline recovery failed; retained prior native evidence')
+        records = [record for record in github.get('timeline_html', []) if record['item_url'] == item['url']]
+        return (len(targets) == len(missing) and any(record['status'] == 'ok'
+                and targets <= {event['id'] for event in record['events']} for record in records))
+
     @staticmethod
     def _head_shas(record):
         source = record['source']
+        if record['kind'] == 'html_force_push':
+            return {source['before_sha'], source['after_sha']}
         candidates = ([source.get('commit_id')] if record['kind'] == 'rest_force_push' else
                       [(source.get(field) or {}).get('oid') for field in ('beforeCommit', 'afterCommit')])
         return {sha for sha in candidates if isinstance(sha, str) and HASH.fullmatch(sha)}
