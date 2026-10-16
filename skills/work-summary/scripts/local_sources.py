@@ -124,10 +124,28 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             if marked:
                 warn(f'Cannot inspect Git repository at {directory}; local coverage is incomplete.')
 
-    scan_roots = [Path(root).expanduser() for root in roots] if roots else [Path.home(), Path.cwd()]
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        home = None
+        warn('Home directory could not be resolved; home-wide discovery and home-based cache exclusions are unavailable.')
+    scan_roots = []
+    if roots:
+        for root in roots:
+            try:
+                scan_roots.append(Path(root).expanduser())
+            except (OSError, RuntimeError):
+                warn(f'Cannot expand requested scan root {root}; other roots remain usable.')
+    else:
+        if home is not None:
+            scan_roots.append(home)
+        try:
+            scan_roots.append(Path.cwd())
+        except (OSError, RuntimeError):
+            warn('Current directory could not be resolved; current-directory discovery is unavailable.')
     dependency_roots = []
-    for relative in ('go/pkg', 'go/.cache-go-build-container'):
-        candidate = Path.home() / relative
+    for relative in ('go/pkg', 'go/.cache-go-build-container') if home is not None else ():
+        candidate = home / relative
         try:
             dependency_roots.append(candidate.resolve())
         except (OSError, RuntimeError):
