@@ -6,6 +6,7 @@ from urllib.parse import quote, urlsplit
 from evidence import is_pr_url, require
 from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
 from jira_sources import BACKEND, _custom_pr_links
+from reference_scope import ReferenceScope
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -255,34 +256,62 @@ def classify_reference_failures(jira, github, gitlab=None):
         coverage['failure_classification'] = reference_failure_classification(jira, github, gitlab)
 
 
-def complete_references(jira, github, read_tickets, read_prs=None):
-    """Follow explicit captured references to exhaustion, attempting failures once."""
-    attempted_keys, attempted_urls = set(), {item['url'] for item in github_items(github, include_index=False)}
-    processed_urls, unread_urls = set(attempted_urls), set()
-    def targets():
-        # Old field values are discovery context, never current ticket pairings.
-        return set(jira.get('linked_prs', [])) | {
-            link['url'] for issue in jira.get('issues', [])
-            for link in issue.get('history_review_links', []) if link['provider'] == 'github'}
+def scoped_github_keys(jira, github, scope):
+    """Keep every captured observation, but expand only eligible work nodes."""
+    found = set()
+    site = jira.get('metadata', {}).get('site')
+    sources = [(item['url'], item['url'], item.get(field) or '')
+               for item in github_selected_observations(github)
+               for field in ('title', 'body', 'head_ref')]
+    sources.extend((comment.get('item_url') or comment.get('url', '').split('#')[0],
+                    comment.get('url') or comment.get('item_url', ''), comment['body'])
+                   for comment in github_reference_comments(github))
+    for source, evidence_url, text in sources:
+        for key in discovery_keys(text, site):
+            if scope.allow('review', source, 'ticket', key, evidence_url):
+                found.add(key)
+    return found
+
+
+def scoped_jira_reviews(jira, scope, provider):
+    found = set()
+    for issue in jira.get('issues', []):
+        links = (issue.get('pr_links', []) if provider == 'github' else native_review_links(issue))
+        links = list(links) + [link for link in issue.get('history_review_links', [])
+                              if link['provider'] == provider]
+        for link in links:
+            if scope.allow('ticket', issue['key'], 'review', link['url'],
+                           link.get('evidence_url') or issue['url']):
+                found.add(link['url'])
+    return found
+
+
+def complete_references(jira, github, read_tickets, read_prs=None, *, scope=None):
+    """Resolve work counterparts, retaining unrelated outbound links as deferred."""
+    scope = (scope if isinstance(scope, ReferenceScope)
+             else ReferenceScope(jira, github, state=scope))
+    scope.attempted_prs.update(item['url'] for item in github_items(github, include_index=False))
     while True:
-        keys = set(referenced_keys(github, jira.get('metadata', {}).get('site'))) - attempted_keys
-        urls = targets() - processed_urls
-        if not keys and not urls:
-            break
+        scope.refresh(jira, github)
+        before = scope.revision
+        keys = scoped_github_keys(jira, github, scope) - scope.attempted_keys
         if keys:
-            attempted_keys.update(keys)
+            scope.attempted_keys.update(keys)
             read_tickets(sorted(keys))
-        urls = targets() - processed_urls
-        processed_urls.update(urls)
+        scope.refresh(jira, github)
+        urls = scoped_jira_reviews(jira, scope, 'github') - scope.attempted_prs - scope.unread_prs
         if urls:
             if read_prs is None:
-                unread_urls.update(urls)
+                scope.unread_prs.update(urls)
             else:
-                attempted_urls.update(urls)
+                scope.attempted_prs.update(urls)
                 read_prs(sorted(urls))
+        if not keys and not urls and before == scope.revision:
+            break
     classify_reference_failures(jira, github)
-    return {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_urls),
-            'unread_pr_urls': sorted(unread_urls)}
+    return {'attempted_jira_keys': sorted(scope.attempted_keys),
+            'attempted_pr_urls': sorted(scope.attempted_prs),
+            'unread_pr_urls': sorted(scope.unread_prs), 'scope': scope.snapshot()}
 
 
 def associate_work(jira, github):

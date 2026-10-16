@@ -198,8 +198,15 @@ prove exact field-change history; unavailable changelogs, deleted comments and
 missing editor evidence remain explicit limits. Observations are not an atomic
 historical snapshot.
 
-Follow explicit native Jira/PR references to a fixed point, attempting failures
-once. PR references can reveal tickets absent from inventories. Do not confirm relations from
+Start reference discovery from independent account/role inventories, local work
+and user-selected evidence, including candidates whose event reads are incomplete.
+Resolve their direct ticket/review counterparts, attempting failures once.
+A fetched contextual review can resolve its ticket without making that ticket
+a new source of unrelated reviews. A reference alone does not create another
+work root; independently verified personal activity can promote context and
+revisit its deferred references. Preserve unexpanded targets and their origins
+separately from failed reads. Do not cap the number of independent work roots.
+PR references can reveal tickets absent from inventories. Do not confirm relations from
 partial version strings such as `release-4.20` or `release-4-20`.
 Lowercase path/branch tokens are discovery leads; an existing same-key ticket
 does not corroborate a relation. Confirm pairs through explicit native URLs,
@@ -231,15 +238,16 @@ These proofs can supply MR links; they cannot establish MR state or activity.
 Try native public item and history endpoints independently of authentication
 status endpoints. Collect readable GitLab MR details, notes and public role
 inventories; match native public email to a previously verified alias before
-crediting the numeric account. Follow current descriptions and all captured
-discussion bodies across Jira, GitHub and GitLab to a fixed point. Public Jira
+crediting the numeric account. Read current descriptions and captured discussion
+bodies across providers within that work/counterpart scope. Public Jira
 field history supplements authenticated details and comments without replacing
 their visibility or counts. Retain endpoint-specific failures and scopes.
 Follow explicit review URLs in retained Jira history too, keeping the native
 field, timestamp, and old/new side. Historical additions and removals are read
 targets and context, separate from current ticket/PR pairings; a removed link
 must not reappear as a core counterpart in the work list. Process newly discovered
-tickets' histories before declaring the cross-provider reference frontier closed.
+tickets' histories before declaring the eligible counterpart frontier closed;
+this does not claim that every transitive third-party reference was collected.
 
 ## Select and Rank Work
 

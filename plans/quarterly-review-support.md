@@ -219,8 +219,23 @@ The longer native run also exposed wasted ticket reads from truncated numeric
 identifiers, such as Go advisory IDs, and recursive expansion through unrelated
 third-party references. Numeric continuations now remain part of their original
 identifier rather than becoming Jira candidates; explicit Jira URLs and genuine
-lowercase ticket branches remain discoverable. Reference expansion needs to
-distinguish independent work roots, direct ticket/review counterparts, and
-terminal context. Dedupe alone does not bound a graph of distinct references.
-This finding starts a further qualification cycle; earlier clean reviews do not
-establish that the longer live capture or its expansion scope is fully qualified.
+lowercase ticket branches remain discoverable. Older attempted fragments retain
+their lexical failure provenance without re-enabling new lookups.
+
+Reference expansion now distinguishes independent work roots, direct
+ticket/review counterparts, and terminal context. Context reviews can resolve
+their ticket without recursively starting another unrelated review inventory.
+Native personal activity can promote context and revisit deferred references;
+aliases and retained snapshots do not consume a counterpart stage. Independent
+work roots have no new global size cap. The private scope ledger preserves
+deferred targets separately from attempted reads and failures.
+
+The completed native capture reconciled all 315 independently inventoried
+authored merges. Additional reads resolved all 26 local Jira leads absent from
+that capture without establishing a further major delivery. Native discussion
+inspection added a substantive review contribution and three directly supported
+core Jira links to the private briefing. The original capture remains immutable;
+final-code validation and offline replay are separate from its older collector
+version. Native visibility limits remain specific source boundaries, not proof
+that unavailable history is empty. This finding starts a further qualification
+cycle; earlier clean reviews do not establish the new expansion scope's result.

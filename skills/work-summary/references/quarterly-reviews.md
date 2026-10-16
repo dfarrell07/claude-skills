@@ -86,6 +86,12 @@ unresolved limits visible in the private evidence. A successful command does
 not establish a complete quarterly inventory. Do not mistake the current state
 of a PR or ticket for its state at the reporting cutoff.
 
+Keep independent work discovery broad while scoping reference enrichment to
+that work and its ticket/review counterparts. Fetched third-party context must
+not recursively become a new work inventory. Preserve deferred outbound links;
+new native personal activity can promote context and reopen its frontier.
+Partial actor reads do not disqualify initial account/role or user-selected leads.
+
 Use earlier reviews, weekly summaries, and 1:1 notes to find continuity and
 relevant work. They are leads, not a complete inventory or independent duplicate
 accomplishments. Inspect underlying native evidence where accessible. Deduplicate

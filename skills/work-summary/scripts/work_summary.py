@@ -253,7 +253,8 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         lambda keys: add_referenced_jira(jira, keys, start, end, warn),
         (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                   since=start, read=read_public), host, read_history=read_history)
+                                   since=start, read=read_public), host, read_history=read_history,
+        since=start, until=end)
     if github_user:
         if any(info["status"] == "partial" for info in ledger.coverage.values()):
             github_status = "partial"

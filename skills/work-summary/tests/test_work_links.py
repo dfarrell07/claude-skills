@@ -563,6 +563,9 @@ class WorkLinksTest(unittest.TestCase):
             for key in keys:
                 if key == 'TEST-2':
                     jira['linked_prs'].append('https://github.com/org/repo/pull/99')
+                    jira['issues'].append({'key': key, 'url': 'https://jira.example.test/browse/' + key,
+                        'roles': ['referenced_by_github'], 'pr_links': [{
+                            'url': 'https://github.com/org/repo/pull/99', 'proof': 'description'}]})
         def prs(urls):
             calls.extend(('pr', url) for url in urls)
             github.setdefault('context_prs', []).append({'url': urls[0], 'body': 'TEST-3 and TEST-2'})
@@ -586,6 +589,7 @@ class WorkLinksTest(unittest.TestCase):
         github['pr_index'] = [{'url': github['prs'][0]['url'], 'body': 'TEST-2'}]
         github['prs'] = []
         jira['linked_prs'] = [github['pr_index'][0]['url']]
+        jira['issues'][0]['pr_links'] = [{'url': jira['linked_prs'][0], 'proof': 'description'}]
         tickets, urls = [], []
         def read_prs(values):
             urls.extend(values)

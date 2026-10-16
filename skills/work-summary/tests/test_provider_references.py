@@ -65,6 +65,10 @@ class ProviderReferencesTest(unittest.TestCase):
         def tickets(keys):
             known = {item['key'] for item in jira['issues']}
             jira['issues'].extend(issue(key) for key in keys if key not in known)
+            # This newly discovered ticket has independently attributed work;
+            # its history may therefore start another direct-counterpart lookup.
+            jira.setdefault('activity', []).extend({'key': key, 'kind': 'comment_created',
+                'occurred_at': '2026-07-10T12:00:00Z'} for key in keys if key == 'TEST-2')
         def prs(urls):
             pr_reads.extend(urls)
             github.setdefault('context_prs', []).extend({'url': url, 'body': 'TEST-2'} for url in urls)
@@ -128,7 +132,7 @@ class ProviderReferencesTest(unittest.TestCase):
                                           'body': root + '4'}]}
         self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {root + '2', root + '3', root + '4'})
 
-    def test_native_descriptions_and_other_author_notes_close_cross_provider_frontier(self):
+    def test_context_pair_completion_does_not_crawl_arbitrary_cross_provider_frontier(self):
         root = 'https://gitlab.example.test/group/project/-/merge_requests/'
         jira = {'metadata': {'site': 'jira.example.test'}, 'linked_prs': [], 'issues': [{
             'key': 'TEST-1', 'url': 'https://jira.example.test/browse/TEST-1', 'sensitive': False,
@@ -152,10 +156,13 @@ class ProviderReferencesTest(unittest.TestCase):
                 'notes': ([{'id': 77, 'body': 'MISSING-9 ' + root + '3'}] if url.endswith('/2') else [])}
                 for url in urls], 'metadata': {'status': 'ok'}}
         captured, expansion = complete_provider_references(jira, github, [], tickets, prs, gitlab)
-        self.assertEqual(expansion['attempted_gitlab_urls'], [root + str(n) for n in (1, 2, 3)])
-        self.assertEqual(key_reads, ['TEST-2', 'TEST-3', 'MISSING-9'])
-        self.assertEqual(pr_reads, ['https://github.com/org/project/pull/42'])
-        self.assertEqual(len(native_reads), 4)  # Empty scope, then three expanding native URL sets.
+        self.assertEqual(expansion['attempted_gitlab_urls'], [root + '1'])
+        self.assertEqual(key_reads, ['TEST-2'])
+        self.assertEqual(pr_reads, [])
+        self.assertEqual(len(native_reads), 2)  # Empty scope, then the direct work counterpart.
+        deferred = expansion['scope']['deferred_targets']
+        self.assertTrue(any(row['target'] == root + '2' for row in deferred))
+        self.assertTrue(any(row['target'] == 'https://github.com/org/project/pull/42' for row in deferred))
         self.assertEqual(captured['items'][0]['jira_links'][0]['key'], 'TEST-2')
         data = {'jira': jira, 'gitlab': captured}
         validate_gitlab_links(data)

@@ -5,8 +5,9 @@ from urllib.parse import urlsplit
 
 from evidence import HOST, require
 from extended_evidence import github_reference_comments, jira_key_aliases
+from reference_scope import ReferenceScope
 from work_links import (URL, classify_reference_failures, complete_references, confirmed_keys, discovery_keys,
-                        github_selected_observations, native_review_links)
+                        github_selected_observations, native_review_links, scoped_jira_reviews)
 
 
 def gitlab_texts(gitlab):
@@ -64,55 +65,66 @@ def verified_aliases(metadata, jira=None):
 
 
 def complete_provider_references(jira, github, branches, read_tickets, read_prs,
-                                 read_gitlab, github_host='github.com', read_history=None):
-    """Follow each observed target once; a failed user endpoint cannot veto item reads."""
-    attempted_keys, attempted_prs, unread_prs, attempted_gitlab = set(), set(), set(), set()
+                                 read_gitlab, github_host='github.com', read_history=None,
+                                 *, scope=None, since=None, until=None):
+    """Resolve direct work counterparts without crawling arbitrary linked projects."""
+    scope = (ReferenceScope(jira, github, branches, state=scope, since=since, until=until,
+                            github_host=github_host)
+             if not isinstance(scope, ReferenceScope) else scope)
     gitlab = read_gitlab([])
     site = jira.get('metadata', {}).get('site')
-    def tickets_once(keys):
-        fresh = set(keys) - attempted_keys
-        attempted_keys.update(fresh)
-        if fresh:
-            read_tickets(sorted(fresh))
-    def prs_once(urls):
-        fresh = set(urls) - attempted_prs
-        attempted_prs.update(fresh)
-        if fresh:
-            read_prs(sorted(fresh))
     while True:
+        before = (scope.revision, len(scope.attempted_keys), len(scope.attempted_prs),
+                  len(scope.attempted_gitlab), len(jira.get('issues', [])))
         if read_history is not None:
             read_history()
-        expansion = complete_references(jira, github, tickets_once, prs_once if read_prs is not None else None)
-        attempted_keys.update(expansion['attempted_jira_keys'])
-        attempted_prs.update(expansion['attempted_pr_urls'])
-        unread_prs.update(expansion['unread_pr_urls'])
-        if read_history is not None and any('public_history' not in issue for issue in jira.get('issues', [])):
-            continue
-        targets = gitlab_seed_urls(jira, github, branches)
+        scope.refresh(jira, github, gitlab)
+        complete_references(jira, github, read_tickets, read_prs, scope=scope)
+        targets = scoped_jira_reviews(jira, scope, 'gitlab')
+        for branch in branches:
+            targets.update(item['url'] for item in branch.get('merge_requests', []))
+        texts = [(item['url'], item['url'], item.get(field) or '')
+                 for item in github_selected_observations(github) for field in ('title', 'body')]
+        texts.extend((comment.get('item_url') or comment.get('url', '').split('#')[0],
+                      comment.get('url') or comment.get('item_url', ''), comment['body'])
+                     for comment in github_reference_comments(github))
+        for source, evidence_url, text in texts:
+            for provider, url in code_urls(text):
+                if provider == 'gitlab' and scope.allow('review', source, 'review', url, evidence_url):
+                    targets.add(url)
         keys, prs = set(), set()
-        for _, _, _, text, _ in gitlab_texts(gitlab):
-            keys.update(discovery_keys(text, site))
+        for item, _, evidence_url, text, _ in gitlab_texts(gitlab):
+            for key in discovery_keys(text, site):
+                if scope.allow('review', item['url'], 'ticket', key, evidence_url):
+                    keys.add(key)
             for provider, url in code_urls(text, github_host):
-                (targets if provider == 'gitlab' else prs).add(url)
-        keys -= attempted_keys
-        prs -= attempted_prs | unread_prs
-        new_targets = targets - attempted_gitlab
-        if not keys and not prs and not new_targets:
-            break
+                if scope.allow('review', item['url'], 'review', url, evidence_url):
+                    (targets if provider == 'gitlab' else prs).add(url)
+        keys -= scope.attempted_keys
+        prs -= scope.attempted_prs | scope.unread_prs
+        new_targets = targets - scope.attempted_gitlab
         if keys:
-            tickets_once(keys)
+            scope.attempted_keys.update(keys)
+            read_tickets(sorted(keys))
         if prs:
             if read_prs is None:
-                unread_prs.update(prs)
+                scope.unread_prs.update(prs)
             else:
-                prs_once(prs)
+                scope.attempted_prs.update(prs)
+                read_prs(sorted(prs))
         if new_targets:
-            attempted_gitlab.update(targets)
-            gitlab = read_gitlab(sorted(attempted_gitlab))
+            scope.attempted_gitlab.update(new_targets)
+            gitlab = read_gitlab(sorted(scope.attempted_gitlab))
+        after = (scope.revision, len(scope.attempted_keys), len(scope.attempted_prs),
+                 len(scope.attempted_gitlab), len(jira.get('issues', [])))
+        if before == after:
+            break
     associate_gitlab(jira, gitlab)
     classify_reference_failures(jira, github, gitlab)
-    return gitlab, {'attempted_jira_keys': sorted(attempted_keys), 'attempted_pr_urls': sorted(attempted_prs),
-                    'unread_pr_urls': sorted(unread_prs), 'attempted_gitlab_urls': sorted(attempted_gitlab)}
+    return gitlab, {'attempted_jira_keys': sorted(scope.attempted_keys),
+                    'attempted_pr_urls': sorted(scope.attempted_prs),
+                    'unread_pr_urls': sorted(scope.unread_prs),
+                    'attempted_gitlab_urls': sorted(scope.attempted_gitlab), 'scope': scope.snapshot()}
 
 
 def associate_gitlab(jira, gitlab):
