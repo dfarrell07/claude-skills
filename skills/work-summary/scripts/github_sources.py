@@ -82,6 +82,7 @@ class Github:
         self._linked_attempts = set()
         self._activity_items = set()
         self._activity_seen = set()
+        self._comment_seen = set()
         self._repository_metadata = {}
         self._repository_aliases = {}
 
@@ -291,6 +292,71 @@ class Github:
         self._repository_aliases[key] = proof
         return proof
 
+    def _comment_edit(self, event, category, key):
+        """Resolve native last-edit evidence without treating updatedAt as an edit."""
+        try:
+            node_id = event.get('node_id')
+            require(isinstance(node_id, str) and node_id, 'Missing native comment node ID')
+            node_type = 'IssueComment' if category == 'issue_comment' else 'PullRequestReviewComment'
+            query = 'query($id:ID!){node(id:$id){...on ' + node_type + '''{
+              id databaseId url author{login ...on Node{id}} editor{login} createdAt updatedAt lastEditedAt
+            }}}'''
+            result = self.graphql('graphql', '-f', 'query=' + query, '-f', 'id=' + node_id)
+            require(isinstance(result, dict) and not result.get('errors'), 'Comment edit query failed')
+            node = result['data']['node']
+            require(isinstance(node, dict) and node.get('id') == node_id
+                    and integer(node.get('databaseId'), 1) and node['databaseId'] == event.get('id')
+                    and node.get('url') == event.get('html_url')
+                    and isinstance(node.get('author'), dict)
+                    and isinstance(node['author'].get('login'), str) and node['author']['login']
+                    and (node['author']['id'] == event['user']['node_id']
+                         if node['author'].get('id') and (event.get('user') or {}).get('node_id')
+                         else node['author']['login'].casefold() == (event.get('user') or {}).get('login', '').casefold())
+                    and timestamp(node['createdAt']) == timestamp(event['created_at'])
+                    and timestamp(node['updatedAt']) == timestamp(event['updated_at']),
+                    'Comment edit identity or observation changed')
+            require('lastEditedAt' in node and 'editor' in node, 'Missing native edit observation')
+            edited, editor = node['lastEditedAt'], node['editor']
+            if edited is None:
+                require(editor is None, 'Comment edit metadata disagrees')
+                return None
+            when = timestamp(edited)
+            require(timestamp(node['createdAt']) <= when <= timestamp(node['updatedAt']), 'Invalid last edit time')
+            if not self.start <= when <= self.end:
+                return None
+            require(isinstance(editor, dict) and isinstance(editor.get('login'), str)
+                    and editor['login'], 'Comment edit has no native editor')
+            return node if editor['login'].casefold() == self.login.casefold() else None
+        except ERRORS:
+            self.problem(key, 'comment edit has no verified native editor/time; edit not credited')
+            return None
+
+    def _retain_comment(self, github, item, event, category, key):
+        """Retain native discussion references independently of actor attribution."""
+        try:
+            require(integer(event.get('id'), 1), 'Missing comment identity')
+            url, body = event.get('html_url'), event.get('body')
+            fragment = 'issuecomment-' if category == 'issue_comment' else 'discussion_r'
+            require(isinstance(url, str) and url == item['url'] + '#' + fragment + str(event['id']),
+                    'Comment URL does not identify this item')
+            require(body is None or isinstance(body, str), 'Invalid comment body')
+            created, updated = event['created_at'], event['updated_at']
+            require(timestamp(created) <= timestamp(updated), 'Invalid comment dates')
+            author = (event.get('user') or {}).get('login')
+            node_id = event.get('node_id')
+            require(author is None or isinstance(author, str) and author, 'Invalid comment author')
+            require(node_id is None or isinstance(node_id, str) and node_id, 'Invalid comment node ID')
+            identity = item['url'], category, event['id']
+            if identity in self._comment_seen:
+                return
+            self._comment_seen.add(identity)
+            github.setdefault('reference_comments', []).append({
+                'item_url': item['url'], 'repo': item['repo'], 'number': item['number'], 'kind': category,
+                'id': event['id'], 'node_id': node_id, 'url': url, 'body': '' if body is None else body,
+                'author_login': author, 'created_at': created, 'updated_at': updated})
+        except ERRORS:
+            self.problem(key, 'invalid native comment reference skipped; discussion coverage is incomplete')
+
     def _inspect_activity(self, github, items):
         seen = self._activity_seen
         for item in items:
@@ -314,26 +380,31 @@ class Github:
             for category, endpoint in endpoints:
                 key = f"activity:{item['repo']}#{item['number']}:{category}"
                 for event in self.listing(endpoint, key):
+                    if category in {'issue_comment', 'review_comment'}:
+                        self._retain_comment(github, item, event, category, key)
                     try:
                         actor = (event.get('actor') or event.get('user') or {}).get('login', '')
-                        if actor.casefold() != self.login.casefold():
+                        is_author = actor.casefold() == self.login.casefold()
+                        if not is_author and category not in {'issue_comment', 'review_comment'}:
                             continue
                         if category == 'timeline' and event.get('event') in {'commented', 'reviewed', 'committed'}:
                             continue
                         verb = event.get('event', category)
-                        dates = [('submitted_at' if category == 'review' else 'created_at', verb)]
+                        dates = [('submitted_at' if category == 'review' else 'created_at', verb, actor, None)] if is_author else []
                         if category in {'issue_comment', 'review_comment'} and event.get('updated_at') != event.get('created_at'):
                             edited = event.get('updated_at')
                             if edited and self.start <= timestamp(edited) <= self.end:
                                 editor = (event.get('editor') or {}).get('login', '')
                                 if editor.casefold() == self.login.casefold():
-                                    dates.append(('updated_at', category + '_edited'))
+                                    dates.append(('updated_at', category + '_edited', editor, None))
                                 elif not editor:
-                                    self.problem(key, 'comment edit has no verified matching editor; edit not credited')
-                        for field, action in dates:
+                                    proof = self._comment_edit(event, category, key)
+                                    if proof is not None:
+                                        dates.append(('updated_at', category + '_edited', proof['editor']['login'], proof))
+                        for field, action, event_actor, editor_evidence in dates:
                             if event.get(field) is None:
                                 continue
-                            when = timestamp(event[field])
+                            when = timestamp(editor_evidence['lastEditedAt'] if editor_evidence else event[field])
                             if not self.start <= when <= self.end:
                                 continue
                             url = event.get('html_url') or item['url']
@@ -355,9 +426,10 @@ class Github:
                                 continue
                             seen.add(identity)
                             github['activity'].append({'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
-                                                       'actor': actor, 'action': action, 'at': iso(when), 'url': url,
+                                                       'actor': event_actor, 'action': action, 'at': iso(when), 'url': url,
                                                        'id': event.get('id'), 'body': event.get('body') or '',
                                                        **({'source': source} if source is not None else {}),
+                                                       **({'editor_evidence': editor_evidence} if editor_evidence else {}),
                                                        **({'review_state': event.get('state')} if category == 'review' else {})})
                     except (ValueError, TypeError, KeyError, AttributeError):
                         self.problem(key, 'an invalid actor event was skipped')
@@ -445,12 +517,12 @@ class Github:
                     aliases[alias] = (key, method)
                     after = ',after:' + json.dumps(state['cursor']) if state['cursor'] else ''
                     if method == 'search':
-                        fields.append(alias + ':search(query:' + json.dumps('repo:' + repo + ' is:pr ' + sha)
+                        fields.append(alias + ':search(query:' + json.dumps('repo:' + states[key].get('search_repo', repo) + ' is:pr ' + sha)
                                       + ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor}'
                                       ' nodes{...on PullRequest{' + PR_FIELDS + '}}}')
                     else:
                         fields.append(alias + ':repository(owner:' + json.dumps(owner) + ',name:' + json.dumps(name)
-                                      + '){object(expression:' + json.dumps(sha) + '){...on Commit{'
+                                      + '){id nameWithOwner object(expression:' + json.dumps(sha) + '){...on Commit{'
                                       'associatedPullRequests(first:100' + after + '){pageInfo{hasNextPage endCursor}'
                                       ' nodes{' + PR_FIELDS + '}}}}}')
             if not fields:
@@ -476,8 +548,40 @@ class Github:
                         self.problem(coverage_key, method + ' returned GraphQL errors; retaining readable results')
                     connection = result['data'][alias]
                     if method == 'commit':
+                        if (not affected and isinstance(connection, dict)
+                                and isinstance(connection.get('id'), str) and connection['id']
+                                and isinstance(connection.get('nameWithOwner'), str)
+                                and REPO.fullmatch(connection['nameWithOwner'])
+                                and connection['nameWithOwner'].casefold() != key[0].casefold()):
+                            canonical = connection['nameWithOwner']
+                            self._verify_repository_alias(key[0], canonical)
+                            if states[key].get('search_repo') != canonical:
+                                # Search does not follow repository redirects. A
+                                # valid zero for the historical name proves nothing
+                                # about the canonical repository's PRs.
+                                states[key]['search_repo'] = canonical
+                                info['search_repo'] = canonical
+                                states[key]['search'] = {'cursor': None, 'cursors': set(), 'seen': set(),
+                                                         'total': None, 'pages': 0, 'done': False}
+                        if (not affected and isinstance(connection, dict)
+                                and isinstance(connection.get('id'), str) and connection['id']
+                                and isinstance(connection.get('nameWithOwner'), str)
+                                and REPO.fullmatch(connection['nameWithOwner'])
+                                and 'object' in connection and connection['object'] is None):
+                            # An accessible native repository explicitly has no object
+                            # for this SHA. This is a completed negative lookup, not
+                            # a transport/access failure or proof of unpublished work.
+                            if connection['nameWithOwner'].casefold() != key[0].casefold():
+                                self._verify_repository_alias(key[0], connection['nameWithOwner'])
+                            info['commit_object'] = 'absent'
+                            info['repository_node_id'] = connection['id']
+                            info['pages'] += 1
+                            state['pages'] += 1
+                            state['done'] = True
+                            continue
                         require(isinstance(connection, dict) and isinstance(connection.get('object'), dict),
                                 'Commit object inaccessible')
+                        info['commit_object'] = 'present'
                         connection = connection['object']['associatedPullRequests']
                     require(isinstance(connection, dict) and isinstance(connection.get('nodes'), list)
                             and len(connection['nodes']) <= PAGE_SIZE, 'Malformed snapshot connection')
@@ -525,6 +629,7 @@ class Github:
         return states
 
     def associate_branches(self, branches, repositories, github):
+        """Match current native snapshots; no_match does not exclude historical PR use."""
         indices, pending = {}, {}
         by_path = {entry['path']: entry for entry in repositories}
         all_indexed = {}
@@ -579,6 +684,31 @@ class Github:
                         branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
                                               'state': item['state'], 'proof': proof})
                     branch['association_methods'].extend(['any_author_sha_search:' + repo, 'commit_association:' + repo])
+        # Redirects discovered while resolving snapshots also repair the all-state
+        # authored index: GitHub search silently returns zero for historical names.
+        for proof in list(self._repository_aliases.values()):
+            if proof is None or proof['requested_repo'] not in indices:
+                continue
+            requested, canonical = proof['requested_repo'], proof['canonical_repo']
+            if canonical not in indices:
+                indices[canonical] = self.authored_index(canonical)
+                for item in indices[canonical]:
+                    all_indexed.setdefault(item['url'], item)
+            for branch in branches:
+                if not any(method == 'authored_pr_index:' + requested
+                           for method in branch.get('association_methods', [])):
+                    continue
+                branch['association_methods'].append('authored_pr_index:' + canonical)
+                names = {ref.removeprefix('refs/heads/') for ref in branch['refs'] if ref.startswith('refs/heads/')}
+                names.update(ref[len('refs/remotes/'):].split('/', 1)[1] for ref in branch['refs']
+                             if ref.startswith('refs/remotes/') and '/' in ref[len('refs/remotes/'):])
+                for item in indices[canonical]:
+                    if branch['hash'] in (item['head_sha'], item['merge_sha']):
+                        branch['prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
+                                              'state': item['state'], 'proof': 'exact_head_or_merge_sha'})
+                    elif item['head_ref'] in names:
+                        branch['related_prs'].append({'repo': item['repo'], 'number': item['number'], 'url': item['url'],
+                                                      'state': item['state'], 'proof': 'head_name_only'})
         for branch in branches:
             if 'association_lookups' in branch:
                 if branch['prs']:
@@ -590,3 +720,6 @@ class Github:
                 branch['prs'] = list({item['url']: item for item in branch['prs']}.values())
                 branch['related_prs'] = list({item['url']: item for item in branch['related_prs']}.values())
         github['pr_index'] = list(all_indexed.values())
+        for proof in self._repository_aliases.values():
+            if proof is not None and proof not in github.setdefault('repository_aliases', []):
+                github['repository_aliases'].append(proof)

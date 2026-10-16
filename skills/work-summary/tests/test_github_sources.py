@@ -269,6 +269,7 @@ class GithubSourcesTest(unittest.TestCase):
                         return {'total_count': 0, 'incomplete_results': False, 'items': []}
                     if args[2].endswith('/issues/1/comments'):
                         return [{'id': 1, 'user': {'login': 'me'}, 'editor': editor,
+                                 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-1',
                                  'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:00Z'}]
                     return []
                 client = self.client(api)
@@ -280,6 +281,246 @@ class GithubSourcesTest(unittest.TestCase):
                     self.assertTrue(any('editor' in x for x in client.warnings))
                 elif not expected:
                     self.assertEqual(client.warnings, [])
+
+    def test_native_graphql_comment_editor_uses_last_edit_time_and_accepts_foreign_author(self):
+        for category in ('issue_comment', 'review_comment'):
+            for author in ('me', 'other'):
+                with self.subTest(category=category, author=author):
+                    event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': author}, 'body': 'Native body',
+                             'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-12T00:00:01Z',
+                             'html_url': 'https://github.com/org/repo/pull/1#' + ('issuecomment-' if category == 'issue_comment' else 'discussion_r') + '51'}
+                    native = {'id': event['node_id'], 'databaseId': 51, 'url': event['html_url'],
+                              'author': {'login': author}, 'editor': {'login': 'Me'},
+                              'createdAt': event['created_at'], 'updatedAt': event['updated_at'],
+                              'lastEditedAt': '2026-10-12T00:00:00Z'}
+                    endpoint = 'repos/org/repo/' + ('issues' if category == 'issue_comment' else 'pulls') + '/1/comments'
+                    def api(args):
+                        if args[0] == 'graphql':
+                            self.assertIn('id=native-comment', args)
+                            self.assertIn('IssueComment' if category == 'issue_comment' else 'PullRequestReviewComment', query_text(args))
+                            return {'data': {'node': copy.deepcopy(native)}}
+                        return [copy.deepcopy(event)] if args[2] == endpoint else []
+                    client = self.client(api)
+                    data = {'activity': []}
+                    client._inspect_activity(data, [{'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}])
+                    self.assertEqual(len(data['activity']), 1)
+                    self.assertEqual(data['activity'][0]['action'], category + '_edited')
+                    self.assertEqual(data['activity'][0]['actor'], 'Me')
+                    self.assertEqual(data['activity'][0]['at'], native['lastEditedAt'])
+                    self.assertEqual(data['activity'][0]['editor_evidence'], native)
+                    self.assertEqual(client.warnings, [])
+
+    def test_native_unedited_comment_does_not_confuse_updated_time_with_edit(self):
+        event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': 'me'},
+                 'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:01Z',
+                 'html_url': 'https://github.com/org/repo/pull/1#discussion_r51'}
+        native = {'id': event['node_id'], 'databaseId': 51, 'url': event['html_url'],
+                  'author': {'login': 'me'}, 'editor': None, 'createdAt': event['created_at'],
+                  'updatedAt': event['updated_at'], 'lastEditedAt': None}
+        def api(args):
+            if args[0] == 'graphql':
+                return {'data': {'node': native}}
+            return [event] if args[2] == 'repos/org/repo/pulls/1/comments' else []
+        client = self.client(api)
+        data = {'activity': []}
+        client._inspect_activity(data, [{'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}])
+        self.assertEqual([x['action'] for x in data['activity']], ['review_comment'])
+        self.assertEqual(client.warnings, [])
+
+    def test_editor_recovery_failure_or_identity_drift_retains_creation_and_marks_gap(self):
+        event = {'id': 51, 'node_id': 'native-comment', 'user': {'login': 'me'},
+                 'created_at': '2026-10-12T00:00:00Z', 'updated_at': '2026-10-12T00:00:02Z',
+                 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-51'}
+        native = {'id': event['node_id'], 'databaseId': 51, 'url': event['html_url'],
+                  'author': {'login': 'me'}, 'editor': {'login': 'me'}, 'createdAt': event['created_at'],
+                  'updatedAt': event['updated_at'], 'lastEditedAt': '2026-10-12T00:00:01Z'}
+        for field, value in [('id', 'other'), ('databaseId', 52), ('url', event['html_url'] + 'x'),
+                             ('author', {'login': 'other'}), ('createdAt', '2026-10-11T00:00:00Z'),
+                             ('updatedAt', '2026-10-12T00:00:03Z'), ('editor', None),
+                             ('lastEditedAt', '2026-10-12T00:00:03Z'), ('errors', True), ('transport', True)]:
+            with self.subTest(field=field):
+                node = copy.deepcopy(native)
+                node[field] = value
+                def api(args):
+                    if args[0] == 'graphql':
+                        if field == 'transport':
+                            raise OSError('offline')
+                        return {'data': {'node': node}, **({'errors': [{'message': 'denied'}]} if field == 'errors' else {})}
+                    return [event] if args[2] == 'repos/org/repo/issues/1/comments' else []
+                client = self.client(api)
+                data = {'activity': []}
+                client._inspect_activity(data, [{'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}])
+                self.assertEqual([x['action'] for x in data['activity']], ['issue_comment'])
+                self.assertEqual(client.coverage['activity:org/repo#1:issue_comment']['status'], 'partial')
+
+    def test_verified_absent_remote_commit_is_completed_narrow_negative(self):
+        def api(args):
+            return snapshot_data(args, lambda i, repo, data: data.update({
+                'c' + i: {'id': 'native-repository', 'nameWithOwner': repo.upper(), 'object': None}}))
+        client, branches, _ = self.associate(api)
+        lookup = branches[0]['association_lookups'][0]
+        self.assertEqual(branches[0]['pr_status'], 'no_match')
+        self.assertEqual(lookup['status'], 'ok')
+        self.assertEqual(lookup['commit_object'], 'absent')
+        self.assertEqual(lookup['repository_node_id'], 'native-repository')
+        self.assertEqual(lookup['pages'], 2)
+        self.assertEqual(client.warnings, [])
+
+    def test_absent_object_needs_successful_bound_repository_and_complete_search(self):
+        for failure in ('wrong_repo', 'missing_object', 'missing_id', 'numeric_id', 'repo_null', 'alias_error', 'search_error'):
+            with self.subTest(failure=failure):
+                def api(args):
+                    if args[0] != 'graphql':
+                        raise OSError('Repository identity unavailable')
+                    result = snapshot_data(args)
+                    repo = {'id': 'native-repository', 'nameWithOwner': 'org/repo', 'object': None}
+                    result['data']['c0'] = repo
+                    if failure == 'wrong_repo':
+                        repo['nameWithOwner'] = 'wrong/repo'
+                    elif failure == 'missing_object':
+                        del repo['object']
+                    elif failure == 'missing_id':
+                        del repo['id']
+                    elif failure == 'numeric_id':
+                        repo['id'] = 12
+                    elif failure == 'repo_null':
+                        result['data']['c0'] = None
+                    else:
+                        alias = 'c0' if failure == 'alias_error' else 's0'
+                        result['errors'] = [{'path': [alias], 'message': 'denied'}]
+                    return result
+                client, branches, _ = self.associate(api)
+                self.assertEqual(branches[0]['pr_status'], 'partial')
+                self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
+
+    def test_positive_search_survives_confirmed_absent_object(self):
+        def api(args):
+            result = snapshot_data(args)
+            result['data']['s0'] = connection([gql(state='CLOSED')])
+            result['data']['c0'] = {'id': 'native-repository', 'nameWithOwner': 'org/repo', 'object': None}
+            return result
+        client, branches, _ = self.associate(api)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'any_author_sha_search')
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'ok')
+        self.assertEqual(branches[0]['association_lookups'][0]['commit_object'], 'absent')
+
+    def test_all_native_comment_references_survive_without_becoming_user_activity(self):
+        item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}
+        comments = [{'id': 30, 'node_id': 'native-comment', 'html_url': item['url'] + '#issuecomment-30',
+                     'body': 'Native TEST-88 https://jira.example.test/browse/TEST-88',
+                     'user': {'login': 'other'}, 'created_at': '2020-01-01T00:00:00Z',
+                     'updated_at': '2020-01-01T00:00:00Z'}]
+        def api(args):
+            if args[2] == 'repos/org/repo/issues/1/comments':
+                return comments + copy.deepcopy(comments)
+            if args[2] == 'repos/org/repo/pulls/1/comments':
+                return [{**comments[0], 'id': 31, 'body': 'Another native TEST-99 reference',
+                         'html_url': item['url'] + '#discussion_r31', 'user': None, 'node_id': None}]
+            return []
+        client = self.client(api)
+        data = {'activity': []}
+        client._inspect_activity(data, [item])
+        self.assertEqual(data['activity'], [])
+        self.assertEqual(len(data['reference_comments']), 2)
+        first, second = data['reference_comments']
+        self.assertEqual(first['body'], comments[0]['body'])
+        self.assertEqual(first['author_login'], 'other')
+        self.assertEqual(first['item_url'], item['url'])
+        self.assertEqual(first['kind'], 'issue_comment')
+        self.assertEqual(second['kind'], 'review_comment')
+        self.assertIsNone(second['author_login'])
+        self.assertEqual(client.warnings, [])
+
+    def test_invalid_comment_reference_does_not_erase_valid_sibling(self):
+        item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1'}
+        comment = {'id': 30, 'html_url': item['url'] + '#issuecomment-30', 'body': 'Native TEST-88',
+                   'user': {'login': 'other'}, 'created_at': '2020-01-01T00:00:00Z', 'updated_at': '2020-01-01T00:00:00Z'}
+        for change in ({'id': None}, {'body': {}}, {'html_url': item['url'] + '2#issuecomment-30'},
+                       {'created_at': 'invalid'}, {'updated_at': '2019-01-01T00:00:00Z'}):
+            with self.subTest(change=change):
+                def api(args):
+                    return [{**comment, **change}, comment] if args[2] == 'repos/org/repo/issues/1/comments' else []
+                client = self.client(api)
+                data = {'activity': []}
+                client._inspect_activity(data, [item])
+                self.assertEqual(len(data['reference_comments']), 1)
+                self.assertEqual(client.coverage['activity:org/repo#1:issue_comment']['status'], 'partial')
+
+    def test_bot_comment_editor_identity_uses_native_author_node_not_login_spelling(self):
+        event = {'id': 30, 'node_id': 'comment-id', 'html_url': 'https://github.com/org/repo/pull/1#issuecomment-30',
+                 'user': {'login': 'helper[bot]', 'node_id': 'bot-id'},
+                 'created_at': '2026-10-10T00:00:00Z', 'updated_at': '2026-10-12T00:00:01Z'}
+        node = {'id': 'comment-id', 'databaseId': 30, 'url': event['html_url'],
+                'author': {'login': 'helper', 'id': 'bot-id'}, 'editor': {'login': 'me'},
+                'createdAt': event['created_at'], 'updatedAt': event['updated_at'], 'lastEditedAt': '2026-10-12T00:00:00Z'}
+        client = self.client(lambda args: {'data': {'node': copy.deepcopy(node)}})
+        self.assertEqual(client._comment_edit(event, 'issue_comment', 'edits'), node)
+        self.assertEqual(client.warnings, [])
+        node['author'] = {'login': 'helper[bot]', 'id': 'different-native-id'}
+        self.assertIsNone(client._comment_edit(event, 'issue_comment', 'edits'))
+        self.assertEqual(client.coverage['edits']['status'], 'partial')
+
+    def test_renamed_repository_absence_requires_native_equal_id_proof_and_caches_reads(self):
+        reads = []
+        def api(args):
+            if args[0] != 'graphql':
+                reads.append(args[2])
+                return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
+            return snapshot_data(args, lambda i, repo, data: data.update({
+                'c' + i: {'id': 'native-repository', 'nameWithOwner': 'canonical/repo', 'object': None}}))
+        client, branches, data = self.associate(api, branches=[branch(sha='a' * 40), branch(sha='b' * 40)])
+        self.assertEqual([x['pr_status'] for x in branches], ['no_match', 'no_match'])
+        self.assertEqual(reads, ['repos/org/repo', 'repos/canonical/repo'])
+        self.assertEqual(len(data['repository_aliases']), 1)
+        self.assertEqual(data['repository_aliases'][0]['requested']['id'], 17)
+        self.assertEqual(data['repository_aliases'][0]['canonical']['id'], 17)
+        self.assertEqual(client.warnings, [])
+
+    def test_repository_redirect_repeats_sha_search_canonically_and_recovers_authored_index(self):
+        calls = []
+        target = gql(number=7, repo='canonical/repo', state='CLOSED')
+        indexed = gql(number=8, repo='canonical/repo', sha='b' * 40, head='backup/feature')
+        def api(args):
+            if args[0] != 'graphql':
+                return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
+            calls.append(query_text(args))
+            if 'q=is:pr repo:canonical/repo author:me sort:created-asc' in args:
+                return {'data': {'search': connection([indexed])}}
+            if any(arg.startswith('q=') for arg in args):
+                return {'data': {'search': connection()}}
+            def change(i, repo, data):
+                if repo == 'org/repo':
+                    data['c' + i] = {'id': 'native-repository', 'nameWithOwner': 'canonical/repo', 'object': None}
+                else:
+                    data.pop('c' + i)
+                    data['s' + i] = connection([target])
+            return snapshot_data(args, change)
+        client = self.client(api)
+        branches = [branch()]
+        data = {}
+        client.associate_branches(branches, [repository()], data)
+        self.assertEqual(branches[0]['pr_status'], 'matched')
+        self.assertEqual(branches[0]['prs'][0]['url'], target['url'])
+        self.assertEqual(branches[0]['prs'][0]['proof'], 'any_author_sha_search')
+        self.assertEqual(branches[0]['related_prs'][0]['url'], indexed['url'])
+        self.assertEqual(branches[0]['association_lookups'][0]['search_repo'], 'canonical/repo')
+        self.assertEqual({item['url'] for item in data['pr_index']}, {target['url'], indexed['url']})
+        self.assertTrue(any('repo:canonical/repo is:pr ' in query for query in calls))
+        self.assertEqual(client.warnings, [])
+
+    def test_canonical_sha_search_failure_does_not_become_negative_after_alias(self):
+        def api(args):
+            if args[0] != 'graphql':
+                return {'id': 17, 'full_name': 'canonical/repo', 'html_url': 'https://github.com/canonical/repo'}
+            if 'repo:canonical/repo is:pr ' in query_text(args):
+                raise OSError('Canonical search unavailable')
+            return snapshot_data(args, lambda i, repo, data: data.update({
+                'c' + i: {'id': 'native-repository', 'nameWithOwner': 'canonical/repo', 'object': None}}))
+        client, branches, _ = self.associate(api)
+        self.assertEqual(branches[0]['pr_status'], 'partial')
+        self.assertEqual(branches[0]['association_lookups'][0]['commit_object'], 'absent')
+        self.assertEqual(branches[0]['association_lookups'][0]['status'], 'partial')
 
     def test_native_cross_reference_without_event_id_preserves_source_and_distinct_events(self):
         first = {'actor': {'login': 'Me'}, 'event': 'cross-referenced',
