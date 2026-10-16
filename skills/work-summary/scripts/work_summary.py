@@ -30,7 +30,7 @@ from extended_evidence import github_reference_comments, validate_github, valida
 from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
 from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events, validate_public_history  # noqa: E402
-from provider_references import complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
+from provider_references import code_urls, complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
 from reporting_window import resolve_window, search_bounds, validate_window  # noqa: E402
 
 
@@ -263,14 +263,31 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                 warn(message)
         jira['metadata']['public_history'] = collect_public_history(
             jira, once, reuse=True, github_host=host)
-    gitlab, expansion = complete_provider_references(jira, github, local['branches'],
-        lambda keys: add_referenced_jira(jira, keys, start, end, warn),
-        (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
-        lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                   since=start, read=read_public,
-                                   trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira)),
-        host, read_history=read_history,
-        since=start, until=end)
+    try:
+        gitlab, expansion = complete_provider_references(jira, github, local['branches'],
+            lambda keys: add_referenced_jira(jira, keys, start, end, warn),
+            (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
+            lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
+                                       since=start, read=read_public,
+                                       trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
+            host, read_history=read_history,
+            since=start, until=end)
+    except (ValueError, KeyError, TypeError) as error:
+        # Reference expansion only adds counterparts and history. An internal
+        # inconsistency there must not discard minutes of collected primary evidence.
+        warn(f"Reference expansion stopped early ({error}); earlier evidence is kept and "
+             "public Jira history and GitLab MR details are omitted.")
+        for issue in jira.get('issues', []):
+            issue.pop('public_history', None)
+            issue.pop('history_review_links', None)
+        jira.get('metadata', {}).pop('public_history', None)
+        if jira.get('metadata', {}).get('status') == 'ok':
+            jira['metadata']['status'] = 'partial'
+            jira['metadata'].setdefault('warnings', []).append('Reference expansion stopped early.')
+        gitlab = collect_gitlab([], warn)
+        expansion = {'status': 'failed', 'error': str(error)}
+        if github_user:
+            github_status = 'partial'
     if github_user:
         if any(info["status"] == "partial" for info in ledger.coverage.values()):
             github_status = "partial"
@@ -289,9 +306,13 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     }
 
 
-def trusted_gitlab_hosts(local_metadata, jira):
-    """GitLab hosts the user already works with: configured remotes and Jira review fields."""
+def trusted_gitlab_hosts(local_metadata, jira, github=None, login=''):
+    """GitLab hosts the user already works with: remotes, Jira review fields, own PR text."""
     hosts = {'gitlab.com'}
+    for item in (github or {}).get('prs', []):
+        if login and (item.get('author_login') or '').casefold() == login.casefold():
+            hosts.update(urlsplit(url).hostname or '' for text in (item.get('title'), item.get('body'))
+                         for provider, url in code_urls(text or '') if provider == 'gitlab')
     hosts.update(remote['host'].casefold() for entry in local_metadata.get('repositories', [])
                  for remote in entry.get('remotes', []) if isinstance(remote.get('host'), str))
     for issue in jira.get('issues', []):
@@ -1206,9 +1227,9 @@ def main():
             analysis = read_json(args.analysis)
             if isinstance(analysis, dict) and set(analysis) == {"analysis"}:
                 analysis = analysis["analysis"]
-            data = read_json(args.capture)
-            data["analysis"] = analysis
-            output = render(data, read_json(args.capture), detailed=args.detailed) + "\n"
+            source = read_json(args.capture)
+            data = {**source, "analysis": analysis}
+            output = render(data, source, detailed=args.detailed) + "\n"
         else:
             output = render(read_json(args.capture), read_json(args.source) if args.source else None,
                             detailed=args.detailed) + "\n"

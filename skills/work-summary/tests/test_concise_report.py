@@ -854,6 +854,26 @@ class ConciseReportTest(unittest.TestCase):
         self.assertEqual(source['jira']['metadata']['status'],'ok')
         self.assertIn('GitHub unavailable',ws.render(source))
 
+    def test_reference_expansion_failure_keeps_primary_evidence_renderable(self):
+        jira={'metadata':{'status':'ok','site':'jira.example.test','warnings':[]},'issues':[],'activity':[],'linked_prs':[]}
+        with patch.dict(os.environ,{'GH_HOST':'invalid@host'}), \
+             patch.object(ws,'collect_local_safely',return_value=(empty_local(),'ok',{'status':'ok'})), \
+             patch.object(ws,'collect_jira',return_value=jira), \
+             patch.object(ws,'complete_provider_references',side_effect=ValueError('identity mismatch')):
+            source=ws.collect('7',[])
+        ws.validate(source)
+        self.assertTrue(any('Reference expansion stopped early' in w for w in source['metadata']['warnings']))
+        self.assertEqual(source['jira']['metadata']['status'],'partial')
+        self.assertEqual(source['metadata']['reference_expansion']['status'],'failed')
+
+    def test_trusted_gitlab_hosts_come_from_own_work_not_other_peoples_text(self):
+        local = {'repositories': [{'remotes': [{'host': 'gitlab.work.test'}]}]}
+        mr = 'https://gitlab.{}.test/group/project/-/merge_requests/1'
+        github = {'prs': [{'author_login': 'Me', 'title': '', 'body': 'Pairs with ' + mr.format('mine')},
+                          {'author_login': 'stranger', 'title': '', 'body': mr.format('elsewhere')}]}
+        hosts = ws.trusted_gitlab_hosts(local, {'issues': []}, github, 'me')
+        self.assertEqual(hosts, {'gitlab.com', 'gitlab.work.test', 'gitlab.mine.test'})
+
     def test_no_execution_capabilities_returns_honest_empty_note_and_named_sources(self):
         with patch.object(ws.shutil,'which',return_value=None), patch.dict(os.environ,{'GH_HOST':'github.com'}):
             source=ws.collect('7',[])
