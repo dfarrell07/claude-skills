@@ -181,6 +181,40 @@ class ExtendedGithubEvidenceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.validate(baseline, copy.deepcopy(evidence))
 
+    def test_editor_proof_cannot_contradict_retained_native_comment(self):
+        baseline, evidence = self.capture()
+        event = baseline['github']['activity'][0]
+        event.pop('source')
+        event.update(action='issue_comment_edited', id=42, body='Native body',
+                     url=event['item_url'] + '#issuecomment-42')
+        event['editor_evidence'] = {
+            'id': 'native-comment', 'databaseId': 42, 'url': event['url'],
+            'author': {'id': 'native-author', 'login': 'native-bot'}, 'editor': {'login': 'person'},
+            'createdAt': '2026-01-01T00:00:00Z', 'lastEditedAt': event['at'],
+            'updatedAt': '2026-01-10T12:00:01Z'}
+        baseline['github']['reference_comments'] = [{
+            'item_url': event['item_url'], 'repo': event['repo'], 'number': event['number'],
+            'id': 42, 'kind': 'issue_comment', 'node_id': 'native-comment', 'url': event['url'],
+            'author_login': 'native-bot[bot]', 'author_node_id': 'native-author', 'body': event['body'],
+            'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-10T12:00:01Z'}]
+        self.validate(baseline, copy.deepcopy(evidence))  # Native IDs bridge REST/GraphQL bot login forms.
+        for field, value in [('id', 'other-comment'), ('author', None),
+                             ('author', {'id': 'other-author', 'login': 'native-bot[bot]'}),
+                             ('createdAt', '2025-01-01T00:00:00Z'),
+                             ('updatedAt', '2026-01-10T12:00:02Z')]:
+            with self.subTest(field=field):
+                data = copy.deepcopy(baseline)
+                data['github']['activity'][0]['editor_evidence'][field] = value
+                with self.assertRaises(ValueError):
+                    self.validate(data, copy.deepcopy(evidence))
+        data = copy.deepcopy(baseline)
+        data['github']['activity'][0]['body'] = 'Contradictory native body'
+        with self.assertRaises(ValueError):
+            self.validate(data, copy.deepcopy(evidence))
+        event['editor_evidence']['author'] = None
+        baseline['github']['reference_comments'][0].update(author_login=None, author_node_id=None)
+        self.validate(baseline, copy.deepcopy(evidence))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -90,6 +90,28 @@ def validate_editor_evidence(event):
             'GitHub native edit time mismatch')
 
 
+def validate_editor_comment(event, comment):
+    """A saved edit proof and its retained discussion row are one native observation."""
+    proof = event['editor_evidence']
+    require(comment is not None and proof['id'] == comment.get('node_id')
+            and event['body'] == comment['body']
+            and timestamp(proof['createdAt']) == timestamp(comment['created_at'])
+            and timestamp(proof['updatedAt']) == timestamp(comment['updated_at']),
+            'GitHub editor proof disagrees with retained comment')
+    author = proof['author']
+    if author is None:
+        require(comment.get('author_login') is None and comment.get('author_node_id') is None,
+                'GitHub deleted author observation mismatch')
+    else:
+        native_id = comment.get('author_node_id')
+        if native_id and author.get('id'):
+            require(native_id == author['id'], 'GitHub native comment author ID mismatch')
+        else:
+            require(isinstance(comment.get('author_login'), str)
+                    and comment['author_login'].casefold() == author['login'].casefold(),
+                    'GitHub native comment author mismatch')
+
+
 def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
@@ -110,7 +132,7 @@ def validate_github(data, evidence, start, end):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid indexed PR snapshot')
         indexed[item['url']] = item
-    comments_seen = set()
+    comments_seen = {}
     comments = github.get('reference_comments', [])
     require(isinstance(comments, list), 'Invalid GitHub reference comments')
     for comment in comments:
@@ -128,11 +150,13 @@ def validate_github(data, evidence, start, end):
                      and bool(comment['author_login']))
                 and (comment.get('node_id') is None or isinstance(comment['node_id'], str)
                      and bool(comment['node_id'])), 'Invalid native GitHub comment fields')
+        require(comment.get('author_node_id') is None or isinstance(comment['author_node_id'], str)
+                and bool(comment['author_node_id']), 'Invalid native GitHub author node ID')
         require(timestamp(comment.get('created_at')) <= timestamp(comment.get('updated_at')),
                 'Reversed native GitHub comment timestamps')
         identity = comment['item_url'], comment['kind'], comment['id']
         require(identity not in comments_seen, 'Duplicate native GitHub comment')
-        comments_seen.add(identity)
+        comments_seen[identity] = comment
     for event in github.get('activity', []):
         require(isinstance(event, dict) and event.get('item_url') in evidence, 'Unknown GitHub activity item')
         item = evidence[event['item_url']]
@@ -149,6 +173,9 @@ def validate_github(data, evidence, start, end):
                 'Invalid activity fragment')
         validate_activity_identity(event, item, host)
         validate_editor_evidence(event)
+        if 'editor_evidence' in event and 'reference_comments' in github:
+            kind = event['action'].removesuffix('_edited')
+            validate_editor_comment(event, comments_seen.get((event['item_url'], kind, event['id'])))
     for key, info in metadata.get('github_discovery', {}).items():
         require(isinstance(key, str) and isinstance(info, dict) and info.get('status') in {'ok', 'partial'}
                 and integer(info.get('pages')) and integer(info.get('count')), 'Invalid GitHub discovery coverage')
