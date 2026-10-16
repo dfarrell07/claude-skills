@@ -46,7 +46,7 @@ def timestamp(value):
 
 
 def iso(value):
-    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def unique_object(pairs):
