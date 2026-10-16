@@ -3,7 +3,7 @@
 import re
 from urllib.parse import quote, urlsplit
 
-from evidence import HASH, HOST, REPO, integer, require, timestamp, valid_item
+from evidence import HASH, HOST, REPO, integer, is_pr_url, require, timestamp, valid_item
 
 
 def repository_aliases(github, host):
@@ -113,6 +113,38 @@ def validate_editor_comment(event, comment):
                     'GitHub native comment author mismatch')
 
 
+def historical_head_hashes(record, known):
+    """Native force-push history proves a former head, without proving weekly work."""
+    require(isinstance(record, dict), 'Invalid native head event')
+    item = known.get(record.get('item_url'))
+    require(item is not None and is_pr_url(item['url']) and record.get('repo') == item['repo']
+            and record.get('number') == item['number'], 'Native head event PR mismatch')
+    source = record.get('source')
+    require(isinstance(source, dict), 'Missing native head event source')
+    if record.get('kind') == 'graphql_force_push':
+        require(source.get('__typename') == 'HeadRefForcePushedEvent'
+                and isinstance(source.get('id'), str) and bool(source['id'])
+                and isinstance(source.get('pullRequest'), dict)
+                and source['pullRequest'].get('url') == item['url'], 'Invalid native force-push identity')
+        timestamp(source.get('createdAt'))
+        heads = []
+        for field in ('beforeCommit', 'afterCommit'):
+            value = source.get(field)
+            require(value is None or isinstance(value, dict)
+                    and isinstance(value.get('oid'), str) and HASH.fullmatch(value['oid']),
+                    'Invalid native force-push head')
+            if value is not None:
+                heads.append(value['oid'])
+    else:
+        require(record.get('kind') == 'rest_force_push' and source.get('event') == 'head_ref_force_pushed'
+                and integer(source.get('id'), 1), 'Invalid native REST force-push identity')
+        timestamp(source.get('created_at'))
+        head = source.get('commit_id')
+        require(head is None or isinstance(head, str) and HASH.fullmatch(head), 'Invalid native REST head')
+        heads = [head] if head is not None else []
+    return set(heads)
+
+
 def validate_github(data, evidence, start, end):
     github, metadata = data['github'], data['metadata']
     host = metadata.get('github_host', 'github.com')
@@ -143,6 +175,10 @@ def validate_github(data, evidence, start, end):
             require(item.get(field) is None or isinstance(item[field], str) and HASH.fullmatch(item[field]),
                     'Invalid native PR observation snapshot')
         indexed_observations[item['url']].append(item)
+    head_events = github.get('head_events', [])
+    require(isinstance(head_events, list), 'Invalid native head history')
+    known = {**indexed, **evidence}
+    historical_heads = [(record, historical_head_hashes(record, known)) for record in head_events]
     comments_seen = {}
     comments = github.get('reference_comments', [])
     require(isinstance(comments, list), 'Invalid GitHub reference comments')
@@ -201,11 +237,16 @@ def validate_github(data, evidence, start, end):
                     and pr.get('state') in {'open', 'closed', 'merged'},
                     'Branch PR absent from index')
             require(pr.get('proof') in {'exact_head_or_merge_sha', 'any_author_sha_search',
-                                       'global_any_author_sha_search', 'commit_association'},
+                                       'global_any_author_sha_search', 'commit_association',
+                                       'historical_head_event'},
                     'Invalid branch PR proof')
             if pr['proof'] == 'exact_head_or_merge_sha':
                 require(any(branch['hash'] in (row.get('head_sha'), row.get('merge_sha'))
                             for row in indexed_observations[pr['url']]), 'Branch SHA mismatch')
+            if pr['proof'] == 'historical_head_event':
+                require(any(record['item_url'] == pr['url'] and branch['hash'] in hashes
+                            and ('head_event_id' not in pr or pr['head_event_id'] == record['source']['id'])
+                            for record, hashes in historical_heads), 'Historical branch head lacks native event proof')
         if branch['pr_status'] == 'matched':
             require(bool(prs), 'Matched branch needs PR evidence')
         if branch['pr_status'] == 'no_match':

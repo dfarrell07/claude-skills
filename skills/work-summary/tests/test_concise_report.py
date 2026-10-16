@@ -55,6 +55,40 @@ class ConciseReportTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ws.validate(broken)
 
+    def test_historical_heads_need_native_pr_and_sha_binding_without_weekly_credit(self):
+        data = self.capture()
+        item = {**data['github']['prs'][0], 'head_sha': 'c' * 40, 'merge_sha': None}
+        repo, head = '/example/repo', 'b' * 40
+        data['github']['pr_index'] = [item]
+        event = {'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
+                 'kind': 'graphql_force_push', 'source': {
+                     '__typename': 'HeadRefForcePushedEvent', 'id': 'native-force-push',
+                     'createdAt': '2025-01-01T00:00:00Z', 'beforeCommit': {'oid': head},
+                     'afterCommit': {'oid': 'c' * 40}, 'pullRequest': {'url': item['url']}}}
+        data['github']['head_events'] = [event]
+        data['metadata'].update(repos_searched=1, repositories=[{
+            'path': repo, 'common_dir': repo + '/.git', 'status': 'ok', 'identities': [],
+            'paths': [repo], 'refs': [{'name': 'refs/heads/backup', 'hash': head}]}])
+        data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
+                             'refs': ['refs/heads/backup'], 'pr_status': 'matched', 'prs': [{
+                                 **self.reference(item), 'state': item['state'], 'proof': 'historical_head_event',
+                                 'head_event_id': 'native-force-push'}]}]
+        ws.validate(data)
+        for field, value in [('id', 'other-event'), ('beforeCommit', {'oid': 'd' * 40}),
+                             ('pullRequest', {'url': 'https://github.com/org/repo/pull/999'}),
+                             ('beforeCommit', {'oid': 'invalid'})]:
+            with self.subTest(field=field):
+                bad = copy.deepcopy(data)
+                bad['github']['head_events'][0]['source'][field] = value
+                with self.assertRaises(ValueError):
+                    ws.validate(bad)
+        event.update(kind='rest_force_push', source={
+            'event': 'head_ref_force_pushed', 'id': 42, 'commit_id': head,
+            'created_at': '2025-01-01T00:00:00Z'})
+        data['branches'][0]['prs'][0]['head_event_id'] = 42
+        ws.validate(data)
+        self.assertNotIn('activity', data['github'])
+
     def test_stale_worktree_reflog_snapshot_requires_exact_native_head_evidence(self):
         data = self.capture()
         head = 'a' * 40
