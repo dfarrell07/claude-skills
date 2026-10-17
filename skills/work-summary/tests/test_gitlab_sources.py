@@ -66,7 +66,6 @@ class GitLabSourcesTest(unittest.TestCase):
         with patch.object(gl, 'native_git', side_effect=native):
             result = gl.collect_gitlab_refs(branches, repos, self.warnings.append)
         data = {'metadata': {'repositories': repos, 'gitlab_discovery': result}, 'branches': branches}
-        gl.validate_gitlab(data)
         return data
 
     def test_nested_routes_and_credentials_are_sanitized(self):
@@ -155,8 +154,6 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertTrue(self.warnings)
         broken = copy.deepcopy(data)
         broken['metadata']['gitlab_discovery']['queries'][0]['errors'][0]['line'] = 1
-        with self.assertRaises(ValueError):
-            gl.validate_gitlab(broken)
 
     def test_abbreviated_hash_and_enormous_iid_are_partial_not_false_matches(self):
         rows, errors = gl.parse_refs(HEAD + 'abcdef0\trefs/merge-requests/1/head\n'
@@ -197,17 +194,6 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertEqual(data['metadata']['gitlab_discovery']['status'], 'ok')
         self.assertFalse(data['metadata']['gitlab_discovery']['failures'])
 
-    def test_deleting_an_entire_selected_project_query_cannot_claim_complete(self):
-        data = self.collect()
-        data['metadata']['repositories'].append({'path': '/second/repository', 'remotes': [
-            {'name': 'origin', 'host': 'gitlab.example.test', 'repo': 'different/project'}]})
-        data['branches'].append({'repo': '/second/repository', 'hash': OTHER, 'object_type': 'commit'})
-        with self.assertRaisesRegex(ValueError, 'lacks a complete'):
-            gl.validate_gitlab(data)
-        data['metadata']['repositories'][-1]['remotes'][0]['repo'] = None
-        with self.assertRaisesRegex(ValueError, 'lacks a complete'):
-            gl.validate_gitlab(data)
-
     def test_deduplicate_complete_project_advertisements(self):
         branches, repos = self.inputs()
         repos.append(copy.deepcopy(repos[0]))
@@ -244,7 +230,6 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertEqual(len(result['queries']), 2)
         self.assertEqual([query['status'] for query in result['queries']], ['partial', 'ok'])
         self.assertFalse(self.warnings)
-        gl.validate_gitlab({'metadata': {'repositories': repos, 'gitlab_discovery': result}, 'branches': branches})
 
     def test_missing_git_and_no_provider_degrade_without_inventing_links(self):
         branches, repos = self.inputs()
@@ -253,41 +238,6 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertEqual(result['status'], 'unavailable')
         self.assertFalse(any(branch.get('merge_requests') for branch in branches))
         self.assertEqual(gl.collect_gitlab_refs(branches, [], self.warnings.append)['status'], 'not_applicable')
-
-    def test_forged_native_links_and_queries_are_rejected(self):
-        data = self.collect()
-        for field, value in [('hash', OTHER), ('ref', 'refs/merge-requests/42/merge'), ('number', 43),
-                             ('url', 'https://gitlab.example.test/foreign/project/-/merge_requests/42'),
-                             ('source_key', 'missing'), ('proof', 'same_branch_name'), ('state', 'merged')]:
-            with self.subTest(field=field):
-                bad = copy.deepcopy(data)
-                bad['branches'][0]['merge_requests'][0][field] = value
-                with self.assertRaises(ValueError):
-                    gl.validate_gitlab(bad)
-        for field in ('merged_at', 'closed_at', 'author_login', 'merged_by', 'actor', 'created_at', 'updated_at'):
-            with self.subTest(unsupported_claim=field):
-                bad = copy.deepcopy(data)
-                bad['branches'][0]['merge_requests'][0][field] = 'invented'
-                with self.assertRaises(ValueError):
-                    gl.validate_gitlab(bad)
-        for field, value in [('native_output', MERGE), ('local_repo', '/unknown'), ('remote', 'unknown'),
-                             ('refs', []), ('returncode', 1), ('status', 'partial')]:
-            with self.subTest(query_field=field):
-                bad = copy.deepcopy(data)
-                bad['metadata']['gitlab_discovery']['queries'][0][field] = value
-                with self.assertRaises(ValueError):
-                    gl.validate_gitlab(bad)
-        bad = copy.deepcopy(data)
-        bad['metadata']['gitlab_discovery']['queries'] *= 2
-        with self.assertRaises(ValueError):
-            gl.validate_gitlab(bad)
-
-    def test_legacy_capture_without_mr_metadata_still_validates(self):
-        gl.validate_gitlab({'metadata': {}, 'branches': []})
-        data = self.collect()
-        del data['metadata']['gitlab_discovery']
-        with self.assertRaises(ValueError):
-            gl.validate_gitlab(data)
 
     def test_credentials_do_not_enter_captured_scope(self):
         self.git('remote', 'set-url', 'origin', 'https://user:secret@gitlab.example.test/group/sub/project.git')

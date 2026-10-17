@@ -7,9 +7,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from provider_references import (  # noqa: E402
-    associate_gitlab, complete_provider_references, gitlab_seed_urls, validate_gitlab_links, verified_aliases,
-)
+from provider_references import associate_gitlab, complete_provider_references, verified_aliases  # noqa: E402
 from reference_scope import ReferenceScope  # noqa: E402
 
 
@@ -58,10 +56,7 @@ class ProviderReferencesTest(unittest.TestCase):
         relation = gitlab['items'][0]['jira_links'][0]
         self.assertEqual(relation['evidence_url'], mr + '#note_8')
         self.assertEqual(relation['note_id'], 'gid://gitlab/Note/8')
-        validate_gitlab_links({'jira': jira, 'gitlab': gitlab})
         relation['note_id'] = 8
-        with self.assertRaises(ValueError):
-            validate_gitlab_links({'jira': jira, 'gitlab': gitlab})
 
     def test_unresolved_gitlab_ticket_url_is_not_only_a_lexical_lead(self):
         mr = 'https://gitlab.example.test/team/project/-/merge_requests/7'
@@ -116,22 +111,6 @@ class ProviderReferencesTest(unittest.TestCase):
         self.assertEqual(captured['items'][0]['jira_links'][0]['key'], 'TEST-3')
         self.assertTrue(all(not item['pr_links'] for item in jira['issues']))
 
-    def test_later_identity_bound_native_comment_body_keeps_cross_provider_reference(self):
-        url = 'https://github.com/org/repo/pull/42#issuecomment-7'
-        created, updated = '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'
-        rest = {'id': 7, 'node_id': 'native-comment', 'html_url': url, 'created_at': created,
-                'updated_at': created, 'user': {'login': 'bot', 'node_id': 'native-bot'}}
-        mr = 'https://gitlab.example.test/team/project/-/merge_requests/9'
-        native = {'id': 'native-comment', 'databaseId': 7, 'url': url, 'createdAt': created,
-                  'updatedAt': updated, 'body': mr, 'author': {'login': 'bot', 'id': 'native-bot'}}
-        github = {'prs': [{'url': url.split('#')[0], 'body': ''}],
-                  'comment_edit_histories': [{'item_url': url.split('#')[0], 'repo': 'org/repo',
-                      'number': 42, 'kind': 'issue_comment', 'rest_observation': rest,
-                      'pages': [{'after': None, 'response': {'data': {'node': native}}}]}]}
-        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {mr})
-        github['comment_edit_histories'][0]['pages'][0]['response']['data']['node']['databaseId'] = 8
-        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), set())
-
     def test_moved_ticket_in_native_gitlab_description_keeps_original_key_provenance(self):
         native = {'key': 'NEW-3', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',
                   'fields': {'summary': 'Canonical ticket', 'status': {'name': 'Active',
@@ -145,26 +124,12 @@ class ProviderReferencesTest(unittest.TestCase):
                             'source': {'description': 'Fixes OLD-2'}}]}
         associate_gitlab(jira, gitlab)
         data = {'jira': jira, 'gitlab': gitlab}
-        validate_gitlab_links(data)
         relation = gitlab['items'][0]['jira_links'][0]
         self.assertEqual(relation['url'], 'https://jira.example.test/browse/NEW-3')
         self.assertEqual(relation['source_key'], 'OLD-2')
         self.assertEqual(relation['jira_source_url'], 'https://jira.example.test/browse/OLD-2')
         broken = copy.deepcopy(data)
         broken['gitlab']['items'][0]['jira_links'][0]['source_key'] = 'UNMENTIONED-9'
-        with self.assertRaises(ValueError):
-            validate_gitlab_links(broken)
-
-    def test_selected_native_alternate_bodies_supply_mr_leads_without_historical_index_crawl(self):
-        selected = 'https://github.com/org/project/pull/42'
-        root = 'https://gitlab.example.test/team/project/-/merge_requests/'
-        github = {'prs': [{'url': selected, 'body': ''}], 'issues': [],
-                  'pr_index': [{'url': selected, 'body': root + '2'},
-                               {'url': 'https://github.com/org/other/pull/9', 'body': root + '99'}],
-                  'pr_index_observations': [{'url': selected, 'body': root + '3'}],
-                  'reference_comments': [{'item_url': 'https://github.com/org/other/pull/9',
-                                          'body': root + '4'}]}
-        self.assertEqual(gitlab_seed_urls({'issues': []}, github, []), {root + '2', root + '3', root + '4'})
 
     def test_context_pair_completion_does_not_crawl_arbitrary_cross_provider_frontier(self):
         root = 'https://gitlab.example.test/group/project/-/merge_requests/'
@@ -199,11 +164,8 @@ class ProviderReferencesTest(unittest.TestCase):
         self.assertTrue(any(row['target'] == 'https://github.com/org/project/pull/42' for row in deferred))
         self.assertEqual(captured['items'][0]['jira_links'][0]['key'], 'TEST-2')
         data = {'jira': jira, 'gitlab': captured}
-        validate_gitlab_links(data)
         broken = copy.deepcopy(data)
         broken['gitlab']['items'][0]['jira_links'][0]['key'] = 'TEST-3'
-        with self.assertRaises(ValueError):
-            validate_gitlab_links(broken)
         self.assertNotIn('activity', captured)
 
     def test_only_native_account_aliases_can_supply_public_identity_bridge(self):

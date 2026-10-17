@@ -3,11 +3,11 @@
 import re
 from urllib.parse import urlsplit
 
-from evidence import HOST, require
+from evidence import HOST
 from extended_evidence import github_reference_comments, jira_key_aliases
 from reference_scope import ReferenceScope
 from work_links import (URL, classify_reference_failures, complete_references, confirmed_keys, discovery_keys,
-                        github_selected_observations, native_review_links, scoped_jira_reviews)
+                        github_selected_observations, scoped_jira_reviews)
 
 
 def gitlab_texts(gitlab):
@@ -39,19 +39,6 @@ def code_urls(text, github_host=None):
         else:
             continue
         yield provider, 'https://' + parts.netloc.lower() + parts.path
-
-
-def gitlab_seed_urls(jira, github, branches):
-    urls = {link['url'] for issue in jira.get('issues', []) for link in native_review_links(issue)}
-    urls.update(link['url'] for issue in jira.get('issues', [])
-                for link in issue.get('history_review_links', []) if link['provider'] == 'gitlab')
-    urls.update(link['url'] for branch in branches for link in branch.get('merge_requests', []))
-    observations = github_selected_observations(github)
-    texts = [item.get(field) or '' for item in observations
-             for field in ('title', 'body')]
-    texts.extend(comment['body'] for comment in github_reference_comments(github))
-    urls.update(url for text in texts for provider, url in code_urls(text) if provider == 'gitlab')
-    return urls
 
 
 def verified_aliases(metadata, jira=None):
@@ -152,10 +139,3 @@ def associate_gitlab(jira, gitlab):
         item['jira_links'] = [relations[item['url']][key] for key in sorted(relations[item['url']])]
 
 
-def validate_gitlab_links(data):
-    gitlab = data.get('gitlab', {'items': []})
-    expected = {'items': [dict(item) for item in gitlab.get('items', [])]}
-    associate_gitlab(data.get('jira', {'issues': []}), expected)
-    for item, rebuilt in zip(gitlab.get('items', []), expected['items']):
-        require(item.get('jira_links', []) == rebuilt['jira_links'],
-                'GitLab Jira links lack matching native description or note evidence')

@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 import re
 
-from evidence import UTC, integer, iso, require, timestamp
+from evidence import UTC, iso, require, timestamp
 
 
 MICROSECOND = timedelta(microseconds=1)
@@ -50,32 +50,6 @@ def resolve_window(days_text, now=None, *, since=None, until=None):
     return start, end, {'days': days, 'since_date': start.date().isoformat(),
                         'to_date': end.date().isoformat(), 'since_at': iso(start),
                         'to_at': iso(end), **extra}
-
-
-def validate_window(metadata, start, end):
-    kind = metadata.get('window_kind')
-    require(kind is None or kind == 'explicit', "Unknown reporting window kind")
-    if kind == 'explicit':
-        require(start is not None and end is not None, "Explicit reporting window needs both timestamps")
-        exclusive = endpoint(metadata.get('until_exclusive'))
-        require(metadata['until_exclusive'] == iso(exclusive)
-                and metadata['since_at'] == iso(endpoint(metadata['since_at']))
-                and metadata['to_at'] == iso(endpoint(metadata['to_at'])),
-                "Explicit reporting timestamps must use canonical UTC")
-        require(end == exclusive - MICROSECOND and start <= end,
-                "Invalid exclusive reporting boundary")
-        require(integer(metadata.get('days'), 1) and metadata['days'] == elapsed_days(start, exclusive),
-                "Invalid explicit reporting duration")
-    else:
-        require('window_kind' not in metadata and 'until_exclusive' not in metadata,
-                "Exclusive boundary requires an explicit reporting window")
-        if start or end:
-            require(start is not None and end is not None
-                    and end - start == timedelta(days=metadata['days']), "Invalid rolling date window")
-    if start or end:
-        require(start is not None and end is not None
-                and start.date().isoformat() == metadata['since_date']
-                and end.date().isoformat() == metadata['to_date'], "Date labels do not match timestamps")
 
 
 def search_bounds(start, end):

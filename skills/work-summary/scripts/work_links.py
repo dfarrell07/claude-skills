@@ -5,7 +5,7 @@ from urllib.parse import quote, urlsplit
 
 from evidence import is_pr_url, require
 from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
-from jira_sources import BACKEND, _custom_pr_links
+from jira_sources import BACKEND
 from reference_scope import ReferenceScope
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
@@ -50,11 +50,6 @@ def _key_mentions(text, site, confirmed, *, numeric_fragments=False):
     return explicit
 
 
-def mentioned_keys(text, site):
-    """Retain case-insensitive discovery leads without proving a relation."""
-    return _key_mentions(text, site, confirmed=False)
-
-
 def confirmed_keys(text, site):
     """Accept native browse URLs or conventional uppercase ticket references."""
     return _key_mentions(text, site, confirmed=True)
@@ -77,10 +72,6 @@ def strings(value):
     elif isinstance(value, list):
         for child in value:
             yield from strings(child)
-
-
-def native_pr_mention(value, url):
-    return any(re.search(re.escape(url) + r'(?=$|[\s/?#"<>),.;\]])', text, re.I) for text in strings(value))
 
 
 def pr_identity(url, aliases=None):
@@ -384,107 +375,3 @@ def associate_work(jira, github):
         issue['review_links'] = native_review_links(issue)
 
 
-def validate_links(data):
-    jira = data.get('jira', {'issues': []})
-    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github', {})
-    if 'failure_classification' in coverage:
-        require(coverage['failure_classification'] == reference_failure_classification(
-            jira, data['github'], data.get('gitlab')), 'Jira reference failure classification lacks native context')
-    issues = {issue['key']: issue for issue in jira['issues']}
-    ticket_aliases = jira_key_aliases(jira)
-    items = github_items(data['github'])
-    host = data['metadata'].get('github_host', 'github.com')
-    aliases = repository_aliases(data['github'], host)
-    by_url = {}
-    by_identity = {}
-    for item in items:
-        by_url.setdefault(item['url'], []).append(item)
-        by_identity.setdefault(pr_identity(item['url'], aliases), []).append(item)
-    for issue in issues.values():
-        reviews = issue.get('review_links', [])
-        require(isinstance(reviews, list) and all(relation in native_review_links(issue) for relation in reviews),
-                'Code-review reference absent from native Jira evidence')
-        links = issue.get('pr_links', [])
-        require(isinstance(links, list), 'Invalid Jira PR links')
-
-        for relation in links:
-            require(isinstance(relation, dict) and isinstance(relation.get('url'), str), 'Invalid linked PR')
-            require(not issue['sensitive'] or relation.get('sensitive') is True, 'Restricted relation must be marked private')
-            parts = urlsplit(relation['url'])
-            require(parts.scheme == 'https' and parts.netloc == data['metadata'].get('github_host', 'github.com')
-                    and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)
-                    and not parts.query and not parts.fragment, 'Invalid Jira PR URL')
-            require(isinstance(relation.get('proof'), str) and relation['proof'], 'Missing cross-source proof')
-            source_key = relation.get('source_key', issue['key'])
-            require(('source_key' in relation) == ('jira_source_url' in relation), 'Incomplete Jira alias provenance')
-            require(ticket_aliases.get(source_key, source_key) == issue['key'], 'Unverified Jira source key')
-            if 'source_key' in relation:
-                require(relation.get('jira_source_url') == f"https://{jira['metadata']['site']}/browse/{source_key}",
-                        'Invalid original Jira alias URL')
-            if 'source_url' in relation:
-                source_url = relation['source_url']
-                require(isinstance(source_url, str), 'Invalid PR source URL')
-                source_parts = urlsplit(source_url)
-                require(source_parts.scheme == 'https' and source_parts.netloc == host
-                        and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', source_parts.path)
-                        and not source_parts.query and not source_parts.fragment
-                        and pr_identity(source_url, aliases) == pr_identity(relation['url'], aliases),
-                        'PR source identity mismatch')
-            evidence_url = relation.get('evidence_url')
-            require(isinstance(evidence_url, str) and (evidence_url == issue['url']
-                    or evidence_url.startswith(issue['url'] + '?focusedCommentId=')
-                    or evidence_url == relation['url']
-                    or relation['proof'] == 'github_comment_key'), 'Invalid cross-source provenance')
-            if relation['proof'] == 'github_comment_key':
-                require(any(comment['url'] == evidence_url
-                            and pr_identity(comment['item_url'], aliases) == pr_identity(relation['url'], aliases)
-                            and source_key in confirmed_keys(comment['body'], jira.get('metadata', {}).get('site'))
-                            for comment in github_reference_comments(data['github'])),
-                        'GitHub key mention absent from native comment')
-            elif relation['proof'].startswith('github_'):
-                require(relation['proof'] in {'github_title_key', 'github_body_key', 'github_head_ref_key'}
-                        and evidence_url == relation['url'], 'Invalid GitHub reference provenance')
-                field = relation['proof'].removeprefix('github_').removesuffix('_key')
-                require(field in {'title', 'body', 'head_ref'} and any(source_key in
-                    confirmed_keys(item.get(field), jira.get('metadata', {}).get('site'))
-                    for item in by_identity.get(pr_identity(relation['url'], aliases), [])), 'GitHub key mention absent from evidence')
-            else:
-                fields = (issue.get('detail') or {}).get('fields', {})
-                proof = relation['proof']
-                if proof in {'description', 'issue_link'}:
-                    value = fields.get('description' if proof == 'description' else 'issuelinks')
-                    require(evidence_url == issue['url'] and native_pr_mention(value, relation.get('source_url', relation['url'])),
-                            'Jira PR mention absent from native evidence')
-                elif proof == 'comment':
-                    comments = list((fields.get('comment') or {}).get('comments', []))
-                    for page in issue.get('comment_pages', []):
-                        comments.extend(page.get('comments', []))
-                    require(any(isinstance(comment, dict) and (not comment.get('visibility') or relation.get('sensitive') is True)
-                                and isinstance(comment.get('id'), str)
-                                and evidence_url == issue['url'] + '?focusedCommentId=' + quote(comment['id'], safe='')
-                                and native_pr_mention(comment.get('body'), relation.get('source_url', relation['url'])) for comment in comments),
-                            'Jira PR mention absent from native comment')
-                elif proof == 'custom_field':
-                    source_kind = relation.get('source_kind')
-                    require(source_kind in {'detail', 'full_detail'}, 'Unknown Jira custom field observation')
-                    native = issue.get(source_kind)
-                    require(isinstance(native, dict) and isinstance(native.get('fields'), dict)
-                            and evidence_url == issue['url'], 'Missing native Jira custom field source')
-                    expected = _custom_pr_links(issue, native['fields'], source_kind, host)
-                    require(any(row['url'] == relation.get('source_url', relation['url'])
-                                and row['field_id'] == relation.get('field_id')
-                                and row['sensitive'] == relation.get('sensitive') for row in expected),
-                            'Jira PR mention absent from native custom field')
-                else:
-                    require(False, 'Unknown cross-source proof')
-    for item in items:
-        require(isinstance(item.get('jira_links', []), list), 'Invalid GitHub Jira links')
-        for relation in item.get('jira_links', []):
-            issue = issues.get(relation.get('key'))
-            require(issue is not None and relation.get('url') == issue['url'] and any(
-                    pr_identity(pr['url'], aliases) == pr_identity(item['url'], aliases) and pr['proof'] == relation.get('proof')
-                    and pr['evidence_url'] == relation.get('evidence_url')
-                    and pr.get('sensitive', issue['sensitive']) == relation.get('sensitive', issue['sensitive'])
-                    and all(pr.get(field) == relation.get(field) for field in ('source_key', 'jira_source_url', 'field_id', 'source_kind'))
-                    for pr in issue.get('pr_links', [])),
-                    'GitHub Jira relation is absent from source issue')

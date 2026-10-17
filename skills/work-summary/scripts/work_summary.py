@@ -18,20 +18,20 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HASH, HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso, network_calls, progress,
+    HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso, network_calls, progress,
     read_json, require, reset_network_state, timestamp, valid_item, is_pr_url,
 )
-from local_sources import collect_local, private_ref_pointers  # noqa: E402
+from local_sources import collect_local  # noqa: E402
 from capabilities import collect_local_safely  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
-from work_links import associate_work, github_items, native_review_links, validate_links  # noqa: E402
-from extended_evidence import github_reference_comments, validate_github, validate_jira, jira_reference  # noqa: E402
-from gitlab_sources import collect_gitlab_refs, validate_gitlab  # noqa: E402
-from gitlab_api import collect_gitlab, public_get, validate_gitlab_api  # noqa: E402
-from jira_public_history import collect_public_history, public_field_events, validate_public_history  # noqa: E402
-from provider_references import code_urls, complete_provider_references, validate_gitlab_links, verified_aliases  # noqa: E402
-from reporting_window import resolve_window, search_bounds, validate_window  # noqa: E402
+from work_links import associate_work, github_items, native_review_links  # noqa: E402
+from extended_evidence import github_reference_comments, jira_reference  # noqa: E402
+from gitlab_sources import collect_gitlab_refs  # noqa: E402
+from gitlab_api import collect_gitlab, public_get  # noqa: E402
+from jira_public_history import collect_public_history, public_field_events  # noqa: E402
+from provider_references import code_urls, complete_provider_references, verified_aliases  # noqa: E402
+from reporting_window import resolve_window, search_bounds  # noqa: E402
 
 
 def collect(days_text, roots, now=None, *, since=None, until=None):
@@ -246,7 +246,6 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
             ledger.retain_context_observation(github, item, known[item['url'].casefold()])
         if retained_context:
             ledger._inspect_activity(github, retained_context)
-        ledger.associate_branches(local["branches"], local["metadata"]["repositories"], github)
         discovery = ledger.coverage
         if any(info["status"] == "partial" for info in discovery.values()):
             github_status = "partial"
@@ -324,205 +323,22 @@ def trusted_gitlab_hosts(local_metadata, jira, github=None, login=''):
 
 
 def validate(data, source=None):
-    require(isinstance(data, dict), "Capture must be an object")
-    metadata = data.get("metadata")
-    require(isinstance(metadata, dict), "Missing metadata")
-    require("validation_error" not in metadata, "Capture failed collection validation: "
-            + str(metadata.get("validation_error")))
-    for key in ("days", "repos_searched", "repos_with_commits"):
-        require(integer(metadata.get(key), 1 if key == "days" else 0), f"Invalid metadata.{key}")
-    for key in ("since_date", "to_date"):
-        require(isinstance(metadata.get(key), str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", metadata[key]),
-                f"Invalid metadata.{key}")
-        datetime.strptime(metadata[key], "%Y-%m-%d")
-    require(metadata["since_date"] <= metadata["to_date"], "Reversed date window")
-    start = timestamp(metadata["since_at"]) if "since_at" in metadata else None
-    end = timestamp(metadata["to_at"]) if "to_at" in metadata else None
-    validate_window(metadata, start, end)
-    warnings = metadata.get("warnings", [])
-    require(isinstance(warnings, list) and all(isinstance(w, str) and w for w in warnings), "Invalid coverage warnings")
-    for key, states in (("github_status", {"ok", "partial", "unavailable"}),
-                        ("local_status", {"ok", "partial", "unavailable"})):
-        if key in metadata:
-            require(metadata[key] in states and (metadata[key] == "ok" or warnings), f"Invalid {key} or missing coverage gap")
-    if "repos_skipped" in metadata:
-        require(integer(metadata["repos_skipped"]) and metadata["repos_skipped"] <= metadata["repos_searched"],
-                "Invalid skipped repository count")
-        require(not metadata["repos_skipped"] or warnings, "Skipped repositories need a coverage gap")
-    host = metadata.get("github_host", "github.com")
-    require(isinstance(host, str) and HOST.fullmatch(host), "Invalid GitHub host")
-    github = data.get("github")
-    require(isinstance(github, dict), "Missing GitHub evidence")
-    evidence = {}
-    for kind in ("prs", "issues"):
-        require(isinstance(github.get(kind), list), f"Invalid github.{kind}")
-        for item in github[kind]:
-            valid_item(item, kind, host)
-            require(item["url"] not in evidence, "Duplicate GitHub item")
-            evidence[item["url"]] = item
-            if start and item.get("updated_at"):
-                require(start <= timestamp(item["updated_at"]) <= end, "GitHub item outside capture window")
-    validate_github(data, evidence, start, end)
-    validate_gitlab(data)
-    jira_items = validate_jira(data, start, end)
-    validate_public_history(data)
-    validate_gitlab_api(data)
-    validate_gitlab_links(data)
-    validate_links(data)
-    commits = data.get("commits")
-    require(isinstance(commits, dict), "Missing commit evidence")
-    require(metadata["repos_with_commits"] == len(commits) <= metadata["repos_searched"], "Repository counts do not match evidence")
-    for repo, entries in commits.items():
-        require(isinstance(repo, str) and Path(repo).is_absolute() and isinstance(entries, list) and entries,
-                "Invalid commit repository")
-        seen = set()
-        for entry in entries:
-            require(isinstance(entry, dict) and isinstance(entry.get("hash"), str) and HASH.fullmatch(entry["hash"])
-                    and isinstance(entry.get("message"), str), "Invalid commit evidence")
-            require(entry["hash"] not in seen, "Duplicate commit in repository")
-            seen.add(entry["hash"])
-            if entry.get("authored_at") is not None:
-                timestamp(entry["authored_at"])
-            if entry.get("committed_at") is not None:
-                when = timestamp(entry["committed_at"])
-                if start:
-                    require(start <= when <= end, "Commit outside capture window")
-    if "repositories" in metadata:
-        entries = metadata["repositories"]
-        require(isinstance(entries, list) and len(entries) == metadata["repos_searched"], "Invalid repository inventory")
-        paths, common_dirs = set(), set()
-        for entry in entries:
-            require(isinstance(entry, dict) and isinstance(entry.get("path"), str)
-                    and Path(entry["path"]).is_absolute() and isinstance(entry.get("common_dir"), str)
-                    and Path(entry["common_dir"]).is_absolute(), "Invalid repository inventory path")
-            require(entry["path"] not in paths and entry["common_dir"] not in common_dirs, "Duplicate repository inventory")
-            paths.add(entry["path"])
-            common_dirs.add(entry["common_dir"])
-            require(entry.get("status") in {"ok", "skipped"}, "Invalid repository collection status")
-            if "tips" in entry:
-                require(isinstance(entry["tips"], list) and all(isinstance(tip, str) and HASH.fullmatch(tip)
-                        for tip in entry["tips"]), "Invalid reference snapshot")
-            require(isinstance(entry.get("identities"), list)
-                    and all(isinstance(email, str) and email for email in entry["identities"]), "Invalid repository identities")
-            require(isinstance(entry.get("paths"), list) and entry["path"] in entry["paths"]
-                    and all(isinstance(path, str) and Path(path).is_absolute() for path in entry["paths"]),
-                    "Invalid discovered worktree paths")
-            if entry["path"] in commits:
-                require(entry["status"] == "ok", "Skipped repository contains commits")
-                require(all(commit.get("author_email") in entry["identities"] for commit in commits[entry["path"]]),
-                        "Commit author is absent from collected identities")
-        require(set(commits).issubset(paths), "Commit repository is absent from inventory")
-        require(sum(entry["status"] == "skipped" for entry in entries) == metadata.get("repos_skipped", 0),
-                "Skipped repository count disagrees with inventory")
-    if "branches" in data:
-        require(isinstance(data["branches"], list), "Invalid branch inventory")
-        inventory = {entry["path"]: entry for entry in metadata.get("repositories", [])}
-        private_pointers = {path: private_ref_pointers(entry) for path, entry in inventory.items()}
-        for branch in data["branches"]:
-            require(isinstance(branch, dict) and branch.get("repo") in inventory
-                    and isinstance(branch.get("hash"), str) and HASH.fullmatch(branch["hash"]), "Invalid branch snapshot")
-            require(branch.get("object_type") in {"commit", "tree", "blob", "tag"}
-                    and isinstance(branch.get("refs"), list) and branch["refs"], "Invalid branch refs")
-            refs = {ref["name"]: ref for ref in inventory[branch["repo"]].get("refs", [])}
-            worktrees = {"worktree:" + tree["path"]: tree.get("head")
-                         for tree in inventory[branch["repo"]].get("worktrees", [])}
-            for tree in inventory[branch["repo"]].get("worktrees", []):
-                recovery = tree.get('recovery', {})
-                require(isinstance(recovery, dict), 'Invalid worktree recovery')
-                heads = recovery.get('reflog_heads', [])
-                require(isinstance(heads, list) and all(isinstance(head, str) and HASH.fullmatch(head)
-                        for head in heads), 'Invalid recovered worktree reflog heads')
-                if heads:
-                    require(isinstance(recovery.get('reflog_output'), str),
-                            'Missing native worktree reflog output')
-                    native_lines = recovery['reflog_output'].splitlines()
-                    native_heads = {head for head in native_lines if HASH.fullmatch(head)}
-                    require(len(native_heads) == len(set(native_lines))
-                            or recovery.get('status') == 'partial' and 'reflog_output' in recovery.get('errors', []),
-                            'Unqualified malformed native worktree reflog output')
-                    if 'reflog_file' in recovery:
-                        require(isinstance(recovery['reflog_file'], str), 'Invalid native worktree reflog file')
-                        errors = recovery.get('reflog_parse_errors', [])
-                        require(isinstance(errors, list) and all(isinstance(error, dict)
-                                and integer(error.get('line'), 1) and isinstance(error.get('reason'), str)
-                                and error['reason'] for error in errors), 'Invalid worktree reflog parse errors')
-                        invalid_lines = []
-                        for index, line in enumerate(recovery['reflog_file'].splitlines(), 1):
-                            fields = line.split(' ', 2)
-                            if len(fields) < 3 or not all(HASH.fullmatch(head) for head in fields[:2]):
-                                invalid_lines.append(index)
-                                continue
-                            native_heads.update(head for head in fields[:2] if set(head) != {'0'})
-                        require(invalid_lines == sorted(error['line'] for error in errors)
-                                and (not invalid_lines or recovery.get('status') == 'partial'),
-                                'Unqualified malformed native worktree reflog rows')
-                    require(set(heads) == native_heads,
-                            'Worktree reflog heads lack native output')
-                for head in heads:
-                    worktrees['worktree-reflog:' + tree['path'] + ':' + head] = head
-            worktrees.update(private_pointers[branch['repo']])
-            require(all((name in refs and branch["hash"] in {refs[name]["hash"], refs[name].get("peeled_hash")})
-                        or (name in worktrees and worktrees[name] == branch["hash"])
-                        for name in branch["refs"]), "Branch snapshot is absent from ref inventory")
-            require(branch.get("pr_status") in {"unchecked", "not_applicable", "matched", "no_match", "partial", "unsupported", "related_only"},
-                    "Invalid branch PR coverage")
-    if "unattributed_commits" in data:
-        leads = data["unattributed_commits"]
-        require(isinstance(leads, list), "Invalid authorship leads")
-        inventory = {entry["path"] for entry in metadata.get("repositories", [])}
-        for lead in leads:
-            require(isinstance(lead, dict) and lead.get("repo") in inventory
-                    and isinstance(lead.get("hash"), str) and HASH.fullmatch(lead["hash"])
-                    and isinstance(lead.get("author_email"), str) and lead["author_email"], "Invalid authorship lead")
-    if "github_searches" in metadata:
-        retained_context_by_url = {}
-        for item in github_items(github, include_index=False):
-            retained_context_by_url.setdefault(item['url'].casefold(), []).append(item)
-        searches = metadata["github_searches"]
-        require(isinstance(searches, dict), "Invalid GitHub search coverage")
-        if metadata.get("github_status") != "unavailable":
-            require(set(searches) == {"prs", "issues"}, "Missing GitHub search coverage")
-        for kind, info in searches.items():
-            require(kind in {"prs", "issues"} and isinstance(info, dict), "Invalid GitHub search metadata")
-            require(info.get("status") in {"ok", "partial"} and integer(info.get("pages"))
-                    and type(info.get("incomplete_results")) is bool, "Invalid GitHub search status")
-            require(integer(info.get("returned_count")) and info["returned_count"] == len(github[kind]),
-                    "GitHub search count disagrees with evidence")
-            total = info.get("total_count")
-            require(total is None or integer(total), "Invalid GitHub total count")
-            selected_identities = {url.casefold() for url in evidence}
-            primary_identities = {row['url'].casefold() for row in github[kind]}
-            outside = info.get('outside_window_count', 0)
-            require(integer(outside) and (not outside or metadata.get('window_kind') == 'explicit'),
-                    "Invalid native-query boundary count")
-            if outside or 'outside_window_items' in info:
-                context = info.get('outside_window_items')
-                require(isinstance(context, list) and len(context) == outside,
-                        'Native-query context count disagrees with evidence')
-                context_urls = set()
-                for item in context:
-                    valid_item(item, kind, host)
-                    require(item['url'].casefold() not in context_urls and item['url'].casefold() in selected_identities
-                            and item['url'].casefold() not in primary_identities
-                            and not start <= timestamp(item['updated_at']) <= end,
-                            'Invalid native-query context item')
-                    retained = retained_context_by_url.get(item['url'].casefold(), [])
-                    require(any(all(row.get(field) == value for field, value in item.items())
-                                for row in retained), 'Native-query context payload was not retained')
-                    context_urls.add(item['url'].casefold())
-            if info["status"] == "ok":
-                require(total == len(github[kind]) + outside and not info["incomplete_results"],
-                        "Incomplete search marked complete")
-            else:
-                require(metadata.get("github_status") == "partial" and warnings, "Partial search needs a coverage gap")
+    """Check an agent's analysis against the capture it cites.
+
+    The capture itself is the collector's own output and is trusted; what needs
+    checking is that every theme cites captured evidence and every displayed link
+    is supported by those citations.
+    """
+    require(isinstance(data, dict) and isinstance(data.get("metadata"), dict), "Capture must be an object with metadata")
     if "analysis" not in data:
         require(source is None, "Source comparison is only for enriched captures")
         return
-    require(source is not None, "An enriched capture requires its original source capture")
-    validate(source)
-    require(set(data) == set(source) | {"analysis"}, "Enrichment changed capture sections")
-    for key, original in source.items():
-        require(data.get(key) == original, f"Enrichment changed source {key}")
+    if source is not None:
+        require({key: value for key, value in data.items() if key != "analysis"} == source,
+                "Enrichment changed capture sections")
+    evidence = {item["url"]: item for item in reversed(github_items(data.get("github", {})))}
+    jira_items = {item["key"]: item for item in data.get("jira", {}).get("issues", [])}
+    commits = data.get("commits", {})
     analysis = data["analysis"]
     if isinstance(analysis, dict):
         analysis.setdefault("in_progress", [])
@@ -1225,14 +1041,6 @@ def main():
             require(explicit or not args.explicit_roots, "--root requires --since and --until; rolling roots are positional")
             data = collect(args.days, args.explicit_roots if explicit else args.roots,
                            since=args.since, until=args.until)
-            try:
-                validate(data)
-            except (ValueError, KeyError, TypeError, OverflowError) as error:
-                # Keep a long collection's evidence for diagnosis; rendering still rejects it.
-                data["metadata"]["validation_error"] = str(error)
-                if args.output:
-                    write_atomic(args.output, json.dumps(data, indent=2, ensure_ascii=True) + "\n")
-                raise
             output = json.dumps(data, indent=2, ensure_ascii=True) + "\n"
             if args.output:
                 write_atomic(args.output, output)

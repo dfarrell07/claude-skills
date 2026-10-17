@@ -17,122 +17,8 @@ STATE_DIRS = {'.cache', '.local', '.config', '.ssh', '.gnupg', '.npm', '.cargo',
 # Home-level application data (macOS Library and Trash) holds no clones and can prompt for access.
 HOME_STATE_DIRS = {'Library', '.Trash'}
 BACKUP = re.compile(r'(backup|(?:^|[/_-])bak\d*(?:$|[/_-])|archive|rescue|preserv|saved)', re.I)
-PRIVATE_NAMESPACES = ('refs/bisect/', 'refs/rewritten/', 'refs/worktree/')
 REF_FORMAT = '%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)'
 FULL_HASH = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
-
-
-def parse_private_refs(raw):
-    refs, errors = [], []
-    seen = set()
-    for number, line in enumerate(raw.splitlines(), 1):
-        fields = line.split('\0')
-        if (len(fields) != 8 or not fields[0].startswith(PRIVATE_NAMESPACES)
-                or not FULL_HASH.fullmatch(fields[1]) or fields[2] not in {'commit', 'tag', 'tree', 'blob'}
-                or (fields[3] and not FULL_HASH.fullmatch(fields[3]))
-                or bool(fields[3]) != bool(fields[4])
-                or (fields[4] and fields[4] not in {'commit', 'tag', 'tree', 'blob'})
-                or fields[0] in seen):
-            errors.append({'line': number, 'reason': 'invalid_private_ref_record'})
-            continue
-        seen.add(fields[0])
-        refs.append(dict(zip(('name', 'hash', 'object_type', 'peeled_hash', 'peeled_type',
-                              'upstream', 'upstream_remote', 'upstream_ref'),
-                             [field or None for field in fields])))
-    return refs, errors
-
-
-def capture_private_refs(entry, tree):
-    """Read the worktree-specific namespaces without creating or repairing refs."""
-    proof = {'status': 'partial', 'route': 'worktree', 'command_path': tree['path'],
-             'admin_dir': None, 'common_dir_output': None, 'common_dir': None,
-             'gitdir_output': None, 'native_output': '', 'returncode': None,
-             'refs': [], 'parse_errors': [], 'errors': []}
-    try:
-        options = ()
-        if not Path(tree['path']).is_dir():
-            admin = tree.get('recovery', {}).get('admin_dir')
-            if admin is None:
-                # A worktree may disappear after worktree-list was captured.
-                for candidate in (Path(entry['common_dir']) / 'worktrees').iterdir():
-                    try:
-                        target = (candidate / 'gitdir').read_text(encoding='utf-8').removesuffix('\n')
-                        if Path(target).resolve() == (Path(tree['path']) / '.git').resolve():
-                            admin = str(candidate)
-                            break
-                    except OSError:
-                        continue
-            require(isinstance(admin, str), 'Missing retained worktree admin route')
-            proof.update(route='retained_admin', command_path=entry['path'], admin_dir=admin)
-            require(Path(admin).resolve().parent == (Path(entry['common_dir']) / 'worktrees').resolve(),
-                    'Foreign retained worktree admin route')
-            proof['gitdir_output'] = (Path(admin) / 'gitdir').read_text(encoding='utf-8')
-            require(Path(proof['gitdir_output'].removesuffix('\n')).resolve()
-                    == (Path(tree['path']) / '.git').resolve(), 'Foreign retained worktree path')
-            options = ('--git-dir=' + admin,)
-        raw_common = git(proof['command_path'], *options, 'rev-parse', '--git-common-dir')
-        common = Path(raw_common.removesuffix('\n'))
-        common = (common if common.is_absolute() else Path(proof['command_path']) / common).resolve()
-        proof.update(common_dir_output=raw_common, common_dir=str(common))
-        require(common == Path(entry['common_dir']).resolve(), 'Foreign worktree common repository')
-        try:
-            proof['native_output'] = git(proof['command_path'], *options, 'for-each-ref',
-                                         '--format=' + REF_FORMAT, *PRIVATE_NAMESPACES)
-            proof['returncode'] = 0
-        except subprocess.CalledProcessError as error:
-            proof['native_output'] = error.stdout if isinstance(error.stdout, str) else ''
-            proof['returncode'] = error.returncode
-            proof['errors'].append('private_ref_command')
-        proof['refs'], proof['parse_errors'] = parse_private_refs(proof['native_output'])
-        if not proof['errors'] and not proof['parse_errors']:
-            proof['status'] = 'ok'
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-        proof['errors'].append('private_ref_route_or_read')
-    return proof
-
-
-def private_ref_pointers(entry):
-    """Validate retained native namespace evidence and return synthetic pointers."""
-    result = {}
-    for tree in entry.get('worktrees', []):
-        proof = tree.get('private_refs')
-        if proof is None:
-            continue  # Older captures did not inspect worktree-private refs.
-        require(proof.get('status') in {'ok', 'partial'}, 'Invalid private ref status')
-        refs, errors = parse_private_refs(proof['native_output'])
-        require(refs == proof['refs'] and errors == proof['parse_errors'], 'Private ref native rows differ')
-        require(proof['status'] == ('partial' if proof['errors'] or errors else 'ok'), 'Private ref completeness differs')
-        if proof['returncode'] is None:
-            require(not refs and not proof['native_output'] and 'private_ref_route_or_read' in proof['errors'],
-                    'Private refs lack a completed native read')
-            continue
-        if proof['common_dir_output'] is not None:
-            common = Path(proof['common_dir_output'].removesuffix('\n'))
-            common = (common if common.is_absolute() else Path(proof['command_path']) / common).resolve()
-            require(str(common) == proof['common_dir'] and common == Path(entry['common_dir']).resolve(),
-                    'Private refs belong to a different common repository')
-        else:
-            require(not refs and proof['status'] == 'partial', 'Unbound private refs')
-        if proof['route'] == 'worktree':
-            require(proof['command_path'] == tree['path'] and proof['admin_dir'] is None
-                    and proof['gitdir_output'] is None, 'Private worktree route differs')
-        else:
-            require(proof['route'] == 'retained_admin' and proof['command_path'] == entry['path'],
-                    'Invalid private admin route')
-            admin = proof['admin_dir']
-            recorded_admin = tree.get('recovery', {}).get('admin_dir')
-            require((recorded_admin is None or admin == recorded_admin)
-                    and Path(admin).resolve().parent == (Path(entry['common_dir']) / 'worktrees').resolve(),
-                    'Private admin route differs')
-            require(isinstance(proof['gitdir_output'], str) and
-                    Path(proof['gitdir_output'].removesuffix('\n')).resolve()
-                    == (Path(tree['path']) / '.git').resolve(), 'Private admin worktree differs')
-        require((proof['returncode'] == 0) or proof['status'] == 'partial', 'Private command failed without qualification')
-        for ref in refs:
-            name = 'worktree-ref:' + tree['path'] + ':' + ref['name']
-            require(name not in result, 'Duplicate private worktree pointer')
-            result[name] = ref['hash'] if ref['object_type'] == 'commit' or ref['peeled_type'] != 'commit' else ref['peeled_hash']
-    return result
 
 
 def remote_info(name, url, host):
@@ -492,17 +378,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 warn(f'Some registered HEADs are unavailable for {entry["path"]}; healthy refs and admin histories were retained.')
             recovered_tips = {sha for tree in entry['worktrees']
                               for sha in tree.get('recovery', {}).get('available_heads', [])}
-            private_snapshot_refs = []
-            for tree in entry['worktrees']:
-                tree['private_refs'] = capture_private_refs(entry, tree)
-                if tree['private_refs']['status'] != 'ok':
-                    warn(f'Cannot completely inspect private refs for {tree["path"]}; healthy refs were retained.')
-                private_snapshot_refs.extend({**ref, 'name': 'worktree-ref:' + tree['path'] + ':' + ref['name']}
-                                             for ref in tree['private_refs']['refs'])
-            private_tips = {ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
-                            for ref in private_snapshot_refs
-                            if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'}
-            entry['tips'] = sorted(set(ordinary_tips) | recovered_tips | private_tips)
+            entry['tips'] = sorted(set(ordinary_tips) | recovered_tips)
             require(all(HASH.fullmatch(tip) for tip in entry['tips']), 'Invalid reference tip')
             if recovered_tips:
                 revisions = '\n'.join(sorted(recovered_tips)) + '\n' + ''.join('^' + sha + '\n' for sha in ordinary_tips)
@@ -543,7 +419,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
                             for ref in entry['refs']
                             if ref['object_type'] == 'commit' or ref['peeled_type'] == 'commit'}
-                           | recovered_tips | private_tips | {tree['head'] for tree in entry['worktrees']
+                           | recovered_tips | {tree['head'] for tree in entry['worktrees']
                               if tree['detached'] and tree.get('head_available', True)
                               and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])})
             tip_records[entry['path']] = log_records(entry['path'], heads, no_walk=True)
@@ -597,8 +473,6 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
              'object_type': 'commit', 'peeled_type': None}
             for tree in entry['worktrees']
             for sha in tree.get('recovery', {}).get('unreferenced_reflog_heads', [])]
-        snapshot_refs += [{**ref, 'name': 'worktree-ref:' + tree['path'] + ':' + ref['name']}
-                          for tree in entry['worktrees'] for ref in tree.get('private_refs', {}).get('refs', [])]
         leads_seen = set()
         for record in records.get(entry['path'], []) + tip_records.get(entry['path'], []):
             if record['author_email'] in unknown and record['author_email'] not in entry['identities']:

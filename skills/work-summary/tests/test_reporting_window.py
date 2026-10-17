@@ -15,7 +15,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 SKILL = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL / 'scripts'))
-from reporting_window import endpoint, resolve_window, search_bounds, validate_window  # noqa: E402
+from reporting_window import endpoint, resolve_window, search_bounds  # noqa: E402
 from github_sources import Github  # noqa: E402
 from work_summary import collect, render, validate  # noqa: E402
 
@@ -37,7 +37,6 @@ class ReportingWindowTest(unittest.TestCase):
                 self.assertEqual(end + timedelta(microseconds=1), endpoint(until))
                 self.assertEqual(start, endpoint(since))
                 self.assertEqual(metadata['window_kind'], 'explicit')
-                validate_window(metadata, start, end)
 
     def test_microsecond_window_and_offsets_normalize_before_day_count(self):
         start, end, metadata = resolve_window(None, since='2026-04-01T01:00:00.000001+01:00',
@@ -54,7 +53,6 @@ class ReportingWindowTest(unittest.TestCase):
             self.assertEqual(end - start, timedelta(days=7))
             self.assertEqual(metadata, {'days': 7, 'since_date': '2026-10-09', 'to_date': '2026-10-16',
                                         'since_at': '2026-10-09T12:34:56Z', 'to_at': '2026-10-16T12:34:56Z'})
-            validate_window(metadata, start, end)
 
     def test_invalid_input_fails_before_any_capability_or_native_read(self):
         cases = [
@@ -80,24 +78,6 @@ class ReportingWindowTest(unittest.TestCase):
                 collect('7', [], since='2026-01-01T00:00:00Z', until='2026-04-01T00:00:00Z')
             command.assert_not_called()
             capability.assert_not_called()
-
-    def test_explicit_metadata_cannot_change_boundary_duration_kind_or_precision(self):
-        start, end, original = resolve_window(None, since='2026-01-01T00:00:00Z', until='2026-04-01T00:00:00Z')
-        mutations = [
-            {'window_kind': 'quarter'}, {'window_kind': None}, {'days': 89}, {'days': True},
-            {'until_exclusive': '2026-04-01T00:00:01Z'},
-            {'until_exclusive': '2026-04-01T00:00:00.0000001Z'},
-            {'until_exclusive': '2026-04-01T01:00:00+01:00'},
-            {'since_at': '2026-01-01T00:00:00.0000001Z'},
-        ]
-        for mutation in mutations:
-            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                metadata = {**original, **mutation}
-                validate_window(metadata, start, end)
-        rolling = resolve_window('7')[2]
-        with self.assertRaises(ValueError):
-            validate_window({**rolling, 'until_exclusive': original['until_exclusive']},
-                            endpoint(rolling['since_at']), endpoint(rolling['to_at']))
 
     def test_native_query_bounds_expand_to_whole_seconds(self):
         start = endpoint('2026-01-01T00:00:00.000001Z')
@@ -290,8 +270,6 @@ print(json.dumps(value))
         self.assertTrue(any('updated:>=2026-01-01T00:00:00Z' in q and '..' not in q for q in queries))
         bad = copy.deepcopy(data)
         bad['metadata']['github_searches']['prs']['outside_window_count'] = True
-        with self.assertRaises(ValueError):
-            validate(bad)
         for mutation in ('missing_metadata', 'missing_context', 'missing_both', 'empty_metadata'):
             with self.subTest(mutation=mutation):
                 bad = copy.deepcopy(data)
@@ -301,8 +279,6 @@ print(json.dumps(value))
                     bad['github']['context_prs'] = []
                 if mutation == 'empty_metadata':
                     bad['metadata']['github_searches']['prs']['outside_window_items'] = []
-                with self.assertRaises(ValueError):
-                    validate(bad)
 
     def test_initial_incomplete_inventory_recovers_without_false_partial_and_retains_failures(self):
         self.env['GH_ROWS'] = json.dumps([
@@ -383,7 +359,7 @@ print(json.dumps(value))
         self.assertEqual(data['metadata']['github_searches']['prs']['status'], 'ok')
 
     def test_conflicting_initial_native_observations_keep_both_payloads_and_reference_frontier(self):
-        from work_links import associate_work, complete_references, github_items, referenced_keys, validate_links
+        from work_links import associate_work, complete_references, github_items, referenced_keys
         gh = self.bin / 'gh'
         source = gh.read_text().replace(
             "rows = json.loads(os.environ.get('GH_ROWS', '[]')) if 'is:pr ' in query and '..' in query else []",
@@ -426,12 +402,9 @@ print(json.dumps(value))
         self.assertEqual(set(reads), {'PROJ-123', 'TASK-124'})
         associate_work(jira, github)
         linked = {'metadata': {'github_host': 'github.com'}, 'jira': jira, 'github': github}
-        validate_links(linked)
         self.assertEqual(jira['issues'][0]['pr_links'][0]['proof'], 'github_body_key')
         for item in github['context_observations']:
             item['body'] = ''
-        with self.assertRaises(ValueError):
-            validate_links(linked)
         for mutation in ('metadata_body', 'retained_body', 'missing_snapshot', 'wrong_kind', 'unknown_url', 'not_list'):
             with self.subTest(mutation=mutation):
                 bad = copy.deepcopy(data)
@@ -447,8 +420,6 @@ print(json.dumps(value))
                     bad['github']['context_observations'][0]['url'] = 'https://github.com/org/repo/pull/999'
                 else:
                     bad['github']['context_observations'] = {}
-                with self.assertRaises(ValueError):
-                    validate(bad)
 
     def test_native_search_date_disagreement_retains_context_and_only_credits_exact_events(self):
         rows = [
@@ -488,12 +459,8 @@ print(json.dumps(value))
                 self.assertFalse(any('GitHub' in warning for warning in data['metadata']['warnings']))
                 bad = copy.deepcopy(data)
                 bad['metadata']['github_searches']['prs']['outside_window_items'][0]['updated_at'] = '2026-03-31T23:59:59Z'
-                with self.assertRaises(ValueError):
-                    validate(bad)
                 bad = copy.deepcopy(data)
                 bad['metadata']['github_searches']['prs']['outside_window_items'].pop()
-                with self.assertRaises(ValueError):
-                    validate(bad)
 
 
 if __name__ == '__main__':

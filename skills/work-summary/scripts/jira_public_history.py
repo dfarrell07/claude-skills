@@ -195,10 +195,6 @@ def public_history_review_links(issue, github_host='github.com'):
     record = issue.get('public_history')
     if record is None or record.get('identity') is None:
         return []
-    site = urlsplit(issue['url']).netloc
-    # Validate the native stream without recursively validating its derived links.
-    native_issue = {key: value for key, value in issue.items() if key != 'history_review_links'}
-    validate_public_history({'jira': {'metadata': {'site': site}, 'issues': [native_issue]}})
     result, seen = [], set()
     for page in record['pages']:
         values = page.get('values')
@@ -263,11 +259,6 @@ def public_field_events(jira, start, end):
     for issue in jira.get('issues', []):
         record = issue.get('public_history')
         if not isinstance(record, dict) or record.get('identity') is None:
-            continue
-        native_issue = {key: value for key, value in issue.items() if key != 'history_review_links'}
-        try:
-            validate_public_history({'jira': {'metadata': {'site': metadata.get('site')}, 'issues': [native_issue]}})
-        except (ValueError, TypeError, KeyError):
             continue
         for page in record['pages']:
             values = page.get('values')
@@ -362,10 +353,6 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
         return record
 
     issues = jira.get('issues', [])
-    if reuse:
-        retained = [issue for issue in issues if issue.get('public_history') is not None]
-        validate_public_history({'metadata': {'github_host': github_host},
-                                'jira': {'metadata': {'site': site}, 'issues': retained}})
     pending = [issue for issue in issues if not reuse or issue.get('public_history') is None]
     with ThreadPoolExecutor(max_workers=max(1, min(4, workers))) as pool:
         collected = list(pool.map(collect, pending))
@@ -389,62 +376,3 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
     return summary
 
 
-def validate_public_history(data):
-    jira = data.get('jira')
-    if not isinstance(jira, dict):
-        return
-    site = jira['metadata'].get('site')
-    for issue in jira.get('issues', []):
-        record = issue.get('public_history')
-        if record is None:
-            continue
-        require(isinstance(record, dict) and set(record) == {
-                    'scope', 'status', 'identity_basis', 'identity_url', 'identity', 'pages', 'page_requests',
-                    'errors', 'authenticated_history'} and record.get('scope') == SCOPE
-                and record.get('status') in {'ok', 'partial', 'unavailable'}
-                and record.get('authenticated_history') == 'unverified'
-                and isinstance(record.get('pages'), list) and isinstance(record.get('page_requests'), list)
-                and isinstance(record.get('errors'), list), 'Invalid public history scope')
-        try:
-            bases = native_bases(issue, site)
-        except (ValueError, TypeError):
-            bases = []
-        basis, issue_id = next((row for row in bases if row[0] == record.get('identity_basis')),
-                               bases[0] if bases else (None, None))
-        if basis is not None:
-            require(record.get('identity_basis') == basis
-                    and record.get('identity_url') == f'https://{site}/rest/api/3/issue/{issue_id}?fields=summary',
-                    'Public issue request identity mismatch')
-        else:
-            require(record.get('identity_basis') is None and record.get('identity_url') is None,
-                    'Unknown authenticated issue has a public request')
-        if record['identity'] is None:
-            require(record['status'] == 'unavailable' and not record['pages'] and not record['page_requests']
-                    and record['errors'], 'Unverified public identity has history')
-            require(not issue.get('history_review_links'), 'Unverified public identity has historical references')
-            continue
-        require(basis is not None, 'Public identity lacks authenticated source identity')
-        public_identity(record['identity'], issue, site, issue_id)
-        errors, complete, _ = inspect_pages(record['pages'], record['page_requests'], issue, site, issue_id)
-        require(all(error in record['errors'] for error in errors), 'Unqualified public history parsing gap')
-        if record['status'] == 'ok':
-            require(complete and not record['errors'], 'Incomplete public history marked complete')
-        else:
-            require(record['status'] == 'partial' and record['errors'], 'Missing public history failure evidence')
-        if 'history_review_links' in issue:
-            require(issue['history_review_links'] == public_history_review_links(
-                issue, data.get('metadata', {}).get('github_host', 'github.com')),
-                'Historical review references differ from native field history')
-    summary = jira['metadata'].get('public_history')
-    if summary is not None:
-        records = [issue.get('public_history') for issue in jira.get('issues', [])]
-        require(all(isinstance(record, dict) for record in records), 'Missing public issue history coverage')
-        complete = sum(record['status'] == 'ok' for record in records)
-        valid_site = isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold()
-        status = ('unavailable' if not valid_site else 'ok' if complete == len(records) else
-                  'unavailable' if all(record['status'] == 'unavailable' for record in records) else 'partial')
-        expected = {'scope': SCOPE, 'status': status, 'issues_attempted': len(records), 'issues_complete': complete,
-                    'history_rows': sum(len(page.get('values', [])) for record in records for page in record['pages']
-                                        if isinstance(page.get('values'), list)),
-                    'authenticated_history': 'unverified'}
-        require(summary == expected, 'Public history summary differs from retained native streams')

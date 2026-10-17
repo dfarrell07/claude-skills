@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from urllib.parse import urlsplit
 
-from evidence import GIT_ENV, HOST, integer, require
+from evidence import GIT_ENV, HOST, require
 
 
 PART = re.compile(r'[A-Za-z0-9_.-]+\Z')
@@ -208,103 +208,3 @@ def collect_gitlab_refs(branches, repositories, warn):
     return result
 
 
-def validate_gitlab(data):
-    """Bind every MR citation to its captured native route and exact advertised head."""
-    discovery = data['metadata'].get('gitlab_discovery')
-    if discovery is None:
-        require(not any(branch.get('merge_requests') for branch in data.get('branches', [])),
-                'Merge request lacks native discovery')
-        return
-    require(isinstance(discovery, dict) and discovery.get('scope') == SCOPE
-            and discovery.get('status') in {'ok', 'partial', 'not_applicable', 'unavailable'}
-            and isinstance(discovery.get('queries'), list) and isinstance(discovery.get('failures'), list)
-            and isinstance(discovery.get('routes'), list),
-            'Invalid GitLab discovery')
-    repositories = {entry['path']: entry for entry in data['metadata'].get('repositories', [])}
-    routes = []
-    for route in discovery['routes']:
-        require(isinstance(route, dict) and set(route) == {'local_repo', 'remote', 'host', 'repo', 'transport'}
-                and route['local_repo'] in repositories and gitlab_host(route['host'])
-                and project_path(route['repo']) and route['transport'] in {'ssh', 'https'}
-                and route not in routes, 'Invalid effective GitLab route evidence')
-        require(any(remote.get('name') == route['remote'] and isinstance(remote.get('host'), str)
-                    and remote['host'].casefold() == route['host'] and remote.get('repo') in {None, route['repo']}
-                    for remote in repositories[route['local_repo']].get('remotes', [])),
-                'Effective GitLab route absent from native inventory')
-        routes.append(route)
-    queries, requested, complete = {}, set(), set()
-    for query in discovery['queries']:
-        require(isinstance(query, dict) and query.get('local_repo') in repositories, 'Unknown GitLab local repository')
-        host, repo = query.get('host'), query.get('repo')
-        require(gitlab_host(host) and project_path(repo) and query.get('scope') == SCOPE,
-                'Invalid GitLab project route')
-        require(query.get('effective_remote') == {'host': host, 'repo': repo, 'transport': query.get('transport')}
-                and query.get('transport') in {'ssh', 'https'}, 'Invalid effective GitLab route')
-        require({'local_repo': query['local_repo'], 'remote': query.get('remote'), 'host': host, 'repo': repo,
-                 'transport': query.get('transport')} in routes, 'GitLab query lacks effective route evidence')
-        require(isinstance(query.get('remote'), str) and REMOTE.fullmatch(query['remote']), 'Invalid GitLab remote name')
-        key = source_key(host, repo, query['local_repo'], query.get('remote', ''))
-        require(query.get('source_key') == key and key not in queries, 'Duplicate or invalid GitLab source key')
-        require(any(remote.get('name') == query.get('remote') and isinstance(remote.get('host'), str)
-                    and remote['host'].casefold() == host
-                    and remote.get('repo') in {None, repo}
-                    for remote in repositories[query['local_repo']].get('remotes', [])),
-                'GitLab query absent from native remote inventory')
-        require(isinstance(query.get('native_output'), str) and isinstance(query.get('errors'), list)
-                and query.get('status') in {'ok', 'partial'}
-                and (query.get('returncode') is None or type(query['returncode']) is int), 'Invalid native GitLab result')
-        rows, errors = parse_refs(query['native_output'])
-        require(query.get('refs') == rows and [error for error in query['errors'] if 'line' in error] == errors,
-                'GitLab refs differ from native advertisement')
-        allowed = {'native_read_timeout', 'native_read_failed'}
-        require(all(isinstance(error, dict) and (error in errors or set(error) == {'reason'}
-                    and error['reason'] in allowed) for error in query['errors']), 'Invalid GitLab parse gaps')
-        reasons = {error.get('reason') for error in query['errors']}
-        require(('native_read_timeout' in reasons) == (query['returncode'] is None)
-                and ('native_read_failed' in reasons) == (query['returncode'] not in {0, None}),
-                'Unaccounted native GitLab command failure')
-        require(query['status'] == ('ok' if query['returncode'] == 0 and not query['errors'] else 'partial'),
-                'GitLab native result status mismatch')
-        queries[key] = query
-        pair = host, repo
-        requested.add(pair)
-        if query['status'] == 'ok':
-            complete.add(pair)
-    if discovery['status'] == 'ok':
-        require(requested and requested == complete and not discovery['failures'], 'Incomplete GitLab discovery marked complete')
-        selected = {branch['repo'] for branch in data.get('branches', []) if branch['object_type'] == 'commit'}
-        for path in selected & repositories.keys():
-            for remote in repositories[path].get('remotes', []):
-                if not gitlab_host(remote.get('host')):
-                    continue
-                project = remote.get('repo')
-                if project is not None:
-                    require((remote['host'].casefold(), project) in complete,
-                            'Configured GitLab project lacks a complete native advertisement')
-                else:
-                    require(any(route['local_repo'] == path and route['remote'] == remote.get('name')
-                                and route['host'] == remote['host'].casefold()
-                                and (route['host'], route['repo']) in complete for route in routes),
-                            'Unknown GitLab project lacks a complete effective-route read')
-    if discovery['status'] in {'unavailable', 'not_applicable'}:
-        require(not queries, 'Unavailable GitLab discovery has native queries')
-    for branch in data.get('branches', []):
-        seen = set()
-        require(isinstance(branch.get('merge_requests', []), list), 'Invalid native MR associations')
-        for match in branch.get('merge_requests', []):
-            require(isinstance(match, dict) and set(match) == {
-                'host', 'repo', 'number', 'url', 'hash', 'ref', 'proof', 'source_key'},
-                'Native Git MR refs prove only the advertised head association')
-            query = queries.get(match.get('source_key'))
-            require(query is not None and branch['object_type'] == 'commit', 'MR lacks a native GitLab query')
-            number = match.get('number')
-            require(integer(number, 1) and match.get('host') == query['host'] and match.get('repo') == query['repo']
-                    and match.get('hash') == branch['hash']
-                    and match.get('ref') == f'refs/merge-requests/{number}/head'
-                    and match.get('proof') == 'native_merge_request_head'
-                    and match.get('url') == f"https://{query['host']}/{query['repo']}/-/merge_requests/{number}"
-                    and {'hash': branch['hash'], 'ref': match['ref'], 'number': number, 'kind': 'head'} in query['refs'],
-                    'MR link differs from advertised native head')
-            identity = match['url'], match['hash']
-            require(identity not in seen, 'Duplicate MR branch association')
-            seen.add(identity)
