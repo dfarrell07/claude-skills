@@ -382,7 +382,9 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
                'history_rows': sum(len(page.get('values', [])) for record in records for page in record['pages']
                                    if isinstance(page.get('values'), list)),
                'authenticated_history': 'unverified'}
-    if complete != len(issues):
+    # Private tickets are never publicly readable; only a public ticket whose history
+    # could not be fully read is a gap worth reporting.
+    if any(record['identity'] is not None and record['status'] != 'ok' for record in records):
         warn('Jira anonymous history: some public-visible streams remain incomplete; authenticated history coverage stays separate.')
     return summary
 

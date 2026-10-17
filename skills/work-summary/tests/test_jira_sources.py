@@ -112,6 +112,8 @@ elif args[:3] == ["jira", "workitem", "search"]:
         assert "--paginate" in args and "--json" in args
         assert args[args.index("--fields")+1] == "key,summary,status,assignee,reporter,labels"
         emit(data["searches"][role])
+elif args[:3] == ["jira", "project", "list"]:
+    emit(data.get("projects", {"_exit": 1}))
 elif args[:3] == ["jira", "workitem", "view"]:
     emit(data["details"].get(args[3], {"_exit": 1}))
 elif args[:4] == ["jira", "workitem", "comment", "list"]:
@@ -295,10 +297,11 @@ else:
         self.assertEqual(result["activity"][0]["comment_id"], "c1")
         self.assertEqual(result["metadata"]["coverage"]["assigned"]["count_after"], 1)
         self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "unavailable")
-        self.assertEqual(result["metadata"]["status"], "partial")
+        # The reader never exposes changelogs: a recorded scope, not a per-run warning.
+        self.assertEqual(result["metadata"]["status"], "ok")
         for call in self.calls():
             self.assertIn(call[:3], [["jira", "auth", "status"], ["jira", "workitem", "search"],
-                                    ["jira", "workitem", "view"]])
+                                    ["jira", "workitem", "view"], ["jira", "project", "list"]])
 
     def test_all_projects_get_details_but_old_completed_work_stays_inventory_context(self):
         old = issue("OTHER-2", "done")
@@ -823,6 +826,22 @@ else:
         before = len(self.calls())
         jira.add_referenced_jira(result, ["MENTIONED-2"], START, END, self.warnings.append)
         self.assertEqual(self.calls()[before:], [["jira", "auth", "status"]])
+
+    def test_key_shaped_text_outside_tenant_projects_is_not_read_or_warned(self):
+        self.data["projects"] = [{"key": "TEST"}, {"key": "MENTIONED"}]
+        self.data["details"]["MENTIONED-2"] = detail(issue("MENTIONED-2", "done", OTHER))
+        result = self.collect()
+        self.assertEqual(result["metadata"]["project_keys"], ["MENTIONED", "TEST"])
+        warnings_before, before = len(self.warnings), len(self.calls())
+        jira.add_referenced_jira(result, ["SHA-256", "UTF-8", "MENTIONED-2", "MENTIONED-3"], START, END,
+                                 self.warnings.append)
+        views = [call[3] for call in self.calls()[before:] if call[:3] == ["jira", "workitem", "view"]]
+        self.assertEqual(views, ["MENTIONED-2", "MENTIONED-3"])
+        coverage = result["metadata"]["coverage"]["referenced_by_github"]
+        self.assertEqual(coverage["not_a_project"], ["SHA-256", "UTF-8"])
+        self.assertEqual(list(coverage["failures"]), ["MENTIONED-3"])
+        self.assertEqual(len(self.warnings) - warnings_before, 1)
+        self.assertIn("1 referenced ticket(s) could not be read", self.warnings[-1])
 
     def test_moved_key_retains_canonical_ticket_and_two_native_identity_proofs(self):
         native = detail(issue('NEW-3'), [comment('moved-comment', ME)])

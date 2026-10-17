@@ -251,6 +251,7 @@ class JiraPublicHistoryTest(unittest.TestCase):
         self.assertEqual(len(record['pages']), 1)
         self.assertEqual(record['status'], 'partial')
         self.assertEqual(record['errors'][0]['http_status'], 403)
+        self.assertEqual(len(self.warnings), 1)
 
     def test_foreign_self_page_is_not_bound_to_known_issue(self):
         foreign = page([history(1)])
@@ -287,6 +288,8 @@ class JiraPublicHistoryTest(unittest.TestCase):
         self.assertEqual(record['status'], 'unavailable')
         self.assertIsNone(record['identity'])
         self.assertEqual(record['identity_url'], f'{BASE}/rest/api/3/issue/1?fields=summary')
+        # Private tickets are never public; that expected state is not a coverage warning.
+        self.assertEqual(self.warnings, [])
 
     def test_unknown_site_and_missing_identity_make_no_network_requests(self):
         for jira in ({'metadata': {'site': None}, 'issues': [issue()]},

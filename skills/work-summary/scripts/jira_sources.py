@@ -73,7 +73,9 @@ def _changelog_coverage(result, warn):
                 "scope": "Actual top-level native detail.changelog objects; no inferred field events",
                 "required_read": "GET /rest/api/3/issue/{issueIdOrKey}/changelog with complete pagination"}
     result["metadata"]["coverage"]["changelog"] = coverage
-    if missing or incomplete:
+    # acli detail reads never include changelogs, so "none captured" is a fixed property of
+    # the reader, recorded above, not a per-run gap. Warn when a changelog was partial.
+    if incomplete or missing and captured:
         message = ("Native Jira detail responses omit or truncate changelogs; complete field history requires "
                    "an authenticated changelog REST reader. Deleted comments cannot be reconstructed from present comments.")
         result["metadata"]["status"] = "partial"
@@ -598,6 +600,15 @@ def collect_jira(start, end, warn):
         return result
 
     site, user = metadata["site"], metadata["user"]
+    try:
+        # Text such as SHA-256, UTF-8 or RHSA-2026 looks like an issue key. Knowing the
+        # tenant's projects avoids reading and warning about keys that cannot exist.
+        projects = decode_json(cli("project", "list", "--json", "--paginate"))
+        require(isinstance(projects, list) and all(isinstance(row, dict) and isinstance(row.get("key"), str)
+                                                   for row in projects), "Malformed project list")
+        metadata["project_keys"] = sorted({row["key"] for row in projects})
+    except ERRORS:
+        metadata["project_keys"] = None
     # JQL updatedBy has whole-day granularity in the account's timezone. Widen
     # boundaries; native event timestamps below enforce the exact UTC window.
     since = (start - timedelta(days=1)).date().isoformat()
@@ -761,9 +772,17 @@ def add_referenced_jira(result, keys, start, end, warn):
     by_key = {item["key"]: item for item in result["issues"]}
     key_aliases = {row['requested_key']: row['canonical_key'] for row in result.get('key_aliases', [])}
     selected, preloaded = [], {}
+    projects = set(metadata.get("project_keys") or ())
+    known = set(by_key) | set(key_aliases)
+    unreadable = 0
     for key in requested:
         if key not in coverage["requested_keys"]:
             coverage["requested_keys"].append(key)
+        if projects and key.split("-")[0] not in projects and key not in known:
+            not_issues = coverage.setdefault("not_a_project", [])
+            if key not in not_issues:
+                not_issues.append(key)
+            continue
         try:
             require(isinstance(key, str) and KEY.fullmatch(key), "Invalid referenced issue key")
             item = by_key.get(key_aliases.get(key, key))
@@ -807,7 +826,10 @@ def add_referenced_jira(result, keys, start, end, warn):
         except ERRORS as error:
             failures[key] = _failure(error)
             coverage["status"] = "partial"
-            gap("One captured issue-key candidate could not be resolved; its native failure was retained.")
+            unreadable += 1
+    if unreadable:
+        gap(f"{unreadable} referenced ticket(s) could not be read (restricted, deleted or not tickets); "
+            "failures are in coverage.referenced_by_github.failures.")
     metadata["coverage"]["details"]["requested_count"] += len(selected)
     _detail_items(result, selected, start, end, warn, preloaded)
     metadata["issue_count"] = len(result["issues"])

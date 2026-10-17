@@ -195,6 +195,7 @@ def reference_failure_classification(jira, github, gitlab=None):
         return {}
     unresolved = (set(coverage.get('requested_keys', [])) - set(coverage.get('returned_keys', [])))
     unresolved.update(coverage.get('failures', {}))
+    unresolved.difference_update(coverage.get('not_a_project', []))
     site = jira.get('metadata', {}).get('site')
     explicit, lexical, native = {}, {}, {}
     texts = list(_github_reference_texts(github))
