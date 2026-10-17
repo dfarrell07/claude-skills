@@ -257,9 +257,10 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertEqual(branch['attribution_commit']['hash'], own)
         self.assertEqual(branch['attribution_commit']['author_email'], 'own@example.test')
         self.assertEqual(set(branch['refs']), {'refs/heads/feature', 'refs/codex/backup'})
-        ancestry_calls = [call for call in calls.call_args_list
-                          if call.args[1:4] == ('merge-base', '--is-ancestor', foreign)]
-        self.assertEqual(len(ancestry_calls), 1)
+        # Ordinary refs get their containment from one listing, not a check per commit.
+        self.assertFalse(any(call.args[1:3] == ('merge-base', '--is-ancestor') for call in calls.call_args_list))
+        self.assertEqual(sum(call.args[1] == 'for-each-ref' and call.args[2].startswith('--merged=')
+                             for call in calls.call_args_list), 1)
 
     def test_alias_only_on_older_backup_is_independently_verified(self):
         repo = self.repo(self.root / 'repository')

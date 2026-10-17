@@ -628,6 +628,13 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 if ref['name'].startswith('refs/tags/') and not BACKUP.search(ref['name']):
                     continue
                 grouped.setdefault(sha, []).append(ref)
+            # One listing answers containment for every ordinary ref; per-commit checks
+            # remain for worktree HEADs and private namespaces that it cannot see.
+            merged = None
+            if base:
+                listing = git(entry['path'], 'for-each-ref', '--merged=' + base['hash'],
+                              '--format=%(objectname)%00%(*objectname)')
+                merged = {value for line in listing.splitlines() for value in line.split('\0') if value}
             for sha, refs in grouped.items():
                 tip = info[sha]
                 owner = tip['author_email'] in entry['identities']
@@ -640,7 +647,11 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 if not owner and not history_candidate:
                     continue
                 contained = None
-                if base:
+                if merged is not None and sha in merged:
+                    contained = True
+                elif merged is not None and any(ref['name'].startswith('refs/') for ref in refs):
+                    contained = False
+                elif base:
                     try:
                         git(entry['path'], 'merge-base', '--is-ancestor', sha, base['hash'])
                         contained = True
