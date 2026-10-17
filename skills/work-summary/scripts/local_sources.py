@@ -368,7 +368,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             dependency_roots.append(candidate.resolve())
         except (OSError, RuntimeError):
             dependency_roots.append(candidate.absolute())
-    exclusions = []
+    exclusions, unreadable = [], []
     visited = set()
     try:
         home_real = home.resolve() if home is not None else None
@@ -376,8 +376,14 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         home_real = None
 
     def scan_error(error):
-        # Respect the user's permissions: an unreadable directory is a stated gap.
-        warn(f'Cannot scan {error.filename}; local coverage is incomplete.')
+        # Respect the user's permissions. A directory another account owns (container or
+        # build output) cannot hold the user's own clones and is only excluded; one the
+        # user owns but cannot read is a stated gap.
+        try:
+            foreign = os.lstat(error.filename).st_uid != os.getuid()
+        except (OSError, TypeError, AttributeError):
+            foreign = False
+        (exclusions if foreign else unreadable).append(str(error.filename))
 
     for root in dict.fromkeys(scan_roots):
         try:
@@ -454,6 +460,9 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             dirs[:] = keep
     while queue:
         add_repo(queue.pop(), marked=True)
+    if unreadable:
+        warn(f'Cannot scan {len(unreadable)} unreadable director{"y" if len(unreadable) == 1 else "ies"} '
+             f'(first: {unreadable[0]}); local coverage is incomplete.')
 
     aliases = {email: {'email': email, 'source': 'explicit'} for email in author_emails}
     if identity.get('email'):
@@ -665,5 +674,6 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             warn(f'Cannot classify ref snapshots for {entry["path"]}; branch coverage is incomplete.')
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
+                         'scan_unreadable': sorted(set(unreadable)),
                          'repositories': list(entries.values()), 'author_aliases': list(aliases.values())},
             'commits': commits, 'branches': branches, 'unattributed_commits': unattributed}

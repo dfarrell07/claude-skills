@@ -214,6 +214,22 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertIn(str(home / 'cache-alias'), data['metadata']['scan_exclusions'])
         self.assertEqual(set(explicit['commits']), {str(cached_repo)})
 
+    def test_unreadable_directories_owned_by_another_account_are_excluded_not_gaps(self):
+        locked = self.root / 'container-volume'
+        locked.mkdir()
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        if os.access(locked, os.R_OK | os.X_OK):
+            self.skipTest('This user bypasses directory permissions')
+        warnings = []
+        end = datetime.now(timezone.utc)
+        owner = locked.stat().st_uid
+        with patch.object(local_sources.os, 'getuid', return_value=owner + 1):
+            data = local_sources.collect_local([str(self.root)], end - timedelta(days=7), end, warnings.append)
+        self.assertIn(str(locked), data['metadata']['scan_exclusions'])
+        self.assertEqual(data['metadata']['scan_unreadable'], [])
+        self.assertEqual(warnings, [])
+
     def test_home_application_data_is_pruned_but_nested_library_projects_remain(self):
         home = self.home
         app_data = self.repo(home / 'Library' / 'Application Support' / 'tool')

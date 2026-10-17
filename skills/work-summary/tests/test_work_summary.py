@@ -547,6 +547,8 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
                 self.skipTest("This user bypasses directory permissions")
             data = self.capture(root)
             self.assertEqual(data["metadata"]["local_status"], "partial")
+            self.assertEqual(data["metadata"]["scan_unreadable"], [str(root)])
+            self.assertIn("Cannot scan 1 unreadable directory", " ".join(data["metadata"]["warnings"]))
             self.assertNotIn('local_recoveries', data['metadata'])
             self.assertEqual(root.stat().st_mode & 0o777, 0)
             self.assertEqual(len(data["github"]["prs"]), 1)
