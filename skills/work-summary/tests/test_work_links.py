@@ -7,7 +7,8 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from work_links import associate_work, classify_reference_failures, complete_references, referenced_keys  # noqa: E402
+from references import referenced_keys  # noqa: E402
+from work_links import associate_work  # noqa: E402
 
 
 class WorkLinksTest(unittest.TestCase):
@@ -16,73 +17,8 @@ class WorkLinksTest(unittest.TestCase):
                  'detail': {'fields': {'description': '', 'issuelinks': [], 'comment': {'comments': []}}}}
         pr = {'url': 'https://github.com/org/repo/pull/42', 'title': 'TEST-123: repair checks', 'body': ''}
         return {'metadata': {'github_host': 'github.com'},
-                'github': {'prs': [pr], 'issues': [], 'pr_index': []},
+                'github': {'prs': [pr], 'issues': []},
                 'jira': {'metadata': {'site': 'jira.example.test'}, 'issues': [issue]}}
-
-    def test_unresolved_lexical_leads_are_distinct_from_explicit_native_references(self):
-        data = self.capture()
-        jira, github = data['jira'], data['github']
-        keys = ['AES-256', 'NEWPROJECT-7', 'DIRECT-8', 'LINKED-9', 'OLD-10', 'NATIVE-11']
-        coverage = {'status': 'partial', 'requested_keys': keys, 'returned_keys': [],
-                    'failures': {key: {'stderr': 'Native issue unavailable'} for key in keys}}
-        jira['metadata'].update(status='partial', coverage={'referenced_by_github': coverage})
-        github['prs'][0]['body'] = ('Use AES-256; investigate NEWPROJECT-7. '
-                                  'https://jira.example.test/browse/DIRECT-8')
-        jira['issues'][0]['detail']['fields']['issuelinks'] = [{'outwardIssue': {
-            'id': '90', 'key': 'LINKED-9', 'self': 'https://jira.example.test/rest/api/3/issue/90'}}]
-        jira['issues'][0]['full_detail'] = {'fields': {'customfield_90': {
-            'href': 'https://jira.example.test/browse/NATIVE-11'}}}
-        before = copy.deepcopy(coverage)
-        classify_reference_failures(jira, github)
-        classified = coverage['failure_classification']
-        self.assertEqual({key: value['kind'] for key, value in classified.items()}, {
-            'AES-256': 'lexical_candidate', 'NEWPROJECT-7': 'lexical_candidate',
-            'DIRECT-8': 'explicit_jira_url', 'LINKED-9': 'native_issue_reference',
-            'OLD-10': 'unmatched_candidate', 'NATIVE-11': 'explicit_jira_url'})
-        self.assertEqual(classified['DIRECT-8']['evidence_urls'], [github['prs'][0]['url']])
-        self.assertEqual(classified['LINKED-9']['evidence_urls'], [jira['issues'][0]['url']])
-        self.assertEqual({key: value for key, value in coverage.items()
-                          if key != 'failure_classification'}, before)
-        self.assertEqual(jira['metadata']['status'], 'partial')
-        associate_work(jira, github)
-        classified['DIRECT-8']['kind'] = 'lexical_candidate'
-
-    def test_failure_classification_uses_all_captured_discussions_and_gitlab_native_bodies(self):
-        data = self.capture()
-        jira, github = data['jira'], data['github']
-        keys = ['COMMENT-1', 'REVIEW-2', 'MR-3', 'FOREIGN-4']
-        jira['metadata']['coverage'] = {'referenced_by_github': {
-            'status': 'partial', 'requested_keys': keys, 'returned_keys': [], 'failures': {}}}
-        url = 'https://github.com/elsewhere/history/pull/99'
-        github['reference_comments'] = [{'item_url': url, 'url': url + '#issuecomment-1',
-            'body': 'https://jira.example.test/browse/COMMENT-1'}]
-        github['reference_reviews'] = [{'item_url': url, 'repo': 'elsewhere/history', 'number': 99,
-            'source': {'id': 2, 'html_url': url + '#pullrequestreview-2', 'body': 'REVIEW-2',
-                       'user': None, 'submitted_at': None}}]
-        gitlab = {'items': [{'url': 'https://gitlab.example.test/org/repo/-/merge_requests/1',
-            'source': {'title': 'MR-3', 'description': ''}, 'notes': [
-                {'body': 'https://elsewhere.example.test/browse/FOREIGN-4'}]}]}
-        classify_reference_failures(jira, github, gitlab)
-        kinds = {key: value['kind'] for key, value in
-                 jira['metadata']['coverage']['referenced_by_github']['failure_classification'].items()}
-        self.assertEqual(kinds, {'COMMENT-1': 'explicit_jira_url', 'REVIEW-2': 'lexical_candidate',
-                                'MR-3': 'lexical_candidate', 'FOREIGN-4': 'unmatched_candidate'})
-
-    def test_malformed_or_foreign_issue_link_cannot_promote_a_lexical_failure(self):
-        for identity, url in [(True, 'https://jira.example.test/rest/api/3/issue/1'),
-                              ('1', 'https://foreign.example.test/rest/api/3/issue/1'),
-                              ('1', 'https://jira.example.test/rest/api/3/issue/2')]:
-            with self.subTest(identity=identity, url=url):
-                data = self.capture()
-                jira, github = data['jira'], data['github']
-                github['prs'][0]['body'] = 'NEWPROJECT-7'
-                jira['metadata']['coverage'] = {'referenced_by_github': {
-                    'requested_keys': ['NEWPROJECT-7'], 'returned_keys': []}}
-                jira['issues'][0]['detail']['fields']['issuelinks'] = [{'inwardIssue': {
-                    'id': identity, 'key': 'NEWPROJECT-7', 'self': url}}]
-                classify_reference_failures(jira, github)
-                self.assertEqual(jira['metadata']['coverage']['referenced_by_github'][
-                    'failure_classification']['NEWPROJECT-7']['kind'], 'lexical_candidate')
 
     def test_native_key_reference_links_both_directions(self):
         data = self.capture()
@@ -130,27 +66,6 @@ class WorkLinksTest(unittest.TestCase):
         broken = copy.deepcopy(data)
         broken['github']['prs'][0]['jira_links'][0]['source_key'] = 'OTHER-8'
 
-    def test_later_selected_native_observation_keeps_new_ticket_reference(self):
-        data = self.capture()
-        pr = data['github']['prs'][0]
-        pr['title'] = 'First native observation'
-        data['github']['pr_index_observations'] = [
-            {**pr, 'title': 'TEST-123: later native observation'},
-            {**pr, 'url': 'https://github.com/org/repo/pull/999', 'title': 'UNRELATED-999'}]
-        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
-        associate_work(data['jira'], data['github'])
-        self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
-        self.assertEqual(pr['title'], 'First native observation')
-
-    def test_deliberately_captured_historical_comment_references_join_frontier(self):
-        data = self.capture()
-        url = 'https://github.com/org/other/pull/99'
-        data['github']['pr_index'] = [{'url': url, 'body': 'UNSCANNED-9'}]
-        data['github']['reference_comments'] = [{
-            'item_url': url, 'body': 'Historical native comment refers to TASK-7.'}]
-        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TASK-7', 'TEST-123'])
-        self.assertNotIn('activity', data['github'])
-
     def test_explicit_native_jira_authority_overrides_non_ticket_prefix_guess(self):
         data = self.capture()
         pr = data['github']['prs'][0]
@@ -190,20 +105,6 @@ class WorkLinksTest(unittest.TestCase):
                 broken = copy.deepcopy(data)
                 broken['github']['reference_comments'][0][field] = value
 
-    def test_comment_discovery_reaches_fixed_point_and_preserves_weak_leads(self):
-        data = self.capture()
-        pr = data['github']['prs'][0]
-        pr['title'] = 'No ticket'
-        data['github']['reference_comments'] = [
-            {'item_url': pr['url'], 'url': pr['url'] + '#issuecomment-1', 'id': 1,
-             'body': 'Investigate branch task-99 and https://jira.example.test/browse/TEST-123'}]
-        attempted = []
-        complete_references(data['jira'], data['github'], lambda keys: attempted.extend(keys))
-        self.assertEqual(attempted, ['TASK-99', 'TEST-123'])
-        associate_work(data['jira'], data['github'])
-        self.assertEqual(pr['jira_links'][0]['key'], 'TEST-123')
-        self.assertEqual(len(pr['jira_links']), 1)
-
     def test_issue_in_a_repository_named_pull_is_not_a_pr_link(self):
         data = self.capture()
         item = data['github']['prs'].pop()
@@ -234,43 +135,6 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(issue['pr_links'][0]['url'], pr['url'])
         self.assertEqual(issue['pr_links'][0]['source_url'], original_url)
         self.assertEqual(pr['jira_links'][0]['key'], issue['key'])
-
-    def test_native_repository_alias_pairs_historical_jira_url_without_rewriting_proof(self):
-        data = self.capture()
-        pr,issue = data['github']['prs'][0],data['jira']['issues'][0]
-        pr['title']='No ticket key in this PR'
-        original='https://github.com/previous/repo/pull/42'
-        issue['detail']['fields']['description']={'marks':[{'attrs':{'href':original}}]}
-        issue['pr_links']=[{'url':original,'proof':'description','evidence_url':issue['url']}]
-        record={'host':'github.com','requested_repo':'previous/repo','canonical_repo':'org/repo',
-                'requested':{'path':'repos/previous/repo','id':123,'full_name':'org/repo',
-                             'html_url':'https://github.com/org/repo'},
-                'canonical':{'path':'repos/org/repo','id':123,'full_name':'org/repo',
-                             'html_url':'https://github.com/org/repo'}}
-        # Different repository names alone must never establish identity.
-        associate_work(data['jira'],data['github'])
-        self.assertEqual(pr['jira_links'],[])
-        data['github']['repository_aliases']=[record]
-        associate_work(data['jira'],data['github'])
-        relation=issue['pr_links'][0]
-        self.assertEqual(relation['url'],pr['url'])
-        self.assertEqual(relation['source_url'],original)
-        self.assertEqual(pr['jira_links'][0]['key'],issue['key'])
-        associate_work(data['jira'],data['github'])
-        self.assertEqual(relation['source_url'],original)
-        for tamper in ('missing-alias','wrong-number','wrong-native-source','invalid-native-suffix','different-id'):
-            with self.subTest(tamper=tamper):
-                broken=copy.deepcopy(data)
-                if tamper=='missing-alias':
-                    broken['github'].pop('repository_aliases')
-                if tamper=='wrong-number':
-                    broken['jira']['issues'][0]['pr_links'][0]['source_url']=original.replace('/42','/43')
-                if tamper=='wrong-native-source':
-                    broken['jira']['issues'][0]['detail']['fields']['description']='Unrelated content'
-                if tamper=='invalid-native-suffix':
-                    broken['jira']['issues'][0]['detail']['fields']['description']=original+'oops'
-                if tamper=='different-id':
-                    broken['github']['repository_aliases'][0]['canonical']['id']=124
 
     def test_native_gitlab_mr_references_keep_href_comment_and_private_proof(self):
         data = self.capture()
@@ -357,18 +221,6 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(discovery_keys('https://jira.example.test/browse/GO-2026',
                                         'jira.example.test'), {'GO-2026'})
 
-    def test_older_numeric_fragment_attempts_keep_lexical_failure_provenance(self):
-        data = self.capture()
-        data['github']['prs'][0].update(title='', body='GO-2026-6354 and source.go-89-91')
-        coverage = {'status': 'partial', 'requested_keys': ['GO-2026', 'GO-89'],
-                    'returned_keys': [], 'failures': {}}
-        data['jira']['metadata']['coverage'] = {'referenced_by_github': coverage}
-        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), [])
-        classify_reference_failures(data['jira'], data['github'])
-        self.assertEqual(coverage['failure_classification'], {
-            key: {'kind': 'lexical_candidate', 'evidence_urls': [data['github']['prs'][0]['url']]}
-            for key in ('GO-2026', 'GO-89')})
-
     def test_conventional_uppercase_and_explicit_browse_references_confirm_pairing(self):
         for field, text in [('title', 'ACM-123: fix checks'), ('head_ref', 'fix/ACM-123-checks'),
                             ('body', 'See https://jira.example.test/browse/acm-123')]:
@@ -450,22 +302,19 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(pr['jira_links'], [])
 
     def test_version_tokens_do_not_seed_or_pair_a_real_ticket_with_the_same_prefix(self):
-        for field in ('title', 'body', 'head_ref', 'indexed_head_ref'):
+        for field in ('title', 'body', 'head_ref'):
             for text in ('VERSION-4.20', 'version-4.20.1', 'fix/version-4.20-next'):
                 with self.subTest(field=field, text=text):
                     data = self.capture()
                     issue, pr = data['jira']['issues'][0], data['github']['prs'][0]
                     issue.update(key='VERSION-4', url='https://jira.example.test/browse/VERSION-4')
                     pr.update(title='', body='', head_ref='')
-                    if field == 'indexed_head_ref':
-                        data['github']['pr_index'] = [{**pr, 'head_ref': text}]
-                    else:
-                        pr[field] = text
+                    pr[field] = text
                     self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), [])
                     associate_work(data['jira'], data['github'])
                     self.assertEqual(pr['jira_links'], [])
                     self.assertEqual(issue['pr_links'], [])
-                    proof_field = 'head_ref' if field == 'indexed_head_ref' else field
+                    proof_field = field
                     issue['pr_links'] = [{'url': pr['url'], 'proof': 'github_' + proof_field + '_key',
                                           'evidence_url': pr['url'], 'sensitive': False}]
         for text in ('VERSION-4.', 'VERSION-4. More context.',
@@ -489,78 +338,12 @@ class WorkLinksTest(unittest.TestCase):
                 expected = ['TEST-123'] if host == 'jira.example.test' else []
                 self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), expected)
 
-    def test_selected_index_head_ref_seeds_native_ticket_lookup(self):
-        data = self.capture()
-        pr = data['github']['prs'][0]
-        pr['title'], pr['body'] = '', ''
-        data['github']['pr_index'] = [{**pr, 'head_ref': 'fix/test-123-retry'},
-                                      {'url': 'https://github.com/org/repo/pull/99', 'head_ref': 'OLD-77'}]
-        self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
-
-    def test_newly_fetched_pr_ticket_frontiers_complete_and_cycles_terminate(self):
-        data = self.capture()
-        github, jira = data['github'], data['jira']
-        github['prs'][0]['title'] = 'TEST-2'
-        jira['linked_prs'] = []
-        calls = []
-        def tickets(keys):
-            calls.extend(('jira', key) for key in keys)
-            for key in keys:
-                if key == 'TEST-2':
-                    jira['linked_prs'].append('https://github.com/org/repo/pull/99')
-                    jira['issues'].append({'key': key, 'url': 'https://jira.example.test/browse/' + key,
-                        'roles': ['referenced_by_github'], 'pr_links': [{
-                            'url': 'https://github.com/org/repo/pull/99', 'proof': 'description'}]})
-        def prs(urls):
-            calls.extend(('pr', url) for url in urls)
-            github.setdefault('context_prs', []).append({'url': urls[0], 'body': 'TEST-3 and TEST-2'})
-        result = complete_references(jira, github, tickets, prs)
-        self.assertEqual(result['attempted_jira_keys'], ['TEST-2', 'TEST-3'])
-        self.assertEqual(calls.count(('jira', 'TEST-2')), 1)
-        self.assertEqual(calls.count(('jira', 'TEST-3')), 1)
-        self.assertEqual(len([call for call in calls if call[0] == 'pr']), 1)
-
     def test_restricted_ticket_links_remain_marked_private(self):
         data = self.capture()
         data['jira']['issues'][0]['sensitive'] = True
         associate_work(data['jira'], data['github'])
         self.assertTrue(data['jira']['issues'][0]['pr_links'][0]['sensitive'])
         self.assertTrue(data['github']['prs'][0]['jira_links'][0]['sensitive'])
-
-    def test_explicit_jira_link_promotes_index_only_pr_and_expands_its_ticket(self):
-        data = self.capture()
-        github, jira = data['github'], data['jira']
-        github['pr_index'] = [{'url': github['prs'][0]['url'], 'body': 'TEST-2'}]
-        github['prs'] = []
-        jira['linked_prs'] = [github['pr_index'][0]['url']]
-        jira['issues'][0]['pr_links'] = [{'url': jira['linked_prs'][0], 'proof': 'description'}]
-        tickets, urls = [], []
-        def read_prs(values):
-            urls.extend(values)
-            github['context_prs'] = list(github['pr_index'])
-        complete_references(jira, github, tickets.extend, read_prs)
-        self.assertEqual(urls, jira['linked_prs'])
-        self.assertEqual(tickets, ['TEST-2'])
-
-    def test_missing_pr_reader_retains_context_without_claiming_a_native_attempt(self):
-        data = self.capture()
-        github, jira = data['github'], data['jira']
-        known, unread = github['prs'][0]['url'], 'https://github.com/org/repo/pull/99'
-        issue = jira['issues'][0]
-        issue['detail']['fields']['description'] = 'Review context ' + unread
-        issue['pr_links'] = [{'url': unread, 'proof': 'description', 'evidence_url': issue['url']}]
-        jira['linked_prs'] = [known, unread, unread]
-        before = copy.deepcopy(github)
-        keys = []
-        result = complete_references(jira, github, keys.extend)
-        self.assertEqual(result['attempted_jira_keys'], ['TEST-123'])
-        self.assertEqual(result['attempted_pr_urls'], [known])
-        self.assertEqual(result['unread_pr_urls'], [unread])
-        self.assertEqual(keys, ['TEST-123'])
-        self.assertEqual(github, before)
-        associate_work(jira, github)
-        self.assertIn(unread, [relation['url'] for relation in issue['pr_links']])
-        self.assertFalse(any(item['url'] == unread for item in github['prs']))
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,64 +6,6 @@ from urllib.parse import urlsplit
 from evidence import HOST, REPO, integer, is_pr_url, require, timestamp
 
 
-def repository_aliases(github, host):
-    """Bind renamed repository routes only through two native repository IDs."""
-    records = github.get('repository_aliases', [])
-    require(isinstance(records, list), 'Invalid GitHub repository aliases')
-    aliases, identities, route_ids = {}, {}, {}
-    for record in records:
-        require(isinstance(record, dict) and record.get('host') == host,
-                'Invalid GitHub repository alias host')
-        requested, canonical = record.get('requested_repo'), record.get('canonical_repo')
-        for repo in (requested, canonical):
-            require(isinstance(repo, str) and REPO.fullmatch(repo)
-                    and all(part not in {'.', '..'} for part in repo.split('/')),
-                    'Invalid GitHub repository alias route')
-        proofs = []
-        for field, repo in (('requested', requested), ('canonical', canonical)):
-            proof = record.get(field)
-            require(isinstance(proof, dict) and proof.get('path') == 'repos/' + repo
-                    and integer(proof.get('id'), 1) and isinstance(proof.get('full_name'), str)
-                    and proof['full_name'].casefold() == canonical.casefold()
-                    and proof.get('html_url') == f"https://{host}/{proof['full_name']}",
-                    'Invalid native GitHub repository alias proof')
-            proofs.append(proof)
-        require(proofs[0]['id'] == proofs[1]['id'], 'GitHub repository alias ID mismatch')
-        for repo in (requested, canonical):
-            route = host.casefold(), repo.casefold()
-            require(route not in route_ids or route_ids[route] == proofs[0]['id'],
-                    'Conflicting GitHub repository route IDs')
-            route_ids[route] = proofs[0]['id']
-        key = (host.casefold(), requested.casefold())
-        identity = canonical.casefold(), proofs[0]['id']
-        require(key not in identities or identities[key] == identity, 'Conflicting GitHub repository alias')
-        identities[key] = identity
-        aliases[key] = canonical.casefold()
-    return aliases
-
-
-def comment_node_bound(node, rest):
-    """Bind a later native observation to the same comment and native author."""
-    require(isinstance(node, dict) and node.get('id') == rest.get('node_id')
-            and integer(node.get('databaseId'), 1) and node['databaseId'] == rest.get('id')
-            and node.get('url') == rest.get('html_url')
-            and timestamp(node.get('createdAt')) == timestamp(rest.get('created_at'))
-            and timestamp(node.get('createdAt')) <= timestamp(node.get('updatedAt')),
-            'Native comment history identity mismatch')
-    require('author' in node, 'Missing native history author')
-    author, original = node['author'], rest.get('user')
-    if author is None or original is None:
-        require(author is None and original is None, 'Native history deleted author mismatch')
-    else:
-        require(isinstance(author, dict) and isinstance(original, dict), 'Invalid native history author')
-        if author.get('id') and original.get('node_id'):
-            require(author['id'] == original['node_id'], 'Native history author ID mismatch')
-        else:
-            require(isinstance(author.get('login'), str) and bool(author['login'])
-                    and author['login'].casefold() == original.get('login', '').casefold(),
-                    'Native history author mismatch')
-
-
 def same_github_item_url(left, right):
     """GitHub owner/repo casing is equivalent; native route/fragment stay exact."""
     if (not isinstance(left, str) or not isinstance(right, str)
@@ -153,20 +95,7 @@ def github_reference_comments(github):
                'url': source['html_url'], 'body': source['body'] or '',
                'author_login': (source['user'] or {}).get('login'),
                'author_node_id': (source['user'] or {}).get('node_id'), 'submitted_at': source['submitted_at']}
-    for record in github.get('comment_edit_histories', []):
-        for page in record.get('pages', []):
-            try:
-                node = page['response']['data']['node']
-                comment_node_bound(node, record['rest_observation'])
-                require(isinstance(node.get('body'), str), 'Missing native body')
-                yield {'item_url': record['item_url'], 'repo': record['repo'], 'number': record['number'],
-                       'kind': record['kind'], 'id': node['databaseId'], 'node_id': node['id'],
-                       'url': node['url'], 'body': node['body'],
-                       'author_login': (node['author'] or {}).get('login'),
-                       'author_node_id': (node['author'] or {}).get('id'),
-                       'created_at': node['createdAt'], 'updated_at': node['updatedAt']}
-            except (KeyError, ValueError, TypeError, AttributeError):
-                continue
+
 
 
 def jira_reference(item):

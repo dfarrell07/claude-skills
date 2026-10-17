@@ -30,7 +30,8 @@ from extended_evidence import github_reference_comments, jira_reference  # noqa:
 from gitlab_sources import collect_gitlab_refs  # noqa: E402
 from gitlab_api import collect_gitlab, public_get  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
-from provider_references import code_urls, complete_provider_references, verified_aliases  # noqa: E402
+from provider_references import code_urls, verified_aliases  # noqa: E402
+from references import follow_references  # noqa: E402
 from reporting_window import resolve_window, search_bounds  # noqa: E402
 
 
@@ -228,8 +229,8 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     discovery = {}
     if github_user:
         ledger = Github(api, host, github_user, start, end, warn)
-        ledger.discover(github, jira["linked_prs"])
-        known = {item['url'].casefold(): item for item in reversed(github_items(github, include_index=False))}
+        ledger.discover(github)
+        known = {item['url'].casefold(): item for item in reversed(github_items(github))}
         retained_context = []
         for kind, items in initial_context.items():
             for item in items:
@@ -256,22 +257,24 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
             public_cache[url] = public_get(url)
         return public_cache[url]
     history_warnings = set()
-    def read_history():
+
+    def read_history(tickets):
         def once(message):
             if message not in history_warnings:
                 history_warnings.add(message)
                 warn(message)
+        # Only active tickets: all-time role inventories are context, and private tickets
+        # are never publicly readable.
         jira['metadata']['public_history'] = collect_public_history(
-            jira, once, reuse=True, github_host=host)
+            {'metadata': jira['metadata'], 'issues': tickets}, once, reuse=True, github_host=host)
     try:
-        gitlab, expansion = complete_provider_references(jira, github, local['branches'],
+        gitlab, expansion = follow_references(
+            jira, github, local['branches'],
             lambda keys: add_referenced_jira(jira, keys, start, end, warn),
-            (lambda urls: ledger.add_linked_prs(github, urls)) if github_user else None,
             lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                       since=start, read=read_public,
-                                       trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
-            host, read_history=read_history,
-            since=start, until=end)
+                                        since=start, read=read_public,
+                                        trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
+            read_history, host)
     except (ValueError, KeyError, TypeError) as error:
         # Reference expansion only adds counterparts and history. An internal
         # inconsistency there must not discard minutes of collected primary evidence.
@@ -490,13 +493,7 @@ def local_context_links(data, topic):
 
 def topic_github_items(data, topic):
     by_url = {item['url']: item for item in reversed(github_items(data['github']))}
-    selected = {item['url']: by_url[item['url']] for item in topic.get('items', [])}
-    refs = {(item['repo'], item['hash']) for item in topic.get('commits', []) + topic.get('branches', [])}
-    for branch in data.get('branches', []):
-        if (branch['repo'], branch['hash']) in refs:
-            for pr in branch.get('prs', []):
-                selected[pr['url']] = by_url[pr['url']]
-    return list(selected.values())
+    return list({item['url']: by_url[item['url']] for item in topic.get('items', [])}.values())
 
 
 def topic_merge_requests(data, topic):

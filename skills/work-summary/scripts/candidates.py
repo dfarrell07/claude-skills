@@ -80,7 +80,8 @@ class Digest:
         self.tickets = {item['key']: item for item in data.get('jira', {}).get('issues', [])}
         self.events = {}
         for event in data['github'].get('activity', []):
-            if event['action'] in SUBSTANTIVE:
+            # An event always names a captured item; skip any that does not rather than fail.
+            if event['action'] in SUBSTANTIVE and event['item_url'] in self.items:
                 self.events.setdefault(event['item_url'], []).append(event)
         for item in data['github'].get('prs', []):
             if self.in_window(item.get('merged_at')):
@@ -187,11 +188,16 @@ class Digest:
             lines.append(f"- {repo}: " + ', '.join(f'{month} {count}' for month, count in counts.items()))
         if len(months) > LIMIT_CONTEXT:
             lines.append(f'- (+{len(months) - LIMIT_CONTEXT} more repositories)')
-        clusters = {}
+        clusters, labels = {}, {}
         for url in self.events:
-            clusters.setdefault(self.workstream(self.items[url]), []).append(url)
+            kind, key, summary = self.workstream(self.items[url])
+            # A ticket can be both an epic over other tickets and directly linked: one workstream.
+            clusters.setdefault(key, []).append(url)
+            if key not in labels or kind == 'epic':
+                labels[key] = (kind, summary or labels.get(key, ('', ''))[1])
         lines.extend(['', f'## GitHub workstreams ({len(clusters)}; largest first)'])
-        for (kind, key, summary), urls in sorted(clusters.items(), key=lambda row: (-len(row[1]), row[0])):
+        for key, urls in sorted(clusters.items(), key=lambda row: (-len(row[1]), row[0])):
+            kind, summary = labels[key]
             mine = sum(1 for url in urls if self.own(self.items[url]))
             merged = sum(1 for url in urls if self.own(self.items[url]) and self.in_window(self.items[url].get('merged_at')))
             dates = [e['at'] for url in urls for e in self.events[url]] + [

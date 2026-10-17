@@ -67,8 +67,6 @@ class Github:
         self._activity_seen = set()
         self._comment_seen = set()
         self._review_seen = set()
-        self._repository_metadata = {}
-        self._repository_aliases = {}
 
     def graphql(self, *args):
         # gh exits nonzero for GraphQL errors even when stdout retains successful
@@ -243,7 +241,7 @@ class Github:
             self.problem(key, 'partitioned search count disagrees with its original inventory')
         return found
 
-    def discover(self, github, linked_prs=()):
+    def discover(self, github):
         github['context_prs'], github['context_issues'], github['activity'] = [], [], []
         all_items = {item['url'].casefold(): item for kind in ('prs', 'issues') for item in github[kind]}
         since = iso(self.start)
@@ -274,101 +272,8 @@ class Github:
                 if key not in original['roles']:
                     original['roles'].append(key)
                 original.setdefault('author_login', item.get('author_login'))
-        for item in self.add_linked_prs(github, linked_prs):
-            all_items[item['url'].casefold()] = item
         self._inspect_activity(github, all_items.values())
         return all_items
-
-    def add_linked_prs(self, github, urls):
-        """Fetch only new Jira-linked PRs, preserving captured context and events.
-
-        Existing native items gain a role without rereading their endpoints.
-        New items receive actor inspection once; failures remain visible in this
-        instance's coverage and are not silently retried by another frontier.
-        """
-        for key in ('context_prs', 'context_issues', 'activity'):
-            github.setdefault(key, [])
-        all_items = {item['url']: item for kind in ('prs', 'issues', 'context_prs', 'context_issues')
-                     for item in github.get(kind, [])}
-        by_identity = {(urlsplit(item['url']).netloc.casefold(), item['repo'].casefold(), item['number']): item
-                       for item in all_items.values() if is_pr_url(item['url'])}
-        new_items = []
-        for url in urls:
-            key = 'jira_links'
-            try:
-                require(isinstance(url, str), 'Invalid linked PR URL')
-                if url in self._linked_attempts:
-                    continue
-                self._linked_attempts.add(url)
-                parsed = urlsplit(url)
-                parts = parsed.path.strip('/').split('/')
-                require(len(parts) == 4 and parts[2] == 'pull' and parts[3].isascii()
-                        and parts[3].isdigit() and int(parts[3]) > 0, 'Invalid linked PR URL')
-                repo, number = '/'.join(parts[:2]), int(parts[3])
-                require(REPO.fullmatch(repo) and all(part not in ('.', '..') for part in repo.split('/'))
-                        and parsed.netloc.casefold() == self.host.casefold()
-                        and url == f'https://{parsed.netloc}/{repo}/pull/{number}', 'Invalid linked PR host or path')
-                key = f'jira_link:{repo}#{number}'
-                identity = (self.host.casefold(), repo.casefold(), number)
-                original = by_identity.get(identity)
-                if original is None:
-                    row = self.api('--method', 'GET', f'repos/{repo}/issues/{number}')
-                    item = rest_item(row, 'prs', self.host)
-                    require(item['number'] == number, 'Linked PR response number disagrees')
-                    if item['repo'].casefold() != repo.casefold():
-                        proof = self._verify_repository_alias(repo, item['repo'])
-                        if proof not in github.setdefault('repository_aliases', []):
-                            github['repository_aliases'].append(proof)
-                    canonical_identity = (self.host.casefold(), item['repo'].casefold(), number)
-                    original = by_identity.get(canonical_identity)
-                    if original is None:
-                        item['roles'], item['observed_at'] = [], iso(datetime.now(UTC))
-                        github['context_prs'].append(item)
-                        all_items[item['url']] = item
-                        by_identity[canonical_identity] = original = item
-                        new_items.append(item)
-                    else:
-                        self.retain_context_observation(github, item, original)
-                    by_identity[identity] = original
-                    self.coverage[key] = {'status': 'ok', 'pages': 1, 'count': 1,
-                                          'requested_url': url, 'resolved_url': item['url']}
-                if url not in original.setdefault('jira_seed_urls', []):
-                    original['jira_seed_urls'].append(url)
-                if 'jira_link' not in original.setdefault('roles', []):
-                    original['roles'].append('jira_link')
-            except ERRORS:
-                self.problem(key, 'linked PR unavailable or invalid; omitted link is a coverage gap')
-        self._inspect_activity(github, new_items)
-        return new_items
-
-    def _verify_repository_alias(self, requested, canonical):
-        """Prove a repository redirect with independently fetched native IDs."""
-        key = (requested.casefold(), canonical.casefold())
-        if key in self._repository_aliases:
-            proof = self._repository_aliases[key]
-            require(proof is not None, 'Repository alias could not be verified')
-            return proof
-        # Failed identity reads remain unknown for this observation; repeated
-        # old links must not cause two extra repository reads each time.
-        self._repository_aliases[key] = None
-        records = []
-        for repo in (requested, canonical):
-            cache_key = repo.casefold()
-            if cache_key not in self._repository_metadata:
-                row = self.api('--method', 'GET', 'repos/' + repo)
-                require(isinstance(row, dict), 'Invalid native repository metadata')
-                self._repository_metadata[cache_key] = {field: row[field] for field in ('id', 'full_name', 'html_url')}
-            native = self._repository_metadata[cache_key]
-            require(integer(native['id'], 1) and isinstance(native['full_name'], str)
-                    and native['full_name'].casefold() == canonical.casefold()
-                    and native['html_url'] == f"https://{self.host}/{native['full_name']}",
-                    'Repository redirect identity disagrees')
-            records.append({'path': 'repos/' + repo, **native})
-        require(records[0]['id'] == records[1]['id'], 'Repository redirect IDs disagree')
-        proof = {'host': self.host, 'requested_repo': requested, 'canonical_repo': canonical,
-                 'requested': records[0], 'canonical': records[1]}
-        self._repository_aliases[key] = proof
-        return proof
 
     def _retain_comment(self, github, item, event, category, key):
         """Retain native discussion references independently of actor attribution."""

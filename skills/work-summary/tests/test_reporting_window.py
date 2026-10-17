@@ -310,7 +310,7 @@ print(json.dumps(value))
         self.assertTrue(any('partition recovery' in warning for warning in partial['metadata']['warnings']))
 
     def test_native_case_variants_across_initial_recovery_and_roles_preserve_one_selected_identity(self):
-        from work_links import referenced_keys
+        from references import referenced_keys
         item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
                 'title': 'Work', 'body': 'PROJ-123', 'state': 'open',
                 'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-05-01T00:00:00Z',
@@ -336,7 +336,7 @@ print(json.dumps(value))
                          'https://github.com/org/repo/pull/1')
 
     def test_partition_recovery_retains_changed_native_reference_payload(self):
-        from work_links import referenced_keys
+        from references import referenced_keys
         item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
                 'title': 'Work', 'body': 'Implements PROJ-123', 'state': 'open',
                 'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-03-01T00:00:00Z',
@@ -357,69 +357,6 @@ print(json.dumps(value))
         self.assertEqual(len(data['github']['prs']), 1)
         self.assertEqual(len(data['github']['context_observations']), 1)
         self.assertEqual(data['metadata']['github_searches']['prs']['status'], 'ok')
-
-    def test_conflicting_initial_native_observations_keep_both_payloads_and_reference_frontier(self):
-        from work_links import associate_work, complete_references, github_items, referenced_keys
-        gh = self.bin / 'gh'
-        source = gh.read_text().replace(
-            "rows = json.loads(os.environ.get('GH_ROWS', '[]')) if 'is:pr ' in query and '..' in query else []",
-            "kind = 'PRS' if 'is:pr ' in query else 'ISSUES'\n"
-            "    rows = json.loads(os.environ.get(('INITIAL_' if '..' in query else 'LATER_') + kind, '[]'))")
-        gh.write_text(source)
-        for kind, route, key in [('PRS', 'pull', 'PROJ-123'), ('ISSUES', 'issues', 'TASK-124')]:
-            item = {'html_url': f'https://github.com/org/repo/{route}/1', 'number': 1,
-                    'title': 'Original native title', 'body': 'Implements ' + key + '.', 'state': 'open',
-                    'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-05-01T00:00:00Z',
-                    'closed_at': None, 'user': {'login': 'test-user'}}
-            if kind == 'PRS':
-                item['pull_request'] = {'merged_at': None}
-            self.env['INITIAL_' + kind] = json.dumps([item])
-            self.env['LATER_' + kind] = json.dumps([{**item, 'title': 'Later native title',
-                                                   'body': 'Revised body without the original reference.'}])
-        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
-                                  '--root', str(self.home))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout)
-        validate(data)
-        self.assertEqual(set(referenced_keys(data['github'])), {'PROJ-123', 'TASK-124'})
-        observations = data['github']['context_observations']
-        self.assertEqual(len(observations), 2)
-        self.assertEqual({item['body'] for item in observations}, {'Implements PROJ-123.', 'Implements TASK-124.'})
-        self.assertEqual(sum(item['title'] == 'Later native title'
-                             for item in github_items(data['github'], include_index=False)), 2)
-        self.assertEqual(len(data['github']['activity']), 2)
-        self.assertTrue(all(event['action'] == 'opened' for event in data['github']['activity']))
-        # Exercise the actual fixed point and relation proof against the retained
-        # earlier body, without pretending these synthetic callbacks are live.
-        jira = {'metadata': {'site': 'jira.example.test'}, 'issues': []}
-        github = copy.deepcopy(data['github'])
-        reads = []
-        def read_jira(keys):
-            reads.extend(keys)
-            jira['issues'].extend({'key': key, 'url': 'https://jira.example.test/browse/' + key,
-                                   'sensitive': False, 'detail': {'fields': {}}} for key in keys)
-        complete_references(jira, github, read_jira)
-        self.assertEqual(set(reads), {'PROJ-123', 'TASK-124'})
-        associate_work(jira, github)
-        linked = {'metadata': {'github_host': 'github.com'}, 'jira': jira, 'github': github}
-        self.assertEqual(jira['issues'][0]['pr_links'][0]['proof'], 'github_body_key')
-        for item in github['context_observations']:
-            item['body'] = ''
-        for mutation in ('metadata_body', 'retained_body', 'missing_snapshot', 'wrong_kind', 'unknown_url', 'not_list'):
-            with self.subTest(mutation=mutation):
-                bad = copy.deepcopy(data)
-                if mutation == 'metadata_body':
-                    bad['metadata']['github_searches']['prs']['outside_window_items'][0]['body'] = 'Forged body'
-                elif mutation == 'retained_body':
-                    bad['github']['context_observations'][0]['body'] = 'Forged body'
-                elif mutation == 'missing_snapshot':
-                    bad['github']['context_observations'] = []
-                elif mutation == 'wrong_kind':
-                    bad['github']['context_observations'][0]['url'] = 'https://github.com/org/repo/issues/1'
-                elif mutation == 'unknown_url':
-                    bad['github']['context_observations'][0]['url'] = 'https://github.com/org/repo/pull/999'
-                else:
-                    bad['github']['context_observations'] = {}
 
     def test_native_search_date_disagreement_retains_context_and_only_credits_exact_events(self):
         rows = [

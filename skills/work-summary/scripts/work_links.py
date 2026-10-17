@@ -3,10 +3,8 @@
 import re
 from urllib.parse import quote, urlsplit
 
-from evidence import is_pr_url, require
-from extended_evidence import github_reference_comments, jira_key_aliases, repository_aliases
-from jira_sources import BACKEND
-from reference_scope import ReferenceScope
+from evidence import is_pr_url
+from extended_evidence import github_reference_comments, jira_key_aliases
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
@@ -74,15 +72,10 @@ def strings(value):
             yield from strings(child)
 
 
-def pr_identity(url, aliases=None):
+def pr_identity(url):
+    """GitHub treats owner and repository names case-insensitively."""
     parts = urlsplit(url)
-    path = parts.path.casefold().split('/')
-    if len(path) >= 3:
-        repo = '/'.join(path[1:3])
-        canonical = (aliases or {}).get((parts.netloc.casefold(), repo))
-        if canonical:
-            path[1:3] = canonical.split('/')
-    return parts.netloc.casefold(), '/'.join(path)
+    return parts.netloc.casefold(), parts.path.casefold()
 
 
 def native_review_links(issue):
@@ -139,175 +132,9 @@ def native_review_links(issue):
     return [result[key] for key in sorted(result)]
 
 
-def github_items(github, include_index=True):
-    buckets = ('prs', 'issues', 'context_prs', 'context_issues', 'context_observations') + (
-        ('pr_index', 'pr_index_observations') if include_index else ())
+def github_items(github):
+    buckets = ('prs', 'issues', 'context_prs', 'context_issues', 'context_observations')
     return [item for bucket in buckets for item in github.get(bucket, [])]
-
-
-def github_selected_observations(github):
-    """Include index snapshots of selected identities, including verified redirects."""
-    selected = github_items(github, include_index=False)
-    records = github.get('repository_aliases', [])
-    host = (records[0]['host'] if records else
-            urlsplit(selected[0]['url']).netloc if selected else 'github.com')
-    aliases = repository_aliases(github, host)
-    identities = {pr_identity(item['url'], aliases) for item in selected}
-    return selected + [item for bucket in ('pr_index', 'pr_index_observations')
-                       for item in github.get(bucket, [])
-                       if pr_identity(item['url'], aliases) in identities]
-
-
-def _github_reference_texts(github):
-    # Old indexed snapshots are association context, not a reason to retrieve
-    # every historical ticket mentioned across an account's entire PR history.
-    selected = github_selected_observations(github)
-
-    for item in selected:
-        for field in ('title', 'body', 'head_ref'):
-            yield item['url'], item.get(field) or ''
-    for comment in github_reference_comments(github):
-        # These bodies were deliberately read, including targeted historical
-        # fallbacks. Keep their references without crawling every indexed PR body.
-        yield comment.get('url', comment.get('item_url', '')), comment['body']
-
-
-def referenced_keys(github, site=None):
-    result = set()
-    for _, text in _github_reference_texts(github):
-        result.update(discovery_keys(text, site))
-    return sorted(result)
-
-
-def reference_failure_classification(jira, github, gitlab=None):
-    """Qualify unresolved mentions without claiming a referenced ticket exists."""
-    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github')
-    if coverage is None:
-        return {}
-    unresolved = (set(coverage.get('requested_keys', [])) - set(coverage.get('returned_keys', [])))
-    unresolved.update(coverage.get('failures', {}))
-    unresolved.difference_update(coverage.get('not_a_project', []))
-    site = jira.get('metadata', {}).get('site')
-    explicit, lexical, native = {}, {}, {}
-    texts = list(_github_reference_texts(github))
-    for item in (gitlab or {}).get('items', []):
-        texts.extend((item['url'], item['source'].get(field) or '') for field in ('title', 'description'))
-        texts.extend((item['url'], note.get('body') or '') for note in item.get('notes', []))
-    for url, text in texts:
-        for key in _url_keys(text, site) & unresolved:
-            explicit.setdefault(key, set()).add(url)
-        # Older captures attempted numeric fragments. Preserve their lexical
-        # failure provenance without making those fragments new read targets.
-        for key in discovery_keys(text, site, include_numeric_fragments=True) & unresolved:
-            lexical.setdefault(key, set()).add(url)
-    for issue in jira.get('issues', []):
-        for source_kind in ('source', 'detail', 'full_detail'):
-            fields = (issue.get(source_kind) or {}).get('fields', {})
-            for text in strings(fields):
-                for key in _url_keys(text.replace('|', ' '), site) & unresolved:
-                    explicit.setdefault(key, set()).add(issue['url'])
-            for link in fields.get('issuelinks', []) or []:
-                if not isinstance(link, dict):
-                    continue
-                for direction in ('inwardIssue', 'outwardIssue'):
-                    linked = link.get(direction)
-                    if not isinstance(linked, dict) or linked.get('key') not in unresolved:
-                        continue
-                    identity = linked.get('id')
-                    if isinstance(identity, bool) or not re.fullmatch(r'[1-9][0-9]*', str(identity)):
-                        continue
-                    try:
-                        parts = urlsplit(linked.get('self', ''))
-                    except ValueError:
-                        continue
-                    backend = (isinstance(site, str) and site.endswith('.atlassian.net')
-                               and parts.hostname and BACKEND.fullmatch(parts.hostname)
-                               and parts.netloc == parts.hostname)
-                    if (parts.scheme == 'https' and (parts.netloc == site or backend)
-                            and not parts.query and not parts.fragment
-                            and re.fullmatch(r'/rest/api/(?:2|3)/issue/' + str(identity), parts.path)):
-                        native.setdefault(linked['key'], set()).add(issue['url'])
-        for text in strings(issue.get('comment_pages', [])):
-            for key in _url_keys(text.replace('|', ' '), site) & unresolved:
-                explicit.setdefault(key, set()).add(issue['url'])
-    classified = {}
-    for key in sorted(unresolved):
-        kind, evidence = ('unmatched_candidate', set())
-        for name, mapping in (('explicit_jira_url', explicit), ('native_issue_reference', native),
-                              ('lexical_candidate', lexical)):
-            if key in mapping:
-                kind, evidence = name, mapping[key]
-                break
-        classified[key] = {'kind': kind, 'evidence_urls': sorted(evidence)}
-    return classified
-
-
-def classify_reference_failures(jira, github, gitlab=None):
-    coverage = jira.get('metadata', {}).get('coverage', {}).get('referenced_by_github')
-    if coverage is not None:
-        coverage['failure_classification'] = reference_failure_classification(jira, github, gitlab)
-
-
-def scoped_github_keys(jira, github, scope):
-    """Keep every captured observation, but expand only eligible work nodes."""
-    found = set()
-    site = jira.get('metadata', {}).get('site')
-    sources = [(item['url'], item['url'], item.get(field) or '')
-               for item in github_selected_observations(github)
-               for field in ('title', 'body', 'head_ref')]
-    sources.extend((comment.get('item_url') or comment.get('url', '').split('#')[0],
-                    comment.get('url') or comment.get('item_url', ''), comment['body'])
-                   for comment in github_reference_comments(github))
-    for source, evidence_url, text in sources:
-        for key in discovery_keys(text, site):
-            if scope.allow('review', source, 'ticket', key, evidence_url):
-                found.add(key)
-    return found
-
-
-def scoped_jira_reviews(jira, scope, provider):
-    found = set()
-    for issue in jira.get('issues', []):
-        links = (issue.get('pr_links', []) if provider == 'github' else native_review_links(issue))
-        links = list(links) + [link for link in issue.get('history_review_links', [])
-                              if link['provider'] == provider]
-        for link in links:
-            if scope.allow('ticket', issue['key'], 'review', link['url'],
-                           link.get('evidence_url') or issue['url']):
-                found.add(link['url'])
-    return found
-
-
-def complete_references(jira, github, read_tickets, read_prs=None, *, scope=None):
-    """Resolve work counterparts, retaining unrelated outbound links as deferred."""
-    scope = (scope if isinstance(scope, ReferenceScope)
-             else ReferenceScope(jira, github, state=scope))
-    scope.attempted_prs.update(item['url'] for item in github_items(github, include_index=False))
-    scope.unread_prs.difference_update(scope.attempted_prs)
-    while True:
-        scope.refresh(jira, github)
-        before = scope.revision
-        keys = scoped_github_keys(jira, github, scope) - scope.attempted_keys
-        if keys:
-            scope.attempted_keys.update(keys)
-            read_tickets(sorted(keys))
-        scope.refresh(jira, github)
-        urls = scoped_jira_reviews(jira, scope, 'github') - scope.attempted_prs
-        if read_prs is None:
-            urls -= scope.unread_prs
-        if urls:
-            if read_prs is None:
-                scope.unread_prs.update(urls)
-            else:
-                scope.attempted_prs.update(urls)
-                scope.unread_prs.difference_update(urls)
-                read_prs(sorted(urls))
-        if not keys and not urls and before == scope.revision:
-            break
-    classify_reference_failures(jira, github)
-    return {'attempted_jira_keys': sorted(scope.attempted_keys),
-            'attempted_pr_urls': sorted(scope.attempted_prs),
-            'unread_pr_urls': sorted(scope.unread_prs), 'scope': scope.snapshot()}
 
 
 def associate_work(jira, github):
@@ -316,12 +143,7 @@ def associate_work(jira, github):
     site = jira.get('metadata', {}).get('site')
     ticket_aliases = jira_key_aliases(jira)
     items = github_items(github)
-    records = github.get('repository_aliases', [])
-    require(isinstance(records, list), 'Invalid GitHub repository aliases')
-    hosts = {record.get('host') for record in records if isinstance(record, dict) and isinstance(record.get('host'), str)}
-    require(len(hosts) <= 1, 'Conflicting GitHub repository alias hosts')
-    aliases = repository_aliases(github, next(iter(hosts), 'github.com'))
-    canonical = {pr_identity(item['url'], aliases): item['url'] for item in reversed(items) if is_pr_url(item['url'])}
+    canonical = {pr_identity(item['url']): item['url'] for item in reversed(items) if is_pr_url(item['url'])}
     relations = {}
     for issue in issues.values():
         for pr in issue.get('pr_links', []):
@@ -329,7 +151,7 @@ def associate_work(jira, github):
             # Reusing them would preserve obsolete or weaker inferred proofs.
             if isinstance(pr.get('proof'), str) and pr['proof'].startswith('github_'):
                 continue
-            url = canonical.get(pr_identity(pr['url'], aliases), pr['url'])
+            url = canonical.get(pr_identity(pr['url']), pr['url'])
             relation = {**pr, 'url': url, 'sensitive': bool(pr.get('sensitive', issue['sensitive']) or issue['sensitive'])}
             if pr['url'] != url:
                 relation['source_url'] = pr['url']
@@ -350,7 +172,7 @@ def associate_work(jira, github):
                     relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
                 relations.setdefault((key, item['url']), relation)
     for comment in github_reference_comments(github):
-        url = canonical.get(pr_identity(comment['item_url'], aliases))
+        url = canonical.get(pr_identity(comment['item_url']))
         if url is None:
             continue
         for source_key in confirmed_keys(comment['body'], site):
@@ -369,7 +191,7 @@ def associate_work(jira, github):
                                'evidence_url': proof['evidence_url'], 'sensitive': proof.get('sensitive', issues[key]['sensitive']),
                                **{field: proof[field] for field in ('source_key', 'jira_source_url', 'field_id', 'source_kind') if field in proof}}
                               for (key, url), proof in sorted(relations.items())
-                              if pr_identity(url, aliases) == pr_identity(item['url'], aliases)]
+                              if pr_identity(url) == pr_identity(item['url'])]
     for issue in issues.values():
         issue['pr_links'] = [proof for (key, url), proof in sorted(relations.items()) if key == issue['key']]
         issue['review_links'] = native_review_links(issue)

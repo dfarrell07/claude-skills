@@ -151,76 +151,6 @@ class ConciseReportTest(unittest.TestCase):
     def reference(self, item):
         return {key:item[key] for key in ('repo','number','url')}
 
-    def test_mutating_pr_heads_preserve_both_native_observations_for_exact_branch_proof(self):
-        data = self.capture()
-        item = {**data['github']['prs'][0], 'head_sha': 'c' * 40, 'merge_sha': None}
-        later = {**item, 'head_sha': 'b' * 40, 'body': 'A later native observation.'}
-        data['github'].update(pr_index=[item], pr_index_observations=[later])
-        repo = '/example/repo'
-        data['metadata'].update(repos_searched=1, repositories=[{
-            'path': repo, 'common_dir': repo + '/.git', 'status': 'ok', 'identities': [],
-            'paths': [repo], 'refs': [{'name': 'refs/heads/work', 'hash': 'b' * 40}]}])
-        data['branches'] = [{'repo': repo, 'hash': 'b' * 40, 'object_type': 'commit',
-                             'refs': ['refs/heads/work'], 'pr_status': 'matched', 'prs': [{
-                                 **self.reference(item), 'state': item['state'], 'proof': 'exact_head_or_merge_sha'}]}]
-        ws.validate(data)
-        self.assertEqual(data['github']['pr_index'][0]['head_sha'], 'c' * 40)
-        for field, value in [('head_sha', 'a' * 40), ('head_sha', 'invalid'),
-                             ('url', 'https://github.com/org/repo/pull/999')]:
-            with self.subTest(field=field):
-                broken = copy.deepcopy(data)
-                broken['github']['pr_index_observations'][0][field] = value
-
-    def test_historical_heads_need_native_pr_and_sha_binding_without_weekly_credit(self):
-        data = self.capture()
-        item = {**data['github']['prs'][0], 'head_sha': 'c' * 40, 'merge_sha': None}
-        repo, head = '/example/repo', 'b' * 40
-        data['github']['pr_index'] = [item]
-        event = {'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
-                 'kind': 'graphql_force_push', 'source': {
-                     '__typename': 'HeadRefForcePushedEvent', 'id': 'native-force-push',
-                     'createdAt': '2025-01-01T00:00:00Z', 'beforeCommit': {'oid': head},
-                     'afterCommit': {'oid': 'c' * 40}, 'pullRequest': {'url': item['url']}}}
-        data['github']['head_events'] = [event]
-        data['metadata'].update(repos_searched=1, repositories=[{
-            'path': repo, 'common_dir': repo + '/.git', 'status': 'ok', 'identities': [],
-            'paths': [repo], 'refs': [{'name': 'refs/heads/backup', 'hash': head}]}])
-        data['branches'] = [{'repo': repo, 'hash': head, 'object_type': 'commit',
-                             'refs': ['refs/heads/backup'], 'pr_status': 'matched', 'prs': [{
-                                 **self.reference(item), 'state': item['state'], 'proof': 'historical_head_event',
-                                 'head_event_id': 'native-force-push'}]}]
-        ws.validate(data)
-        event['source']['pullRequest']['url'] = item['url'].replace('/org/repo/', '/ORG/REPO/')
-        event['source']['afterCommit'] = None
-        ws.validate(data)
-        bad_route = copy.deepcopy(data)
-        bad_route['github']['head_events'][0]['source']['pullRequest']['url'] = item['url'].replace('/pull/', '/PULL/')
-        del event['source']['afterCommit']
-        event['source']['afterCommit'] = {'oid': 'c' * 40}
-        for field, value in [('id', 'other-event'), ('beforeCommit', {'oid': 'd' * 40}),
-                             ('pullRequest', {'url': 'https://github.com/org/repo/pull/999'}),
-                             ('beforeCommit', {'oid': 'invalid'})]:
-            with self.subTest(field=field):
-                bad = copy.deepcopy(data)
-                bad['github']['head_events'][0]['source'][field] = value
-        event.update(kind='rest_force_push', source_path=f"repos/{item['repo']}/issues/{item['number']}/timeline", source={
-            'event': 'head_ref_force_pushed', 'id': 42, 'commit_id': head,
-            'node_id': 'native-rest-node', 'url': f"https://api.github.com/repos/{item['repo']}/issues/events/42",
-            'created_at': '2025-01-01T00:00:00Z'})
-        data['branches'][0]['prs'][0]['head_event_id'] = 42
-        ws.validate(data)
-        del event['source']['commit_id']
-        event['source']['commit_id'] = head
-        for field, value in [('url', 'https://api.github.com/repos/foreign/project/issues/events/42'),
-                             ('url', f"https://api.github.com/repos/{item['repo']}/issues/events/999"),
-                             ('node_id', '')]:
-            with self.subTest(rest_field=field, value=value):
-                bad = copy.deepcopy(data)
-                bad['github']['head_events'][0]['source'][field] = value
-        bad = copy.deepcopy(data)
-        bad['github']['head_events'][0]['source_path'] = f"repos/{item['repo']}/issues/999/timeline"
-        self.assertNotIn('activity', data['github'])
-
     def enrich(self, source, descriptions=('Fix the important behavior',)):
         enriched = copy.deepcopy(source)
         enriched['analysis'] = {'themes':[{'name':'Work', 'description':text,
@@ -809,7 +739,7 @@ class ConciseReportTest(unittest.TestCase):
         with patch.dict(os.environ,{'GH_HOST':'invalid@host'}), \
              patch.object(ws,'collect_local_safely',return_value=(empty_local(),'ok',{'status':'ok'})), \
              patch.object(ws,'collect_jira',return_value=jira), \
-             patch.object(ws,'complete_provider_references',side_effect=ValueError('identity mismatch')):
+             patch.object(ws,'follow_references',side_effect=ValueError('identity mismatch')):
             source=ws.collect('7',[])
         ws.validate(source)
         self.assertTrue(any('Reference expansion stopped early' in w for w in source['metadata']['warnings']))
