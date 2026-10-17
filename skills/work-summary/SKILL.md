@@ -48,8 +48,9 @@ different accounts or sites, keep their evidence separate.
 
 `SKILL_DIR` is the directory containing this file.
 
-1. **Collect.** Collection is read-only and takes several minutes (roughly 5–15
-   for a week on a large home directory, longer for a quarter), so run it in the
+1. **Collect.** Collection is read-only. With `gh` and `acli` signed in it takes
+   minutes (about 15 for a busy week on a large home directory, longer for a
+   quarter); without them, seconds to a couple of minutes. Run it in the
    background or with a long timeout, never under a 2-minute limit:
 
    ```bash

@@ -34,7 +34,9 @@ Do not reuse one cutoff for all of them.
 ## Collect
 
 Follow SKILL.md's [Pick a path](../SKILL.md#pick-a-path) table. With the
-collector, pass explicit local boundaries; `--until` is exclusive:
+collector, pass explicit local boundaries; `--until` is exclusive. Take each
+offset at its own boundary in the user's timezone, since daylight saving can
+differ between them, for example `TZ=America/New_York date -d 2026-07-01 +%:z`:
 
 ```bash
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarterly-review.XXXXXX")

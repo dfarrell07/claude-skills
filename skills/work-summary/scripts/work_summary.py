@@ -207,7 +207,8 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
             if info["status"] != "ok":
                 github_status = "partial"
 
-    progress("GitHub: authored searches done; scanning local repositories")
+    progress(("GitHub: authored searches done" if github_user else "GitHub: not searched")
+             + "; scanning local repositories")
     local, local_status, local_capability = collect_local_safely(
         collect_local, roots, start, end, warn, api=api if github_user else None,
         identity=identity if github_user else {})
@@ -576,7 +577,8 @@ def validate(data, source=None):
         for item in local:
             require(isinstance(item, dict) and isinstance(item.get("repo"), str)
                     and any(entry["hash"] == item.get("hash") for entry in commits.get(item["repo"], [])),
-                    "Analysis commit is absent from source evidence")
+                    f"Commit {item.get('hash')} is not in this capture's commits for {item.get('repo')}; "
+                    "cite a full 40-character hash listed in the digest")
         children = theme.get("subtopics", [])
         require(isinstance(children, list), "Invalid subtopics")
         for child in children:
