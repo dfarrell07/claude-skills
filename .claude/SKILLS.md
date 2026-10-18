@@ -2,13 +2,12 @@
 
 ## /work-summary
 
-Create a ranked weekly work list from the sources available in this session.
-For quarterly check-ins, use `quarterly` to rediscover major efforts and prepare
-an accomplishment briefing with core links and optional review answer starters.
-Each bullet has a one-line work summary and selected core Jira/PR links.
-Use substantive subtopics when a workstream has separate updates; place raw
-links beneath the description they support. Related backports share a work topic;
-importance determines order. Preserve broad evidence without dumping its links.
+Draft a ranked, link-selective list of recent work for a 1:1, or a quarterly
+accomplishment briefing (`quarterly`). Uses whatever is available: Python 3.10+
+with Git 2.37+, authenticated `gh` and `acli`, GitHub/Jira connectors, or
+supplied notes; missing sources reduce coverage instead of blocking the rest.
+`make work-summary` prints a conservative fallback list without agent analysis.
+See [the skill](../skills/work-summary/SKILL.md).
 
 ```bash
 /work-summary
@@ -18,23 +17,6 @@ make work-summary
 make work-summary DAYS=14
 make work-summary-test
 ```
-
-Use authenticated Git/GitHub/Jira connectors or available CLIs. Missing tools,
-authentication, home directories, or local repositories reduce coverage instead
-of blocking other sources. Mobile/cloud sessions can use connector evidence
-without a shell. The scripted workflow needs Python 3.10+; full local collection
-needs Git 2.37+, GitHub uses authenticated `gh`, and Jira uses authenticated `acli`.
-Git is optional for remote-only collection, and remote CLIs are optional for Git-only use.
-
-The primary output is the concise work list. A short source note identifies
-material missing/partial sources. Collection takes several minutes and writes a
-large private capture; `render-report.sh --candidates` lists the personal window
-work an agent needs for its analysis, and `--analysis` renders that analysis.
-The capture itself keeps every inventory and diagnostic. Each scripted
-run uses its own temporary directory. Without agent analysis, `make work-summary`
-provides a conservative evidence-based fallback.
-See [the skill](../skills/work-summary/SKILL.md) for capability fallbacks,
-source boundaries, link provenance, and analysis/ranking instructions.
 
 ## /jira
 
