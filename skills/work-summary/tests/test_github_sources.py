@@ -405,6 +405,24 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(data['context_prs'][0]['roles'], ['requested_reviews'])
         self.assertEqual(data['activity'], [])
 
+    def test_one_failing_search_keeps_the_other_results(self):
+        mine = {**rest(5), 'user': {'login': 'me'}, 'updated_at': '2026-10-12T00:00:00Z'}
+
+        def api(args):
+            query = next((arg for arg in args if arg.startswith('q=')), '')
+            if 'reviewed-by:' in query:
+                raise RuntimeError('unexpected')
+            if 'author:me updated' in query:
+                return {'total_count': 1, 'incomplete_results': False, 'items': [mine]}
+            if 'search/issues' in args:
+                return {'total_count': 0, 'incomplete_results': False, 'items': []}
+            return []
+        client = self.client(api)
+        data = {}
+        client.discover(data)
+        self.assertEqual([item['number'] for item in data['prs']], [5])
+        self.assertTrue(any('search stopped early (RuntimeError)' in warning for warning in client.warnings))
+
     def test_creation_in_window_survives_later_item_update(self):
         client = self.client(lambda args: [])
         item = {'repo': 'org/repo', 'number': 1, 'url': 'https://github.com/org/repo/pull/1', 'author_login': 'me',

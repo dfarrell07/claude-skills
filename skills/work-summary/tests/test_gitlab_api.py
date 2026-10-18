@@ -76,6 +76,15 @@ class GitLabApiTest(unittest.TestCase):
         self.assertEqual(result['metadata']['status'], 'partial')
         self.assertTrue(warnings)
 
+    def test_stalled_name_lookup_is_bounded(self):
+        import time
+        from unittest.mock import patch
+        started = time.monotonic()
+        with patch.object(api.socket, 'getaddrinfo', side_effect=lambda *args: time.sleep(3)):
+            with self.assertRaises(URLError):
+                api.resolve(HOST, timeout=0.2)
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_failed_read_keeps_other_mrs(self):
         other = 'https://' + HOST + '/group/project/-/merge_requests/8'
 

@@ -5,16 +5,17 @@ one provider's rate limit affects only that source: keep collecting from the
 others and name what was not searched. Do not install tools, sign in, request new
 permissions, fetch repositories or extract credentials as a prerequisite.
 
-| Available access | Collect | State the limit |
-| --- | --- | --- |
-| Python 3.10+, Git, authenticated `gh`/`acli` | Run the collector (SKILL.md). | Its coverage warnings. |
-| Python and Git only | Run the collector; it skips remote sources. | Remote activity and PR state are unverified. |
-| Git and shell, no supported Python | [Native Git](#native-git-without-python) for known repos. | Repos/refs inspected; identity and date limits. |
-| Python and remote CLIs, no usable Git | Run the collector; it skips local Git. | Local repositories and backups were not searched. |
-| GitHub/Jira connectors, no shell | [Connector quick path](#connector-quick-path). | Searches and pages not available or not read. |
-| Browser only | Native pages and their visible pagination. | Visibility and paging may limit the inventory. |
-| Supplied notes, links or a saved capture | Summarize that evidence with its own dates. | This is not a fresh account search. |
-| Nothing readable | Say no personal work could be verified. | Never invent work or call the history empty. |
+SKILL.md's [Pick a path](../SKILL.md#pick-a-path) table chooses the route. What
+each partial route can and cannot say:
+
+| Available access | State the limit |
+| --- | --- |
+| Python and Git only (collector skips remote sources) | Remote activity and PR state are unverified. |
+| Python and remote CLIs, no usable Git | Local repositories and backups were not searched. |
+| Git and shell only ([native Git](#native-git-without-python)) | Repos and refs inspected; identity and date limits. |
+| Connectors only ([quick path](#connector-quick-path)) | Searches and pages not available or not read. |
+| Browser only | Visibility and paging may limit the inventory. |
+| Supplied notes, links or a saved capture | This is not a fresh account search. |
 
 Never claim the collector, renderer or validation ran when it did not, and never
 fabricate collector JSON to make other evidence pass validation. Without a shell,
@@ -123,8 +124,3 @@ refs or scan unreachable objects.
   comment or history endpoints unreadable, and an anonymous 404 cannot erase an
   authenticated positive. Never disable TLS verification; a command-local OS CA
   bundle is acceptable when a configured CA file is missing.
-
-The Python GitHub client accepts any callable returning native REST/GraphQL
-responses, so a connector that returns native responses could feed it. Map only
-fields whose native meaning is supplied; a normalized search excerpt is not that
-schema, and `acli` output cannot be imitated to make another Jira reader fit.

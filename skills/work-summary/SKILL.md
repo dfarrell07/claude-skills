@@ -35,7 +35,7 @@ discovering and presenting the work.
 | --- | --- |
 | Shell and Python 3.10+ | [Weekly workflow](#weekly-workflow) below. Git, `gh` and `acli` are each optional. |
 | Connectors (GitHub, Jira) but no shell | [Connector quick path](references/reduced-access.md#connector-quick-path). |
-| Git and a shell, no usable Python | [Native Git](references/reduced-access.md#native-git-without-python). |
+| Git and a shell, but no Python 3.10+ or Git older than 2.37 | [Native Git](references/reduced-access.md#native-git-without-python). |
 | Only notes, links or a saved capture | Summarize that evidence with its own dates; it is not a fresh account scan. |
 | Nothing readable | Say no personal work could be verified. Do not invent work or call it empty. |
 
@@ -49,9 +49,9 @@ different accounts or sites, keep their evidence separate.
 `SKILL_DIR` is the directory containing this file.
 
 1. **Collect.** Collection is read-only. With `gh` and `acli` signed in it takes
-   minutes (about 15 for a busy week on a large home directory, longer for a
-   quarter); without them, seconds to a couple of minutes. Run it in the
-   background or with a long timeout, never under a 2-minute limit:
+   a few minutes (about 5 for a busy week on a large home directory; a busy
+   quarter takes much longer); without them, seconds to a couple of minutes. Run
+   it in the background or with a long timeout, never under a 2-minute limit:
 
    ```bash
    DAYS=7   # or the requested positive integer
@@ -65,13 +65,15 @@ different accounts or sites, keep their evidence separate.
    `collect.log`; never reuse an older capture silently. Keep the exact
    `RUN_DIR` path across tool calls.
 
-2. **Read the digest, not the capture.** `data.json` can be hundreds of megabytes.
+2. **Read the digest, not the capture.** `data.json` is tens of megabytes for a
+   week and more for a quarter.
 
    ```bash
    bash "$SKILL_DIR/scripts/render-report.sh" --candidates "$RUN_DIR/data.json" > "$RUN_DIR/candidates.md"
    ```
 
-   It lists only verified personal activity in the window, grouped by work item:
+   It lists only verified personal activity in the window, grouped by work item
+   (windows over 21 days group it by workstream; see the quarterly reference):
    your PRs and issues, reviews and comments on others' work, Jira tickets you
    commented on or changed, GitLab MRs and local commits by repository, each with
    the URL or hashes to cite and the related links you may select. It ends with

@@ -526,7 +526,8 @@ def collect_jira(start, end, warn):
     # (about 2,000 tickets) without contributing activity; tickets in those roles updated in
     # the window arrive through "recent". Only the identity-bearing assigned search is recounted.
     for role, query in queries:
-        search(role, query, checked=False)
+        # updatedBy() drives field-update credit; its recount catches silent truncation.
+        search(role, query, checked=role == "updated_by")
     # Read details for recently updated tickets and for unfinished assigned work, whose PR
     # fields can pair with current changes; done assignments stay as role context.
     owned = {"assigned"}

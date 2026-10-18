@@ -1,7 +1,9 @@
 """Anonymous GitLab MR detail reads for MRs linked from the user's work."""
 
 import re
+import socket
 import ssl
+import threading
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
@@ -86,6 +88,26 @@ def valid_mr(source):
     return host, repo, number
 
 
+def resolve(host, timeout=5):
+    """Name lookup ignores socket timeouts; an internal host off VPN can stall it for minutes."""
+    outcome = []
+    # A daemon thread: a stalled lookup must not hold up the result or interpreter exit.
+    worker = threading.Thread(target=lambda: outcome.append(_lookup(host)), daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if not outcome:
+        raise URLError(f'name lookup for {host} timed out')
+    if isinstance(outcome[0], OSError):
+        raise URLError(outcome[0])
+
+
+def _lookup(host):
+    try:
+        return socket.getaddrinfo(host, 443)
+    except OSError as error:
+        return error
+
+
 class PublicReader:
     def __init__(self, read):
         self.read, self.unreachable = read, set()
@@ -98,6 +120,8 @@ class PublicReader:
         if host in self.unreachable:
             raise URLError('host unreachable earlier in this run')
         try:
+            if self.read is public_get:
+                resolve(host)
             response = self.read(url)
         except (URLError, OSError) as error:
             if not isinstance(error, HTTPError):

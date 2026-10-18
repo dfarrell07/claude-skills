@@ -36,7 +36,8 @@ Do not reuse one cutoff for all of them.
 Follow SKILL.md's [Pick a path](../SKILL.md#pick-a-path) table. With the
 collector, pass explicit local boundaries; `--until` is exclusive. Take each
 offset at its own boundary in the user's timezone, since daylight saving can
-differ between them, for example `TZ=America/New_York date -d 2026-07-01 +%:z`:
+differ between them, for example `TZ=America/New_York date -d 2026-07-01 +%:z`
+(on macOS `TZ=America/New_York date -j -f %F 2026-07-01 +%z`):
 
 ```bash
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarterly-review.XXXXXX")
@@ -67,7 +68,7 @@ describe each. Small clusters are supporting detail, not bullets. When reading:
 - Ticket titles are current and may name a later release than the work.
 - Long periods hit search caps and incomplete history; read the coverage section.
 
-A busy quarter can take over an hour to collect.
+A busy quarter takes much longer to collect than a week.
 
 Earlier reviews, weekly summaries and 1:1 notes are leads for continuity, not an
 inventory or separate accomplishments: one continuing effort is one theme with

@@ -28,8 +28,12 @@ changing the collector. SKILL.md's credit rules are the short version.
   dates only select candidates; native event times decide the window.
 - Credit only the user's own events with actor and time inside the window:
   opening, merging (`merged_at`), reviews and review comments, issue comments,
-  pushes and state changes. Comment edits are not credited. Mentions,
-  subscriptions, assignments, review requests and cross-references are context.
+  force-pushes and state changes. Plain pushes and comment edits are not
+  credited. Mentions, subscriptions, assignments, review requests and
+  cross-references are context.
+- Events are read for authored, reviewed and commented PRs and for all issues.
+  PRs found only through involvement, assignment or review requests are context;
+  their timelines are not read.
 - Keep other people's comments and review bodies as reference evidence, never as
   the user's work. A current comment body may have been edited since; do not quote
   it as what was said at a particular time.
@@ -38,8 +42,9 @@ changing the collector. SKILL.md's credit rules are the short version.
 ## Jira
 
 - Use the authenticated site and account. Confirm the account through the
-  assigned inventory. `updatedBy()` and recently updated role inventories find
-  active tickets; all-time reporter, creator and watcher roles are context.
+  assigned inventory. `updatedBy()` and a role search limited to tickets updated
+  in the window (assignee, reporter, creator, watcher, former assignee) find
+  active tickets; all-time inventories other than assignment are not searched.
 - Credit comments only from native author account IDs and timestamps. Restricted
   comments without them, and day-level `updatedBy()` hits, are leads whose exact
   change is unverified. acli exposes no changelog; public history for publicly
@@ -50,8 +55,8 @@ changing the collector. SKILL.md's credit rules are the short version.
 ## Links between work items
 
 - Pair a PR and a ticket only through an explicit Jira URL on the active site, a
-  conventional uppercase key (`ACM-123`) in the PR title, body, branch or a
-  comment, or the ticket's own PR fields. Lowercase tokens and version strings
+  conventional uppercase key (`ACM-123`) in the PR title, body or a comment, or
+  the ticket's own PR fields. Lowercase tokens and version strings
   such as `release-4.20` are not keys, and text such as `SHA-256` that matches no
   tenant project is not a ticket.
 - Follow references from the user's own work: the tickets its PRs name and the

@@ -379,7 +379,8 @@ def work_urls(data, topic):
         ticket_urls.update(relation['url'] for relation in contextual_jira_links(
             item, github_reference_comments(data['github'])))
         for relation in item.get('jira_links', []):
-            ticket(jira[relation['key']], False)
+            if relation['key'] in jira:
+                ticket(jira[relation['key']], False)
 
     for item in topic_github_items(data, topic):
         github(item)
@@ -390,7 +391,8 @@ def work_urls(data, topic):
     for mr in topic_merge_requests(data, topic):
         change_urls.add(mr['url'])
         for relation in mr.get('jira_links', []):
-            ticket(jira[relation['key']], False)
+            if relation['key'] in jira:
+                ticket(jira[relation['key']], False)
     return sorted(ticket_urls) + sorted(change_urls - ticket_urls) + sorted(context_urls - ticket_urls - change_urls)
 
 
@@ -497,7 +499,7 @@ def fallback_topics(data, limit=12):
                'reopened': (4, 'Reopened')}
     for event in data['github'].get('activity', []):
         # Actor/time proof establishes participation, not substantive work.
-        # Passive notifications and unknown timeline actions stay in the audit.
+        # Passive notifications and unknown timeline actions stay in the capture.
         if event['action'] not in actions or event['item_url'] not in items:
             continue
         item = items[event['item_url']]

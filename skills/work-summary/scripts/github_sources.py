@@ -61,7 +61,6 @@ class Github:
         self.start, self.end, self.warn = start, end, warn
         self.coverage = {}
         self.cache = {}
-        self._linked_attempts = set()
         self._activity_items = set()
         self._activity_seen = set()
         self._comment_seen = set()
@@ -86,7 +85,7 @@ class Github:
         info['status'] = 'partial'
         self.warn(f'GitHub {key}: {message}')
 
-    def listing(self, endpoint, key):
+    def listing(self, endpoint, key, report=None):
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0})
         result, fingerprints = [], set()
         page = 1
@@ -104,10 +103,10 @@ class Github:
                     break
                 page += 1
             except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError):
-                self.problem(key, 'read failed or paging did not terminate; retained earlier pages')
+                (report or self.problem)(key, 'read failed or paging did not terminate; retained earlier pages')
                 break
         else:
-            self.problem(key, 'list reached the 10,000-row safety cap; coverage is incomplete')
+            (report or self.problem)(key, 'list reached the 10,000-row safety cap; coverage is incomplete')
         return result
 
     def search(self, query, key, kind):
@@ -255,7 +254,12 @@ class Github:
         ]
         items = {}
         for key, kind, query in specifications:
-            for item in self.search(query, key, kind):
+            try:
+                rows = self.search(query, key, kind)
+            except Exception as error:  # noqa: BLE001 - one search must not discard the others
+                self.problem(key, f'search stopped early ({type(error).__name__}); other searches are kept')
+                continue
+            for item in rows:
                 original = items.setdefault(item['url'].casefold(), {**item, 'roles': []})
                 if key not in original['roles']:
                     original['roles'].append(key)
@@ -342,9 +346,15 @@ class Github:
             jobs.extend((item, category, endpoint, f"activity:{item['repo']}#{item['number']}:{category}")
                         for category, endpoint in endpoints)
         # Reads are independent and dominated by latency; process results in order afterwards.
+        def read(job):
+            problems = []
+            return self.listing(job[2], job[3], lambda key, message: problems.append((key, message))), problems
+
         with ThreadPoolExecutor(max_workers=ACTIVITY_WORKERS) as pool:
-            listings = list(pool.map(lambda job: self.listing(job[2], job[3]), jobs))
-        for (item, category, endpoint, key), events in zip(jobs, listings):
+            listings = list(pool.map(read, jobs))
+        for (item, category, endpoint, key), (events, problems) in zip(jobs, listings):
+            for problem_key, message in problems:
+                self.problem(problem_key, message)
             for event in events:
                 if not isinstance(event, dict):
                     self.problem(key, 'an invalid actor event was skipped')

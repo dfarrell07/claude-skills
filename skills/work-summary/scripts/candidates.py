@@ -1,7 +1,6 @@
 """Compact, cite-ready digest of personal window evidence for writing an analysis.
 
-Captures hold every inventory, observation and diagnostic and can reach hundreds of
-megabytes. The agent needs only the work with verified personal activity in the
+Captures hold inventories, observations and diagnostics and run to tens of megabytes. The agent needs only the work with verified personal activity in the
 window, the identities to cite and the links each citation makes selectable.
 Long windows group that work into workstreams so a quarter stays readable.
 """
