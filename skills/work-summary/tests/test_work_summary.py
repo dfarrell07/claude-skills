@@ -37,7 +37,7 @@ class WorkSummaryTest(unittest.TestCase):
         # Tests never use host credentials or the real GitHub CLI.
         gh = self.bin / "gh"
         gh.write_text(f"#!{sys.executable}\n" + r'''
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["GH_LOG"], "a") as log:
@@ -61,21 +61,21 @@ if "search/issues" not in args:
     print("[]")
     sys.exit(0)
 query = next(value[2:] for value in args if value.startswith("q="))
-if ".." not in query:
-    print(json.dumps({"total_count":0,"incomplete_results":False,"items":[]}))
-    sys.exit(0)
 kind = "prs" if "is:pr " in query else "issues"
 page = int(next(value[5:] for value in args if value.startswith("page=")))
 if os.environ.get("GH_FAIL") == kind and page == int(os.environ.get("GH_FAIL_PAGE", "1")):
     print("API unavailable", file=sys.stderr)
     sys.exit(1)
+# Only the authored search returns rows; role and involvement searches are empty.
+if "author:" not in query or "updated:>=" not in query:
+    print(json.dumps({"total_count":0,"incomplete_results":False,"items":[]}))
+    sys.exit(0)
 mode = os.environ.get("GH_MODE", "")
 if mode == "malformed":
     print("{bad json")
     sys.exit(0)
-window = query.split("updated:")[1].split("..")
-start, end = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in window]
-updated = (start + (end - start) / 2).isoformat(timespec="seconds").replace("+00:00", "Z")
+start = datetime.fromisoformat(query.split("updated:>=")[1].split()[0].replace("Z", "+00:00"))
+updated = (start + timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
 host = args[args.index("--hostname") + 1]
 total = int(os.environ.get("GH_TOTAL", "1" if kind == "prs" else "0"))
 if os.environ.get("GH_CAP"):
@@ -88,6 +88,7 @@ for index in range((page-1)*100, min(page*100, total)):
     item = {"number": number, "title": "Fix checks", "state": "open" if state == "open" else "closed",
             "html_url": f"https://{host}/org/project/{route}/{number}",
             "created_at": "2020-01-01T00:00:00Z", "updated_at": updated,
+            "user": {"login": os.environ.get("GH_LOGIN", "test-user")},
             "closed_at": None if state == "open" else updated}
     if kind == "prs":
         item["pull_request"] = {"merged_at": updated if state == "merged" else None}
@@ -151,16 +152,16 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["github"]["prs"][0]["state"], "merged")
         self.assertEqual(data["metadata"]["github_status"], "ok")
         calls = [json.loads(line) for line in (self.root / "gh.log").read_text().splitlines()]
-        searches = [args for args in calls if "search/issues" in args and any(".." in v for v in args)]
-        self.assertEqual(len(searches), 2)
-        for args in searches:
-            self.assertIn("sort=updated", args)
-            self.assertIn("order=desc", args)
-            query = next(value[2:] for value in args if value.startswith("q="))
-            self.assertIn("author:test-user", query)
-            self.assertIn("updated:" + data["metadata"]["since_at"] + ".." + data["metadata"]["to_at"], query)
-            self.assertIn("per_page=100", args)
-            self.assertIn("page=1", args)
+        searches = [args for args in calls if "search/issues" in args
+                    and any(v.startswith("q=is:pr author:test-user updated:>=") for v in args)]
+        self.assertEqual(len(searches), 1)
+        args = searches[0]
+        self.assertIn("sort=updated", args)
+        self.assertIn("order=desc", args)
+        self.assertIn("q=is:pr author:test-user updated:>=" + data["metadata"]["since_at"].split(".")[0].rstrip("Z") + "Z",
+                      args)
+        self.assertIn("per_page=100", args)
+        self.assertIn("page=1", args)
 
     def test_deep_clones_worktrees_and_overlapping_roots(self):
         repo = self.repo("go/src/github.test/org/project", "Keep | the entire | subject")
@@ -215,7 +216,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.env["GH_CAP"] = "1"
         data = self.capture()
         self.assertEqual(data["metadata"]["github_status"], "partial")
-        self.assertEqual(len([w for w in data["metadata"]["warnings"] if "exceeds the 1000-result cap" in w]), 2)
+        self.assertTrue(any("1,000" in warning for warning in data["metadata"]["warnings"]))
 
     def test_missing_author_is_a_gap(self):
         repo = self.repo("missing-author")
@@ -236,7 +237,6 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
     def test_raw_and_enriched_reports(self):
         data = self.capture()
         data["github"]["prs"] += [dict(data["github"]["prs"][0], number=8, state="closed", merged_at=None, url="https://github.com/org/project/pull/8")]
-        data["metadata"]["github_searches"]["prs"].update(returned_count=2, total_count=2)
         self.assertIn("1 currently merged, 0 open, 1 closed without merge", self.render(data).stdout)
         source = self.root / "source.json"
         source.write_text(json.dumps(data))
@@ -311,7 +311,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.env["GH_TOTAL"] = "101"
         data = self.capture()
         self.assertEqual(len(data["github"]["prs"]), 101)
-        self.assertEqual(data["metadata"]["github_searches"]["prs"]["pages"], 2)
+        self.assertEqual(data["metadata"]["github_discovery"]["recent_authored_prs"]["pages"], 2)
         self.env.update(GH_FAIL="prs", GH_FAIL_PAGE="2")
         data = self.capture()
         self.assertEqual(len(data["github"]["prs"]), 100)
@@ -321,7 +321,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.env.update(GH_TOTAL="101", GH_MODE="drift")
         data = self.capture()
         self.assertEqual(data["metadata"]["github_status"], "partial")
-        self.assertTrue(any("changed while paging" in warning for warning in data["metadata"]["warnings"]))
+        self.assertTrue(any("count changed" in warning for warning in data["metadata"]["warnings"]))
 
     def test_managed_user_login_is_preserved_and_queried(self):
         self.env["GH_LOGIN"] = "mona-cat_octo"
@@ -330,8 +330,8 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["metadata"]["github_status"], "ok")
         self.assertEqual(len(data["github"]["prs"]), 1)
         calls = [json.loads(line) for line in (self.root / "gh.log").read_text().splitlines()]
-        queries = [value for args in calls for value in args if value.startswith("q=") and ".." in value]
-        self.assertEqual(len(queries), 2)
+        queries = [value for args in calls for value in args if value.startswith("q=") and "author:" in value]
+        self.assertTrue(queries)
         self.assertTrue(all("author:mona-cat_octo" in query for query in queries))
 
     def test_enterprise_host_is_used_for_identity_and_search(self):

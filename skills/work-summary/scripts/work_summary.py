@@ -2,7 +2,6 @@
 """Collect read-only work evidence and render validated, source-linked reports."""
 
 import argparse
-from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -18,32 +17,28 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HOST, LIMIT, PAGE_SIZE, UTC, command, decode_json, integer, iso, network_calls, progress,
-    read_json, require, reset_network_state, timestamp, valid_item, is_pr_url,
+    HOST, command, decode_json, integer, iso, network_calls, progress, read_json, require,
+    reset_network_state, timestamp, is_pr_url,
 )
 from local_sources import collect_local  # noqa: E402
-from capabilities import collect_local_safely  # noqa: E402
+from capabilities import collect_local_safely, empty_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, github_items, native_review_links  # noqa: E402
 from extended_evidence import github_reference_comments, jira_reference  # noqa: E402
-from gitlab_sources import collect_gitlab_refs  # noqa: E402
+from gitlab_sources import SCOPE as GITLAB_REF_SCOPE, collect_gitlab_refs  # noqa: E402
 from gitlab_api import collect_gitlab, public_get  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
 from provider_references import code_urls, verified_aliases  # noqa: E402
 from references import follow_references  # noqa: E402
-from reporting_window import resolve_window, search_bounds  # noqa: E402
+from reporting_window import resolve_window  # noqa: E402
 
 
 def collect(days_text, roots, now=None, *, since=None, until=None):
     start, end, window = resolve_window(days_text, now, since=since, until=until)
-    explicit = window.get('window_kind') == 'explicit'
     reset_network_state()
     progress(f"collecting {iso(start)} to {iso(end)}")
-    query_start, query_end = search_bounds(start, end) if explicit else (start, end)
-    warnings = []
-
-    printed = set()
+    warnings, printed, failed = [], set(), set()
 
     def warn(message):
         # The capture keeps every warning; stderr shows each distinct one once, bounded,
@@ -53,27 +48,27 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
             printed.add(message)
             print(f"Warning: {message}", file=sys.stderr)
 
+    def phase(name, run, fallback):
+        """Run one source; an unexpected failure is a stated gap, never a lost collection."""
+        try:
+            return run()
+        except Exception as error:  # noqa: BLE001 - any failure here must keep the other sources
+            warn(f"{name} stopped early ({type(error).__name__}: {error}); evidence collected so far is kept.")
+            failed.add(name)
+            return fallback()
+
     host = os.environ.get("GH_HOST", "github.com").lower()
     github_host_valid = HOST.fullmatch(host) is not None
     if not github_host_valid:
         warn("Configured GitHub host is invalid; GitHub reads are unavailable.")
         host = "github.com"
-    github = {"prs": [], "issues": []}
-    initial_context = {'prs': [], 'issues': []}
-    initial_observations = []
-    github_status = "unavailable"
-    github_user = ""
-    searches = {}
     gh_env = {**os.environ, "GH_PROMPT_DISABLED": "1", "GH_PAGER": "cat"}
 
     def api(*args):
-        if explicit:
-            # Discovery may include items updated after the reporting period;
-            # only widen its lower search bound, keeping native event filters exact.
-            args = tuple(arg.replace('updated:>=' + iso(start), 'updated:>=' + iso(query_start))
-                         if isinstance(arg, str) and arg.startswith('q=') else arg for arg in args)
         return decode_json(command(["gh", "api", "--hostname", host, *args], env=gh_env))
 
+    github = {"prs": [], "issues": [], "context_prs": [], "context_issues": [], "activity": []}
+    github_user, identity, ledger = "", {}, None
     if github_host_valid and shutil.which("gh"):
         try:
             identity = api("user")
@@ -82,176 +77,37 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                     "Invalid GitHub login")
         except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
             warn("GitHub identity lookup failed; GitHub activity is unavailable.")
-            github_user = ""
+            github_user, identity = "", {}
     elif github_host_valid:
         warn("GitHub CLI is missing; GitHub activity is unavailable.")
     if github_user:
-        github_status = "ok"
-        for kind, qualifier in (("prs", "pr"), ("issues", "issue")):
-            info = {"total_count": None, "returned_count": 0, "incomplete_results": False, "pages": 0, "status": "ok"}
-            searches[kind] = info
-            seen = set()
-            first_total = None
-            for page in range(1, LIMIT // PAGE_SIZE + 1):
-                try:
-                    response = api("--method", "GET", "search/issues", "-f",
-                                   f"q=is:{qualifier} author:{github_user} updated:{iso(query_start)}..{iso(query_end)}",
-                                   "-f", "sort=updated", "-f", "order=desc", "-F", f"per_page={PAGE_SIZE}",
-                                   "-F", f"page={page}")
-                    require(isinstance(response, dict) and integer(response.get("total_count"))
-                            and type(response.get("incomplete_results")) is bool
-                            and isinstance(response.get("items"), list), "Malformed search response")
-                    info["pages"] += 1
-                    total = response["total_count"]
-                    info["total_count"] = total
-                    if first_total is None:
-                        first_total = total
-                    elif first_total != total:
-                        info["status"] = "partial"
-                        warn(f"GitHub {kind} changed while paging; coverage may be incomplete.")
-                    recover = page == 1 and (response['incomplete_results'] or total > LIMIT)
-                    if response["incomplete_results"] and not recover:
-                        info["incomplete_results"] = True
-                        info["status"] = "partial"
-                        warn(f"GitHub {kind} search reported incomplete results.")
-                    rows = response["items"]
-                    require(len(rows) <= PAGE_SIZE, "Oversized search page")
-                    invalid_rows = 0
-                    for row in rows:
-                        try:
-                            require(isinstance(row, dict), "Malformed search item")
-                            url = row["html_url"]
-                            parts = urlsplit(url).path.strip("/").split("/")
-                            require(len(parts) == 4, "Malformed item URL")
-                            is_pr = "pull_request" in row
-                            require(is_pr == (kind == "prs"), "Wrong search item kind")
-                            if is_pr:
-                                require(isinstance(row["pull_request"], dict) and "merged_at" in row["pull_request"],
-                                        "Missing PR merge evidence")
-                            merged = row["pull_request"]["merged_at"] if is_pr else None
-                            require(row.get("body") is None or isinstance(row["body"], str), "Invalid GitHub body")
-                            item = {"repo": "/".join(parts[:2]), "number": row["number"], "title": row["title"],
-                                    "state": "merged" if merged else row["state"], "url": url,
-                                    "created_at": row["created_at"], "updated_at": row["updated_at"],
-                                    "closed_at": row["closed_at"], "merged_at": merged,
-                                    "body": row.get("body") or "", "draft": row.get("draft", False),
-                                    "author_login": (row.get("user") or {}).get("login")}
-                            require(isinstance(item["body"], str), "Invalid GitHub body")
-                            valid_item(item, kind, host)
-                            key = (item["repo"].casefold(), item["number"])
-                            if key in seen:
-                                initial_observations.append(item)
-                            require(key not in seen, "Duplicate search item")
-                            seen.add(key)
-                            if explicit and not start <= timestamp(item["updated_at"]) <= end:
-                                # The native search index and current REST payload
-                                # can disagree about updated_at. Preserve the valid
-                                # artifact as context, and qualify its own events.
-                                info['outside_window_count'] = info.get('outside_window_count', 0) + 1
-                                info.setdefault('outside_window_items', []).append(item)
-                                initial_context[kind].append(item)
-                                continue
-                            require(start <= timestamp(item["updated_at"]) <= end, "Item outside requested window")
-                            github[kind].append(item)
-                        except (ValueError, KeyError, TypeError, AttributeError):
-                            info["status"] = "partial"
-                            invalid_rows += 1
-                    if invalid_rows:
-                        warn(f"GitHub {kind} page {page} contained {invalid_rows} invalid, duplicate, or out-of-window items; they were skipped.")
-                    if recover:
-                        recovery_warnings = []
-                        recovery = Github(api, host, github_user, start, end, recovery_warnings.append)
-                        key = 'initial_' + kind
-                        recovered = recovery.search(
-                            f'is:{qualifier} author:{github_user} updated:{iso(query_start)}..{iso(query_end)}', key, kind)
-                        initial_observations.extend(recovery.search_observations.get(key, []))
-                        native = recovery.coverage[key]
-                        info['partition_recovery'] = native
-                        info['pages'] += native['pages']
-                        info['initial_incomplete_results'] = response['incomplete_results']
-                        info['incomplete_results'] = native['status'] != 'ok' and native['incomplete_results']
-                        for item in recovered:
-                            identity_key = (item['repo'].casefold(), item['number'])
-                            if identity_key in seen:
-                                initial_observations.append(item)
-                                continue
-                            seen.add(identity_key)
-                            if start <= timestamp(item['updated_at']) <= end:
-                                github[kind].append(item)
-                            elif explicit:
-                                info['outside_window_count'] = info.get('outside_window_count', 0) + 1
-                                info.setdefault('outside_window_items', []).append(item)
-                                initial_context[kind].append(item)
-                            else:
-                                info['status'] = 'partial'
-                                warn(f'GitHub {kind} partition recovery returned an out-of-window item; it was skipped.')
-                        if native['status'] != 'ok' or native.get('total_count') != total:
-                            info['status'] = 'partial'
-                            for message in recovery_warnings:
-                                warn(message)
-                            if total > LIMIT:
-                                warn(f'GitHub {kind} exceeds the {LIMIT}-result cap; partition recovery was incomplete.')
-                            warn(f'GitHub {kind} partition recovery was incomplete or its count changed; retained readable items.')
-                        break
-                    expected = min(PAGE_SIZE, max(0, min(total, LIMIT) - (page - 1) * PAGE_SIZE))
-                    if len(rows) < expected:
-                        info["status"] = "partial"
-                        warn(f"GitHub {kind} returned fewer rows than its result count; coverage is incomplete.")
-                        break
-                    if page * PAGE_SIZE >= min(total, LIMIT):
-                        break
-                except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
-                    info["status"] = "partial"
-                    warn(f"GitHub {kind} search failed; this source is missing or incomplete, not empty.")
-                    break
-            info["returned_count"] = len(github[kind])
-            if info["status"] != "ok":
-                github_status = "partial"
+        progress("GitHub: searching your PRs, reviews, comments and open work")
+        ledger = Github(api, host, github_user, start, end, warn)
+        phase("GitHub discovery", lambda: ledger.discover(github), lambda: None)
 
-    progress(("GitHub: authored searches done" if github_user else "GitHub: not searched")
-             + "; scanning local repositories")
-    local, local_status, local_capability = collect_local_safely(
-        collect_local, roots, start, end, warn, api=api if github_user else None,
-        identity=identity if github_user else {})
-    if explicit:
-        # Git timestamps have whole-second precision and its lower-bound parser
-        # truncates fractions. Reconcile that harmless overfetch before validation.
-        local['commits'] = {repo: selected for repo, rows in local['commits'].items()
-                            if (selected := [row for row in rows
-                                             if start <= timestamp(row['committed_at']) <= end])}
-        local['metadata']['repos_with_commits'] = len(local['commits'])
+    progress("scanning local repositories")
+    local, local_status, local_capability = phase(
+        "Local Git", lambda: collect_local_safely(collect_local, roots, start, end, warn,
+                                                  api=api if github_user else None, identity=identity),
+        lambda: (empty_local(), "unavailable", {"status": "unavailable", "reason": "collection failed"}))
+    # Git timestamps have whole-second precision and its lower-bound parser truncates
+    # fractions; keep exactly the commits inside the window.
+    local['commits'] = {repo: selected for repo, rows in local['commits'].items()
+                        if (selected := [row for row in rows if start <= timestamp(row['committed_at']) <= end])}
+    local['metadata']['repos_with_commits'] = len(local['commits'])
     progress(f"local: {local['metadata']['repos_searched']} repositories, "
              f"{local['metadata']['repos_with_commits']} with commits in the window")
-    gitlab_discovery = collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn)
+    gitlab_discovery = phase(
+        "GitLab MR refs", lambda: collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn),
+        lambda: {'status': 'unavailable', 'scope': GITLAB_REF_SCOPE, 'queries': [], 'routes': [], 'failures': []})
     progress("Jira: reading inventories and active tickets")
-    jira = collect_jira(start, end, warn)
-    progress(f"Jira: {len(jira.get('issues', []))} tickets; GitHub: reading reviews, comments and branch PRs")
-    discovery = {}
-    if github_user:
-        ledger = Github(api, host, github_user, start, end, warn)
-        ledger.discover(github)
-        known = {item['url'].casefold(): item for item in reversed(github_items(github))}
-        retained_context = []
-        for kind, items in initial_context.items():
-            for item in items:
-                if item['url'].casefold() not in known:
-                    item = {**item, 'roles': [], 'observed_at': iso(datetime.now(UTC))}
-                    github['context_' + kind].append(item)
-                    known[item['url'].casefold()] = item
-                    retained_context.append(item)
-                original = known[item['url'].casefold()]
-                ledger.retain_context_observation(github, item, original)
-                if 'initial_dated_search_context' not in original.setdefault('roles', []):
-                    original['roles'].append('initial_dated_search_context')
-        for item in initial_observations:
-            ledger.retain_context_observation(github, item, known[item['url'].casefold()])
-        if retained_context:
-            ledger._inspect_activity(github, retained_context)
-        discovery = ledger.coverage
-        if any(info["status"] == "partial" for info in discovery.values()):
-            github_status = "partial"
-    progress("following links between tickets, PRs and MRs")
+    jira = phase("Jira", lambda: collect_jira(start, end, warn),
+                 lambda: {'metadata': {'status': 'unavailable', 'warnings': [], 'coverage': {}},
+                          'issues': [], 'activity': [], 'linked_prs': []})
+
+    progress(f"Jira: {len(jira.get('issues', []))} tickets; following links between tickets, PRs and MRs")
     public_cache = {}
+
     def read_public(url):
         if url not in public_cache:
             public_cache[url] = public_get(url)
@@ -267,34 +123,29 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         # are never publicly readable.
         jira['metadata']['public_history'] = collect_public_history(
             {'metadata': jira['metadata'], 'issues': tickets}, once, reuse=True, github_host=host)
-    try:
-        gitlab, expansion = follow_references(
-            jira, github, local['branches'],
-            lambda keys: add_referenced_jira(jira, keys, start, end, warn),
-            lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
-                                        since=start, read=read_public,
-                                        trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
-            read_history, host)
-    except (ValueError, KeyError, TypeError) as error:
-        # Reference expansion only adds counterparts and history. An internal
-        # inconsistency there must not discard minutes of collected primary evidence.
-        warn(f"Reference expansion stopped early ({error}); earlier evidence is kept and "
-             "public Jira history and GitLab MR details are omitted.")
+
+    def no_references():
+        # Expansion only adds counterparts and history; drop its partial results.
         for issue in jira.get('issues', []):
             issue.pop('public_history', None)
             issue.pop('history_review_links', None)
         jira.get('metadata', {}).pop('public_history', None)
-        if jira.get('metadata', {}).get('status') == 'ok':
-            jira['metadata']['status'] = 'partial'
-            jira['metadata'].setdefault('warnings', []).append('Reference expansion stopped early.')
-        gitlab = collect_gitlab([], warn)
-        expansion = {'status': 'failed', 'error': str(error)}
-        if github_user:
-            github_status = 'partial'
-    if github_user:
-        if any(info["status"] == "partial" for info in ledger.coverage.values()):
-            github_status = "partial"
-    associate_work(jira, github)
+        return collect_gitlab([], warn), {'status': 'failed'}
+
+    gitlab, expansion = phase("Reference expansion", lambda: follow_references(
+        jira, github, local['branches'],
+        lambda keys: add_referenced_jira(jira, keys, start, end, warn),
+        lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
+                                    since=start, read=read_public,
+                                    trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
+        read_history, host), no_references)
+    phase("Linking tickets and PRs", lambda: associate_work(jira, github), lambda: None)
+    if {"Jira", "Reference expansion"} & failed and jira.get('metadata', {}).get('status') == 'ok':
+        jira['metadata']['status'] = 'partial'
+    discovery = ledger.coverage if ledger else {}
+    github_status = ("unavailable" if not github_user else
+                     "partial" if {"GitHub discovery", "Reference expansion"} & failed
+                     or any(info.get("status") == "partial" for info in discovery.values()) else "ok")
     progress(f"done; {len(warnings)} coverage warnings ({len(set(warnings))} distinct) are in metadata.warnings")
     return {
         "metadata": {**window, **local["metadata"], "network_requests": network_calls(),
@@ -302,7 +153,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                      "github_discovery": discovery, "reference_expansion": expansion,
                      "gitlab_discovery": gitlab_discovery,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
-                     "github_searches": searches, "search_limit": LIMIT, "warnings": warnings},
+                     "warnings": warnings},
         "github": github, "jira": jira, "gitlab": gitlab,
         "commits": local["commits"], "branches": local["branches"],
         "unattributed_commits": local["unattributed_commits"],

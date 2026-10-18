@@ -52,9 +52,3 @@ def resolve_window(days_text, now=None, *, since=None, until=None):
                         'to_at': iso(end), **extra}
 
 
-def search_bounds(start, end):
-    """Native search timestamps have second precision; exact filtering follows."""
-    lower, upper = start.replace(microsecond=0), end.replace(microsecond=0)
-    if end.microsecond:
-        upper += timedelta(seconds=1)
-    return lower, upper

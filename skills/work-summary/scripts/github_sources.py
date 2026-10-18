@@ -2,7 +2,6 @@
 
 from collections import deque
 from datetime import datetime, timedelta
-import hashlib
 import json
 import subprocess
 from urllib.parse import urlsplit
@@ -60,8 +59,6 @@ class Github:
         self.start, self.end, self.warn = start, end, warn
         self.coverage = {}
         self.cache = {}
-        self.search_observations = {}
-        self._context_observation_seen = set()
         self._linked_attempts = set()
         self._activity_items = set()
         self._activity_seen = set()
@@ -86,17 +83,6 @@ class Github:
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0})
         info['status'] = 'partial'
         self.warn(f'GitHub {key}: {message}')
-
-    def retain_context_observation(self, github, item, original):
-        """Keep distinct native payloads without duplicating derived role/link data."""
-        derived = {'roles', 'observed_at', 'jira_links', 'jira_seed_urls'}
-        snapshot = {field: value for field, value in item.items() if field not in derived}
-        if all(original.get(field) == value for field, value in snapshot.items()):
-            return
-        fingerprint = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).digest()
-        if fingerprint not in self._context_observation_seen:
-            self._context_observation_seen.add(fingerprint)
-            github.setdefault('context_observations', []).append(snapshot)
 
     def listing(self, endpoint, key):
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0})
@@ -132,8 +118,6 @@ class Github:
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0,
                                              'query': query, 'incomplete_results': False})
         found, seen = [], set()
-        observations = self.search_observations[key] = []
-        payloads = set()
         requests = 0
         observed = datetime.now(UTC).replace(microsecond=0)
         epoch = datetime(1970, 1, 1, tzinfo=UTC)
@@ -176,10 +160,6 @@ class Github:
                         try:
                             item = rest_item(row, kind, self.host)
                             identity = (self.host.casefold(), item['repo'].casefold(), item['number'])
-                            fingerprint = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).digest()
-                            if identity in seen and fingerprint not in payloads:
-                                observations.append(item)
-                            payloads.add(fingerprint)
                             require(identity not in local_seen, 'Duplicate item during paging')
                             local_seen.add(identity)
                             if lower is not None and not lower <= timestamp(item['created_at']) <= upper:
@@ -241,10 +221,24 @@ class Github:
             self.problem(key, 'partitioned search count disagrees with its original inventory')
         return found
 
+    def own(self, item):
+        return (item.get('author_login') or '').casefold() == self.login.casefold()
+
+    def touched(self, item):
+        try:
+            return any(item.get(field) and self.start <= timestamp(item[field]) <= self.end
+                       for field in ('created_at', 'updated_at', 'merged_at', 'closed_at'))
+        except ERRORS:
+            return False
+
     def discover(self, github):
-        github['context_prs'], github['context_issues'], github['activity'] = [], [], []
-        all_items = {item['url'].casefold(): item for kind in ('prs', 'issues') for item in github[kind]}
-        since = iso(self.start)
+        """Search the user's PRs, reviews, comments and open work, then read their activity.
+
+        Items the user authored and touched in the window are primary work; the rest is
+        context. Search dates only select candidates: native event times decide credit.
+        """
+        github.update(prs=[], issues=[], context_prs=[], context_issues=[], activity=[])
+        since = iso(self.start.replace(microsecond=0))
         specifications = [
             ('open_authored_prs', 'prs', f'is:pr author:{self.login} is:open'),
             ('open_assigned_prs', 'prs', f'is:pr assignee:{self.login} is:open'),
@@ -257,23 +251,21 @@ class Github:
             ('open_assigned_issues', 'issues', f'is:issue assignee:{self.login} is:open'),
             ('recent_issue_involvement', 'issues', f'is:issue involves:{self.login} updated:>={since}'),
         ]
+        items = {}
         for key, kind, query in specifications:
-            rows = self.search(query, key, kind)
-            for item in rows + self.search_observations.get(key, []):
-                identity = item['url'].casefold()
-                if identity not in all_items:
-                    item['roles'] = []
-                    item['observed_at'] = iso(datetime.now(UTC))
-                    github['context_' + kind].append(item)
-                    all_items[identity] = item
-                original = all_items[identity]
-                self.retain_context_observation(github, item, original)
-                original.setdefault('roles', [])
+            for item in self.search(query, key, kind):
+                original = items.setdefault(item['url'].casefold(), {**item, 'roles': []})
                 if key not in original['roles']:
                     original['roles'].append(key)
-                original.setdefault('author_login', item.get('author_login'))
-        self._inspect_activity(github, all_items.values())
-        return all_items
+        for item in items.values():
+            kind = 'prs' if is_pr_url(item['url']) else 'issues'
+            github[kind if self.own(item) and self.touched(item) else 'context_' + kind].append(item)
+        # PRs found only through involvement, assignment or review requests had no creditable
+        # events in a real quarter (0 of 276); their activity reads cost four calls each.
+        worked = {'open_authored_prs', 'recent_authored_prs', 'recent_reviews', 'recent_comments'}
+        self._inspect_activity(github, [item for item in items.values()
+                                        if not is_pr_url(item['url']) or worked & set(item['roles'])])
+        return items
 
     def _retain_comment(self, github, item, event, category, key):
         """Retain native discussion references independently of actor attribution."""

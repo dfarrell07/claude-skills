@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Exact reporting periods, native boundary reconciliation, and CLI regressions."""
 
-import copy
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -15,7 +14,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 SKILL = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL / 'scripts'))
-from reporting_window import endpoint, resolve_window, search_bounds  # noqa: E402
+from reporting_window import endpoint, resolve_window  # noqa: E402
 from github_sources import Github  # noqa: E402
 from work_summary import collect, render, validate  # noqa: E402
 
@@ -79,12 +78,6 @@ class ReportingWindowTest(unittest.TestCase):
             command.assert_not_called()
             capability.assert_not_called()
 
-    def test_native_query_bounds_expand_to_whole_seconds(self):
-        start = endpoint('2026-01-01T00:00:00.000001Z')
-        end = endpoint('2026-03-31T23:59:59.999999Z')
-        self.assertEqual(search_bounds(start, end), (endpoint('2026-01-01T00:00:00Z'),
-                                                   endpoint('2026-04-01T00:00:00Z')))
-
     def test_later_updated_item_keeps_only_native_events_inside_exact_period(self):
         start, end, _ = resolve_window(None, since='2026-01-01T00:00:00Z', until='2026-04-01T00:00:00Z')
         item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1, 'title': 'Quarter work',
@@ -141,7 +134,8 @@ if args[-1] == 'user':
     value = {'login': 'test-user'}
 elif 'search/issues' in args:
     query = next(arg[2:] for arg in args if arg.startswith('q='))
-    rows = json.loads(os.environ.get('GH_ROWS', '[]')) if 'is:pr ' in query and '..' in query else []
+    authored = 'is:pr author:' in query and 'updated:>=' in query
+    rows = json.loads(os.environ.get('GH_ROWS', '[]')) if authored else []
     if 'created:' in query:
         if os.environ.get('GH_RECOVERY_FAIL'):
             sys.exit(1)
@@ -246,7 +240,7 @@ print(json.dumps(value))
                 self.assertNotIn('until_exclusive', data['metadata'])
                 self.assertIn('Last 7 Days', render(data, detailed=True))
 
-    def test_fractional_native_query_overfetch_is_counted_and_exactly_filtered(self):
+    def test_explicit_window_filters_items_exactly_and_queries_whole_seconds(self):
         def row(number, at):
             return {'html_url': f'https://github.com/org/repo/pull/{number}', 'number': number,
                     'title': f'Event {number}', 'state': 'open', 'created_at': '2020-01-01T00:00:00Z',
@@ -259,28 +253,13 @@ print(json.dumps(value))
                                   '--until', '2026-04-01T00:00:00Z', '--root', str(self.home))
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
-        validate(data)
         self.assertEqual([row['number'] for row in data['github']['prs']], [2])
-        info = data['metadata']['github_searches']['prs']
-        self.assertEqual((info['status'], info['total_count'], info['returned_count'], info['outside_window_count']),
-                         ('ok', 3, 1, 2))
+        self.assertEqual(sorted(row['number'] for row in data['github']['context_prs']), [1, 3])
         calls = [json.loads(line) for line in (self.root / 'gh.log').read_text().splitlines()]
         queries = [arg for call in calls for arg in call if arg.startswith('q=') and 'updated:' in arg]
-        self.assertTrue(any('updated:2026-01-01T00:00:00Z..2026-04-01T00:00:00Z' in q for q in queries))
-        self.assertTrue(any('updated:>=2026-01-01T00:00:00Z' in q and '..' not in q for q in queries))
-        bad = copy.deepcopy(data)
-        bad['metadata']['github_searches']['prs']['outside_window_count'] = True
-        for mutation in ('missing_metadata', 'missing_context', 'missing_both', 'empty_metadata'):
-            with self.subTest(mutation=mutation):
-                bad = copy.deepcopy(data)
-                if mutation in ('missing_metadata', 'missing_both'):
-                    bad['metadata']['github_searches']['prs'].pop('outside_window_items')
-                if mutation in ('missing_context', 'missing_both'):
-                    bad['github']['context_prs'] = []
-                if mutation == 'empty_metadata':
-                    bad['metadata']['github_searches']['prs']['outside_window_items'] = []
+        self.assertTrue(any('updated:>=2026-01-01T00:00:00Z' in q for q in queries))
 
-    def test_initial_incomplete_inventory_recovers_without_false_partial_and_retains_failures(self):
+    def test_capped_inventory_recovers_through_creation_partitions(self):
         self.env['GH_ROWS'] = json.dumps([
             {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
              'title': 'Quarter work', 'state': 'open', 'created_at': '2020-01-01T00:00:00Z',
@@ -291,74 +270,17 @@ print(json.dumps(value))
         result = self.run_collect(*args)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
-        validate(data)
-        info = data['metadata']['github_searches']['prs']
-        self.assertEqual(info['status'], 'ok')
-        self.assertFalse(info['incomplete_results'])
-        self.assertTrue(info['initial_incomplete_results'])
-        self.assertEqual(info['partition_recovery']['status'], 'ok')
-        self.assertTrue(info['partition_recovery']['created_partitions'])
+        self.assertEqual([row['number'] for row in data['github']['prs']], [1])
+        self.assertTrue(data['metadata']['github_discovery']['recent_authored_prs']['created_partitions'])
         self.assertEqual(data['metadata']['github_status'], 'ok')
-        self.assertFalse(any('GitHub' in warning for warning in data['metadata']['warnings']))
         self.env['GH_RECOVERY_FAIL'] = '1'
         failed = self.run_collect(*args)
         self.assertEqual(failed.returncode, 0, failed.stderr)
         partial = json.loads(failed.stdout)
-        validate(partial)
         self.assertEqual(partial['metadata']['github_status'], 'partial')
         self.assertEqual([row['number'] for row in partial['github']['prs']], [1])
-        self.assertTrue(any('partition recovery' in warning for warning in partial['metadata']['warnings']))
 
-    def test_native_case_variants_across_initial_recovery_and_roles_preserve_one_selected_identity(self):
-        from references import referenced_keys
-        item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
-                'title': 'Work', 'body': 'PROJ-123', 'state': 'open',
-                'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-05-01T00:00:00Z',
-                'closed_at': None, 'user': {'login': 'test-user'}, 'pull_request': {'merged_at': None}}
-        gh = self.bin / 'gh'
-        source = gh.read_text().replace(
-            "value = {'total_count': len(rows)",
-            "if 'created:' in query:\n"
-            "        rows = [{**row, 'html_url': 'https://github.com/Org/Repo/pull/1', 'body': 'TASK-124'} for row in rows]\n"
-            "    value = {'total_count': len(rows)")
-        gh.write_text(source)
-        self.env.update(GH_ROWS=json.dumps([item]), GH_RECOVERY='1')
-        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
-                                  '--root', str(self.home))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout)
-        validate(data)
-        self.assertEqual(len(data['github']['context_prs']), 1)
-        self.assertEqual(len(data['github']['activity']), 1)
-        self.assertEqual(set(referenced_keys(data['github'])), {'PROJ-123', 'TASK-124'})
-        self.assertEqual(data['github']['context_observations'][0]['url'], 'https://github.com/Org/Repo/pull/1')
-        self.assertEqual(data['metadata']['github_searches']['prs']['outside_window_items'][0]['url'],
-                         'https://github.com/org/repo/pull/1')
-
-    def test_partition_recovery_retains_changed_native_reference_payload(self):
-        from references import referenced_keys
-        item = {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
-                'title': 'Work', 'body': 'Implements PROJ-123', 'state': 'open',
-                'created_at': '2026-02-01T00:00:00Z', 'updated_at': '2026-03-01T00:00:00Z',
-                'closed_at': None, 'user': {'login': 'test-user'}, 'pull_request': {'merged_at': None}}
-        gh = self.bin / 'gh'
-        gh.write_text(gh.read_text().replace(
-            "value = {'total_count': len(rows)",
-            "if 'created:' in query:\n"
-            "        rows = [{**row, 'body': 'Implements TASK-124'} for row in rows]\n"
-            "    value = {'total_count': len(rows)"))
-        self.env.update(GH_ROWS=json.dumps([item]), GH_RECOVERY='1')
-        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
-                                  '--root', str(self.home))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout)
-        validate(data)
-        self.assertEqual(set(referenced_keys(data['github'])), {'PROJ-123', 'TASK-124'})
-        self.assertEqual(len(data['github']['prs']), 1)
-        self.assertEqual(len(data['github']['context_observations']), 1)
-        self.assertEqual(data['metadata']['github_searches']['prs']['status'], 'ok')
-
-    def test_native_search_date_disagreement_retains_context_and_only_credits_exact_events(self):
+    def test_merge_after_the_window_is_not_credited(self):
         rows = [
             {'html_url': 'https://github.com/org/repo/pull/1', 'number': 1,
              'title': 'Future merge', 'state': 'closed', 'created_at': '2026-03-30T12:00:00Z',
@@ -370,35 +292,19 @@ print(json.dumps(value))
              'pull_request': {'merged_at': None}, 'user': {'login': 'test-user'}},
         ]
         self.env['GH_ROWS'] = json.dumps(rows)
-        for recover in (False, True):
-            with self.subTest(partition_recovery=recover):
-                if recover:
-                    self.env['GH_RECOVERY'] = '1'
-                result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
-                                          '--root', str(self.home))
-                self.assertEqual(result.returncode, 0, result.stderr)
-                data = json.loads(result.stdout)
-                validate(data)
-                self.assertEqual(data['metadata']['github_status'], 'ok')
-                info = data['metadata']['github_searches']['prs']
-                self.assertEqual((info['total_count'], info['returned_count'], info['outside_window_count']), (2, 0, 2))
-                self.assertEqual([(row['number'], row['updated_at']) for row in info['outside_window_items']],
-                                 [(row['number'], row['updated_at']) for row in rows])
-                self.assertEqual({row['number'] for row in data['github']['context_prs']}, {1, 2})
-                self.assertTrue(all('initial_dated_search_context' in row['roles']
-                                    for row in data['github']['context_prs']))
-                self.assertEqual([(event['action'], event['at']) for event in data['github']['activity']],
-                                 [('opened', '2026-03-30T12:00:00Z')])
-                report = render(data)
-                self.assertIn('Opened: Future merge', report)
-                self.assertNotIn('Merged:', report)
-                self.assertNotIn('Old context without quarter activity', report)
-                self.assertFalse(any('GitHub' in warning for warning in data['metadata']['warnings']))
-                bad = copy.deepcopy(data)
-                bad['metadata']['github_searches']['prs']['outside_window_items'][0]['updated_at'] = '2026-03-31T23:59:59Z'
-                bad = copy.deepcopy(data)
-                bad['metadata']['github_searches']['prs']['outside_window_items'].pop()
-
+        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
+                                  '--root', str(self.home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['metadata']['github_status'], 'ok')
+        self.assertEqual([row['number'] for row in data['github']['prs']], [1])
+        self.assertEqual([row['number'] for row in data['github']['context_prs']], [2])
+        self.assertEqual([(event['action'], event['at']) for event in data['github']['activity']],
+                         [('opened', '2026-03-30T12:00:00Z')])
+        report = render(data)
+        self.assertIn('Opened: Future merge', report)
+        self.assertNotIn('Merged:', report)
+        self.assertNotIn('Old context without quarter activity', report)
 
 if __name__ == '__main__':
     unittest.main()

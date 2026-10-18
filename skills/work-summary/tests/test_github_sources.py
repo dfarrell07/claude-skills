@@ -242,8 +242,8 @@ class GithubSourcesTest(unittest.TestCase):
                                  'html_url': item['url'] + '#issuecomment-1'}]
                     return []
                 client = self.client(api)
-                data = {'prs': [item] if kind == 'prs' else [], 'issues': [item] if kind == 'issues' else []}
-                client.discover(data)
+                data = {'activity': []}
+                client._inspect_activity(data, [item])
                 self.assertEqual(len([args for args in client.calls if 'search/issues' not in args and args[0] != 'graphql']), expected_reads)
                 self.assertEqual(len(data['activity']), 1)
                 self.assertEqual(data['activity'][0]['url'], item['url'] + '#issuecomment-1')

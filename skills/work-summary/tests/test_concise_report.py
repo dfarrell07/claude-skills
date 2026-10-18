@@ -753,6 +753,18 @@ class ConciseReportTest(unittest.TestCase):
         self.assertEqual(source['jira']['metadata']['status'],'partial')
         self.assertEqual(source['metadata']['reference_expansion']['status'],'failed')
 
+    def test_unexpected_source_failure_is_a_gap_not_a_lost_collection(self):
+        with patch.object(ws,'collect_local_safely',side_effect=AttributeError('bad record')), \
+             patch.object(ws,'collect_jira',side_effect=RuntimeError('acli changed')), \
+             patch.object(ws.shutil,'which',return_value=None):
+            source=ws.collect('7',[])
+        self.assertEqual(source['metadata']['local_status'],'unavailable')
+        self.assertEqual(source['jira']['metadata']['status'],'unavailable')
+        warnings=' '.join(source['metadata']['warnings'])
+        self.assertIn('Local Git stopped early (AttributeError: bad record)',warnings)
+        self.assertIn('Jira stopped early (RuntimeError: acli changed)',warnings)
+        self.assertIn('No supported work found',ws.render(source))
+
     def test_trusted_gitlab_hosts_come_from_own_work_not_other_peoples_text(self):
         local = {'repositories': [{'remotes': [{'host': 'gitlab.work.test'}]}]}
         mr = 'https://gitlab.{}.test/group/project/-/merge_requests/1'
