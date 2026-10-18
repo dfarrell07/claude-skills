@@ -706,7 +706,7 @@ else:
         jira.add_referenced_jira(result, ["SHA-256", "UTF-8", "MENTIONED-2", "MENTIONED-3"], START, END,
                                  self.warnings.append)
         views = [call[3] for call in self.calls()[before:] if call[:3] == ["jira", "workitem", "view"]]
-        self.assertEqual(views, ["MENTIONED-2", "MENTIONED-3"])
+        self.assertEqual(sorted(views), ["MENTIONED-2", "MENTIONED-3"])
         coverage = result["metadata"]["coverage"]["referenced_by_github"]
         self.assertEqual(coverage["not_a_project"], ["SHA-256", "UTF-8"])
         self.assertEqual(list(coverage["failures"]), ["MENTIONED-3"])

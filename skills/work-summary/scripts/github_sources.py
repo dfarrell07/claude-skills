@@ -2,6 +2,7 @@
 
 from collections import deque
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import json
 import subprocess
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ from evidence import LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_ur
 
 ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError)
 MAX_LIST_PAGES = 100
+ACTIVITY_WORKERS = 4
 MAX_SEARCH_REQUESTS = 128
 
 
@@ -309,7 +311,7 @@ class Github:
             self.problem(key, 'invalid native review context skipped; discussion coverage is incomplete')
 
     def _inspect_activity(self, github, items):
-        seen = self._activity_seen
+        seen, jobs = self._activity_seen, []
         for item in items:
             if item['url'].casefold() in self._activity_items:
                 continue
@@ -337,57 +339,64 @@ class Github:
             if is_pr_url(item['url']):
                 endpoints.extend([('review', f"repos/{item['repo']}/pulls/{item['number']}/reviews"),
                                   ('review_comment', f"repos/{item['repo']}/pulls/{item['number']}/comments")])
-            for category, endpoint in endpoints:
-                key = f"activity:{item['repo']}#{item['number']}:{category}"
-                for event in self.listing(endpoint, key):
-                    if category in {'issue_comment', 'review_comment'}:
-                        self._retain_comment(github, item, event, category, key)
-                    elif category == 'review' or category == 'timeline' and event.get('event') == 'reviewed':
-                        self._retain_review(github, item, event, key)
-                    try:
-                        actor = (event.get('actor') or event.get('user') or {}).get('login', '')
-                        is_author = actor.casefold() == self.login.casefold()
-                        if not is_author and category not in {'issue_comment', 'review_comment'}:
+            jobs.extend((item, category, endpoint, f"activity:{item['repo']}#{item['number']}:{category}")
+                        for category, endpoint in endpoints)
+        # Reads are independent and dominated by latency; process results in order afterwards.
+        with ThreadPoolExecutor(max_workers=ACTIVITY_WORKERS) as pool:
+            listings = list(pool.map(lambda job: self.listing(job[2], job[3]), jobs))
+        for (item, category, endpoint, key), events in zip(jobs, listings):
+            for event in events:
+                if not isinstance(event, dict):
+                    self.problem(key, 'an invalid actor event was skipped')
+                    continue
+                if category in {'issue_comment', 'review_comment'}:
+                    self._retain_comment(github, item, event, category, key)
+                elif category == 'review' or category == 'timeline' and event.get('event') == 'reviewed':
+                    self._retain_review(github, item, event, key)
+                try:
+                    actor = (event.get('actor') or event.get('user') or {}).get('login', '')
+                    is_author = actor.casefold() == self.login.casefold()
+                    if not is_author and category not in {'issue_comment', 'review_comment'}:
+                        continue
+                    if category == 'timeline' and event.get('event') in {'commented', 'reviewed', 'committed'}:
+                        continue
+                    verb = event.get('event', category)
+                    # Comment edits are not credited: who edited, and when, needs a revision
+                    # history read per comment, and an edit is rarely work worth reporting.
+                    dates = [('submitted_at' if category == 'review' else 'created_at', verb, actor)] if is_author else []
+                    for field, action, event_actor in dates:
+                        if event.get(field) is None:
                             continue
-                        if category == 'timeline' and event.get('event') in {'commented', 'reviewed', 'committed'}:
+                        when = timestamp(event[field])
+                        if not self.start <= when <= self.end:
                             continue
-                        verb = event.get('event', category)
-                        # Comment edits are not credited: who edited, and when, needs a revision
-                        # history read per comment, and an edit is rarely work worth reporting.
-                        dates = [('submitted_at' if category == 'review' else 'created_at', verb, actor)] if is_author else []
-                        for field, action, event_actor in dates:
-                            if event.get(field) is None:
-                                continue
-                            when = timestamp(event[field])
-                            if not self.start <= when <= self.end:
-                                continue
-                            url = event.get('html_url') or item['url']
-                            require(isinstance(url, str) and same_github_item_url(url.partition('#')[0], item['url']),
-                                    'Invalid event URL')
-                            require(isinstance(action, str) and action, 'Invalid actor action')
-                            source = None
-                            event_identity = event.get('id')
-                            if category == 'timeline' and action == 'cross-referenced' and event_identity is None:
-                                # REST cross-reference rows have no event ID or permalink.
-                                # Keep their native source identity, cite the target timeline,
-                                # and never manufacture a GitHub event ID.
-                                source = cross_reference_source(event, self.host)
-                                event_identity = ('source_issue', source['issue']['id'])
-                            else:
-                                require(integer(event_identity, 1), 'Missing actor event identity')
-                            require(event.get('body') is None or isinstance(event['body'], str), 'Invalid event body')
-                            identity = (item['url'], category, event_identity, action, iso(when))
-                            if identity in seen:
-                                continue
-                            seen.add(identity)
-                            github['activity'].append({'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
-                                                       'actor': event_actor, 'action': action, 'at': iso(when), 'url': url,
-                                                       'id': event.get('id'), 'body': event.get('body') or '',
-                                                       **({'source': source} if source is not None else {}),
-                                                       **({'body_source': 'rest_current_observation'}
-                                                          if category in {'issue_comment', 'review_comment'} else {}),
-                                                       **({'review_state': event.get('state')} if category == 'review' else {})})
-                    except (ValueError, TypeError, KeyError, AttributeError):
-                        self.problem(key, 'an invalid actor event was skipped')
+                        url = event.get('html_url') or item['url']
+                        require(isinstance(url, str) and same_github_item_url(url.partition('#')[0], item['url']),
+                                'Invalid event URL')
+                        require(isinstance(action, str) and action, 'Invalid actor action')
+                        source = None
+                        event_identity = event.get('id')
+                        if category == 'timeline' and action == 'cross-referenced' and event_identity is None:
+                            # REST cross-reference rows have no event ID or permalink.
+                            # Keep their native source identity, cite the target timeline,
+                            # and never manufacture a GitHub event ID.
+                            source = cross_reference_source(event, self.host)
+                            event_identity = ('source_issue', source['issue']['id'])
+                        else:
+                            require(integer(event_identity, 1), 'Missing actor event identity')
+                        require(event.get('body') is None or isinstance(event['body'], str), 'Invalid event body')
+                        identity = (item['url'], category, event_identity, action, iso(when))
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        github['activity'].append({'item_url': item['url'], 'repo': item['repo'], 'number': item['number'],
+                                                   'actor': event_actor, 'action': action, 'at': iso(when), 'url': url,
+                                                   'id': event.get('id'), 'body': event.get('body') or '',
+                                                   **({'source': source} if source is not None else {}),
+                                                   **({'body_source': 'rest_current_observation'}
+                                                      if category in {'issue_comment', 'review_comment'} else {}),
+                                                   **({'review_state': event.get('state')} if category == 'review' else {})})
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    self.problem(key, 'an invalid actor event was skipped')
 
 

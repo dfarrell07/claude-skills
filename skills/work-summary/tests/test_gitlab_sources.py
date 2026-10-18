@@ -231,6 +231,29 @@ class GitLabSourcesTest(unittest.TestCase):
         self.assertEqual([query['status'] for query in result['queries']], ['partial', 'ok'])
         self.assertFalse(self.warnings)
 
+    def test_unreachable_host_is_tried_once_per_run(self):
+        branches, repos = self.inputs()
+        other = self.root / 'other'
+        subprocess.run(['git', 'clone', '-q', str(self.repo), str(other)], env=self.env, capture_output=True, check=True)
+        subprocess.run(['git', '-C', str(other), 'remote', 'set-url', 'origin',
+                        'ssh://git@gitlab.example.test/group/other.git'], env=self.env, check=True)
+        repos.append({'path': str(other), 'remotes': [
+            {'name': 'origin', 'host': 'gitlab.example.test', 'repo': None, 'kind': 'other'}]})
+        branches.append({'repo': str(other), 'hash': SHA, 'object_type': 'commit', 'pr_status': 'partial'})
+        attempts = []
+
+        def native(path, *args, **kwargs):
+            if args[0] == 'ls-remote':
+                attempts.append(kwargs['timeout'])
+                raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+            return self.native(path, *args, **kwargs)
+
+        with patch.object(gl, 'native_git', side_effect=native):
+            result = gl.collect_gitlab_refs(branches, repos, self.warnings.append)
+        self.assertEqual(attempts, [gl.LS_REMOTE_TIMEOUT])
+        self.assertEqual([f['reason'] for f in result['failures']], ['host_unreachable_earlier_in_run'])
+        self.assertEqual(result['status'], 'partial')
+
     def test_missing_git_and_no_provider_degrade_without_inventing_links(self):
         branches, repos = self.inputs()
         with patch.object(gl.shutil, 'which', return_value=None):

@@ -17,6 +17,8 @@ REMOTE = re.compile(r'[A-Za-z0-9_.][A-Za-z0-9_./-]*\Z')
 MR_REF = re.compile(r'refs/merge-requests/([1-9][0-9]*)/(head|merge)\Z')
 FULL_HASH = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 SCOPE = 'advertised_current_merge_request_refs'
+# Advertising MR heads takes seconds when the host is reachable.
+LS_REMOTE_TIMEOUT = 20
 
 
 def gitlab_host(host):
@@ -123,7 +125,7 @@ def collect_gitlab_refs(branches, repositories, warn):
         result['status'] = 'unavailable'
         warn('GitLab MR refs: Git is unavailable; existing GitLab remote refs could not be read.')
         return result
-    complete, requested = set(), set()
+    complete, requested, unreachable = set(), set(), set()
     for entry, remote in candidates:
         path, name = entry['path'], remote.get('name')
         failure = {'local_repo': path, 'remote': name, 'host': remote['host'], 'repo': remote.get('repo')}
@@ -155,6 +157,8 @@ def collect_gitlab_refs(branches, repositories, warn):
             requested.add(pair)
             if pair in complete:
                 continue
+            # An unreachable host (VPN down, firewall) hangs every read; try it once.
+            require(route['host'] not in unreachable, 'host_unreachable_earlier_in_run')
             key = source_key(*pair, path, name)
             require(not any(query['source_key'] == key for query in result['queries']), 'duplicate_remote_candidate')
             query = {'source_key': key, 'local_repo': path, 'remote': name, **route,
@@ -168,11 +172,13 @@ def collect_gitlab_refs(branches, repositories, warn):
                     # A temporary directory inside some checkout must not adopt that repository.
                     native = native_git(neutral, 'ls-remote', '--refs', '--upload-pack=git-upload-pack', '--',
                                         urls[0], 'refs/merge-requests/*/head', 'refs/merge-requests/*/merge',
-                                        env={'GIT_CEILING_DIRECTORIES': os.path.dirname(neutral)})
+                                        env={'GIT_CEILING_DIRECTORIES': os.path.dirname(neutral)},
+                                        timeout=LS_REMOTE_TIMEOUT)
                 output, code = native.stdout, native.returncode
             except subprocess.TimeoutExpired as error:
                 output, code = error.stdout or b'', None
                 query['errors'].append({'reason': 'native_read_timeout'})
+                unreachable.add(route['host'])
             query['returncode'] = code
             query['native_output'] = output.decode('utf-8', errors='surrogateescape')
             query['refs'], parse_errors = parse_refs(query['native_output'])

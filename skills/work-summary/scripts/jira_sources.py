@@ -595,6 +595,19 @@ def add_referenced_jira(result, keys, start, end, warn):
     projects = set(metadata.get("project_keys") or ())
     known = set(by_key) | set(key_aliases)
     unreadable = 0
+
+    def view(key):
+        try:
+            return decode_json(command(["acli", "jira", "workitem", "view", key,
+                                        "--fields", DETAIL_FIELDS, "--json"], stdin=""))
+        except ERRORS as error:
+            return error
+
+    # Independent reads run together; results are applied in key order below.
+    unread = [key for key in requested if by_key.get(key_aliases.get(key, key)) is None
+              and not (projects and key.split("-")[0] not in projects and key not in known)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        fetched = dict(zip(unread, pool.map(view, unread)))
     for key in requested:
         if key not in coverage["requested_keys"]:
             coverage["requested_keys"].append(key)
@@ -608,8 +621,9 @@ def add_referenced_jira(result, keys, start, end, warn):
             item = by_key.get(key_aliases.get(key, key))
             alias_error = None
             if item is None:
-                raw = decode_json(command(["acli", "jira", "workitem", "view", key,
-                                           "--fields", DETAIL_FIELDS, "--json"], stdin=""))
+                raw = fetched[key]
+                if isinstance(raw, Exception):
+                    raise raw
                 item = _normalize(raw, site)
                 canonical_key = item['key']
                 existing = by_key.get(canonical_key)

@@ -5,6 +5,7 @@ tickets and PRs list, and the tickets those MRs name. Nothing else is read:
 references in old or unrelated items are context, not reasons to crawl further.
 """
 
+from evidence import progress
 from extended_evidence import github_reference_comments
 from provider_references import associate_gitlab, code_urls, gitlab_texts
 from work_links import discovery_keys, github_items, native_review_links
@@ -46,15 +47,19 @@ def follow_references(jira, github, branches, read_tickets, read_gitlab, read_hi
     texts = item_texts(github, items)
     keys = referenced_keys(github, site, items)
     if keys:
+        progress(f"references: reading {len(keys)} tickets named by your work")
         read_tickets(keys)
     tickets = active_tickets(jira)
     if read_history is not None:
+        progress(f"references: reading public history for {len(tickets)} active tickets")
         read_history(tickets)
     targets = {link['url'] for issue in tickets for link in native_review_links(issue) if link['provider'] == 'gitlab'}
     targets.update(link['url'] for issue in tickets for link in issue.get('history_review_links', [])
                    if link['provider'] == 'gitlab')
     targets.update(mr['url'] for branch in branches for mr in branch.get('merge_requests', []))
     targets.update(url for text in texts for provider, url in code_urls(text, github_host) if provider == 'gitlab')
+    if targets:
+        progress(f"references: reading {len(targets)} GitLab MRs")
     gitlab = read_gitlab(sorted(targets))
     known = {issue['key'] for issue in jira.get('issues', [])}
     mr_keys = sorted({key for _, _, _, text, _ in gitlab_texts(gitlab)
