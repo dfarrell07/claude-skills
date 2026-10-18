@@ -7,6 +7,7 @@ Long windows group that work into workstreams so a quarter stays readable.
 """
 
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -90,6 +91,13 @@ def note(body):
     return '' if not body or body.startswith('/') else text(body, 160)
 
 
+def family(title):
+    """Title with versions, branches and placeholders removed: one change fanned out."""
+    title = re.sub(r'REPLACE-WITH-JIRA-KEY:?|\[[^\]]*\]|\([^)]*\)|\b(?:release-)?v?\d+(?:\.\d+)+\b|\bdevel\b',
+                   '', title or '', flags=re.I)
+    return ' '.join(title.split()).strip(' :-').casefold()
+
+
 def cite(item):
     return {key: item[key] for key in ('repo', 'number', 'url')}
 
@@ -139,11 +147,15 @@ class Digest:
         return (item.get('author_login') or '').casefold() == self.login
 
     def state(self, item):
-        if self.in_window(item.get('merged_at')):
-            return 'merged ' + day(item['merged_at'])
-        if item['state'] == 'open' and item.get('draft'):
-            return 'draft'
-        if item['state'] == 'closed' and '/pull/' in item['url'] and not item.get('merged_at'):
+        merged = item.get('merged_at')
+        if merged:
+            if self.in_window(merged):
+                return 'merged ' + day(merged)
+            # Current state is not the state at the cutoff: never let a later merge read as in-window.
+            return ('merged after window ' if timestamp(merged) > self.end else 'merged before window ') + day(merged)
+        if item.get('draft'):
+            return 'draft' if item['state'] == 'open' else 'closed draft'
+        if item['state'] == 'closed' and '/pull/' in item['url']:
             return 'closed unmerged'
         return item['state']
 
@@ -160,7 +172,25 @@ class Digest:
         events = self.events[url]
         if not events:
             return 'authored; merged in window'
-        return counted(SUBSTANTIVE[event['action']] for event in events) + f" ({span(e['at'] for e in events)})"
+        own = self.own(self.items[url])
+
+        def name(action):
+            # On your own PR, review events are replies to reviewers, not reviews.
+            return 'replied in review threads' if own and action in {'review', 'review_comment'} else SUBSTANTIVE[action]
+        return counted(name(event['action']) for event in events) + f" ({span(e['at'] for e in events)})"
+
+    def merged(self, urls):
+        return sum(1 for url in urls if self.own(self.items[url]) and self.in_window(self.items[url].get('merged_at')))
+
+    def family_line(self, urls):
+        items = [self.items[url] for url in urls]
+        states = Counter(re.sub(r' \d\d-\d\d$', '', self.state(item)) for item in items)
+        repos = sorted({item['repo'] for item in items})
+        dates = [e['at'] for url in urls for e in self.events[url]] or [item['merged_at'] for item in items]
+        return (f"- {len(urls)}× \"{text(items[0]['title'], 80)}\" ({counted(states.elements())}; "
+                f"{len(repos)} repo{'s' if len(repos) > 1 else ''}: {', '.join(repos[:4])}{' …' if len(repos) > 4 else ''}; "
+                f"{span(dates)}): "
+                + ' '.join(urls[:3]) + (f' (+{len(urls) - 3} more)' if len(urls) > 3 else ''))
 
     def render(self):
         metadata = self.metadata
@@ -210,8 +240,8 @@ class Digest:
     def passive_line(self):
         if not self.passive:
             return []
-        return ['- notification-only events (context, not work): '
-                + ', '.join(f'{name} ×{count}' for name, count in self.passive.most_common())]
+        return ['', '## Notification-only events (context, not work)',
+                '- ' + ', '.join(f'{name} ×{count}' for name, count in self.passive.most_common())]
 
     def workstream(self, item):
         """Cluster by the linked ticket's parent epic, then the ticket, then the repository."""
@@ -239,6 +269,15 @@ class Digest:
             lines.append(f"- {repo}: " + ', '.join(f'{month} {count}' for month, count in counts.items()))
         if len(months) > LIMIT_CONTEXT:
             lines.append(f'- (+{len(months) - LIMIT_CONTEXT} more repositories)')
+        families = {}
+        for url in self.events:
+            families.setdefault(family(self.items[url]['title']), []).append(url)
+        patterns = [(name, urls) for name, urls in families.items()
+                    if name and (len({self.items[u]['repo'] for u in urls}) >= 3 or len(urls) >= 6)]
+        if patterns:
+            lines.extend(['', '## Cross-repository patterns (one change fanned out across repositories or branches)'])
+            for name, urls in sorted(patterns, key=lambda row: (-self.merged(row[1]), -len(row[1]))):
+                lines.append(self.family_line(urls))
         clusters, labels = {}, {}
         for url in self.events:
             kind, key, summary = self.workstream(self.items[url])
@@ -246,22 +285,35 @@ class Digest:
             clusters.setdefault(key, []).append(url)
             if key not in labels or kind == 'epic':
                 labels[key] = (kind, summary or labels.get(key, ('', ''))[1])
-        lines.extend(['', f'## GitHub workstreams ({len(clusters)}; largest first)'])
-        for key, urls in sorted(clusters.items(), key=lambda row: (-len(row[1]), row[0])):
+
+        def weight(row):
+            # Rank by your in-window merges and active days, not by fan-out or draft trials.
+            urls = row[1]
+            days = {day(e['at']) for url in urls for e in self.events[url]}
+            return (-self.merged(urls), -len(days), row[0])
+        lines.extend(['', f'## GitHub workstreams ({len(clusters)}; most merged work first)'])
+        for key, urls in sorted(clusters.items(), key=weight):
             kind, summary = labels[key]
             mine = sum(1 for url in urls if self.own(self.items[url]))
-            merged = sum(1 for url in urls if self.own(self.items[url]) and self.in_window(self.items[url].get('merged_at')))
             dates = [e['at'] for url in urls for e in self.events[url]] + [
                 self.items[url]['merged_at'] for url in urls if self.in_window(self.items[url].get('merged_at'))]
             title = f' "{summary}"' if summary else ''
-            lines.append(f'### {kind} {key}{title}: {len(urls)} items ({mine} yours, {merged} merged), {span(dates)}')
-            for url in sorted(urls, key=lambda u: (not self.own(self.items[u]), u)):
-                item = self.items[url]
+            lines.append(f'### {kind} {key}{title}: {len(urls)} items ({mine} yours, '
+                         f'{self.merged(urls)} merged in window), {span(dates)}')
+            grouped = {}
+            for url in urls:
+                grouped.setdefault(family(self.items[url]['title']) or url, []).append(url)
+            for members in sorted(grouped.values(), key=lambda m: (-self.merged(m), not self.own(self.items[m[0]]), m[0])):
+                if len(members) > 1:
+                    lines.append(self.family_line(members))
+                    continue
+                item = self.items[members[0]]
                 author = '' if self.own(item) else f" (author: {item.get('author_login') or 'unknown'})"
-                lines.append(f"- [{self.state(item)}] {url} \"{text(item['title'], 90)}\"{author}: {self.actions(url)}")
+                lines.append(f"- [{self.state(item)}] {members[0]} \"{text(item['title'], 90)}\"{author}: "
+                             f"{self.actions(members[0])}")
             related = list(dict.fromkeys(link for url in urls for link in self.related({'items': [cite(self.items[url])]})))
             if related:
-                lines.append('- related: ' + ' '.join(related[:12]) + (f' (+{len(related) - 12} more)' if len(related) > 12 else ''))
+                lines.append('- related: ' + self.capped(related, 12))
         return lines + self.passive_line()
 
     def jira(self):
@@ -276,7 +328,16 @@ class Digest:
         for event in public_field_events(jira, self.start, self.end):
             events.setdefault(event['key'], []).append(('field update', event['occurred_at']))
         lines = [f'## Jira: tickets with your comments or field updates ({len(events)})']
-        for key in sorted(events, key=lambda key: (-len(events[key]), key)):
+        hidden = [key for key in events if self.tickets[key]['sensitive']] if self.long else []
+        if hidden:
+            # Over a quarter, restricted tickets (often vulnerability trackers) are hundreds of rows
+            # that cannot show titles; their volume and kind are the useful signal.
+            kinds = Counter((((self.tickets[key].get('detail') or {}).get('fields') or {}).get('issuetype') or {})
+                            .get('name') or 'unknown type' for key in hidden)
+            lines.append(f"- {len(hidden)} restricted tickets ({counted(kinds.elements())}): "
+                         f"{counted(name for key in hidden for name, _ in events[key])}; titles withheld; "
+                         f"statuses now: {counted(self.tickets[key]['status'] for key in hidden)}")
+        for key in sorted((key for key in events if key not in hidden), key=lambda key: (-len(events[key]), key)):
             ticket = self.tickets[key]
             title = 'restricted ticket; keep its title out of the update' if ticket['sensitive'] else text(ticket['title'])
             linked = len(ticket.get('pr_links', []))
@@ -354,7 +415,14 @@ class Digest:
                          key=lambda rows: (personal(rows[0][2]), -len(rows[0][1]), rows[0][0]))
         lines = [f"## Local commits you authored ({len(ordered)} repositories, "
                  f"{sum(len(rows[0][1]) for rows in ordered)} commits)"]
-        for rows in ordered:
+        if self.long:
+            # Scratch and fixture repositories: no remote and a couple of commits each.
+            small = [rows for rows in ordered if not rows[0][2] and len(rows[0][1]) <= 3]
+            ordered = [rows for rows in ordered if rows not in small]
+            parents = Counter(str(Path(rows[0][0]).parent) for rows in small)
+            for parent, count in parents.most_common():
+                lines.append(f'- {count} small repositories without a remote under {parent} (scratch or fixtures?)')
+        for rows in ordered[:25 if self.long else None]:
             repo, own, remotes = rows[0]
             limit = 5 if self.long or personal(remotes) else 20
             rewritten = sum(1 for entry in own if not self.in_window(entry.get('authored_at')))
@@ -384,7 +452,9 @@ class Digest:
                 {'items': [], 'commits': [{'repo': path, 'hash': entry['hash']} for entry in entries]})))
             if related:
                 lines.append('  - related: ' + ' '.join(related))
-        if not ordered:
+        if self.long and len(ordered) > 25:
+            lines.append(f'- (+{len(ordered) - 25} more repositories in data.json commits)')
+        if len(lines) == 1:
             lines.append('- local Git unavailable' if self.metadata.get('local_status') == 'unavailable' else '- none')
         return lines
 
@@ -402,7 +472,10 @@ class Digest:
             lines += [f"  - {item['url']} \"{text(item['title'], 90)}\" updated {day(item['updated_at'])}"
                       for item in pushed]
             lines.append('')
-        lines.append(f'## Older open authored PRs ({len(older)}; context only, not work this period)')
+        if self.end < datetime.now(timezone.utc) - timedelta(days=1):
+            lines.append(f'## Open authored PRs now ({len(older)}; after the window, leads for proposed priorities)')
+        else:
+            lines.append(f'## Older open authored PRs ({len(older)}; context only, not work this period)')
         lines += [f"- \"{text(item['title'], 80)}\" updated {(item.get('updated_at') or '?')[:10]}: {item['url']}"
                   for item in older[:LIMIT_CONTEXT]]
         if not older:

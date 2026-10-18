@@ -68,11 +68,12 @@ class CandidatesTest(unittest.TestCase):
     def test_groups_work_and_keeps_notifications_out_of_the_work_list(self):
         digest = candidates(capture())
         own, others = digest.split("## GitHub: reviews and discussion on others' work")
+        others = others.split('## Jira')[0]
         self.assertIn(f'[merged 10-12] {URL}', own)
         self.assertIn('you: opened (10-10)', own)
         self.assertIn(f'{OTHER} "Change 8" (author: someone)', others)
         self.assertIn('you: reviewed (10-13)', others)
-        self.assertIn('notification-only events (context, not work): subscribed', others)
+        self.assertIn('## Notification-only events (context, not work)\n- subscribed ×1', others)
         self.assertIn('- Jira unavailable', digest)
 
     def test_copies_with_the_same_commits_are_listed_once(self):
@@ -127,8 +128,8 @@ class CandidatesTest(unittest.TestCase):
         digest = candidates(data)
         self.assertIn('## Overview: items with your activity per repository and month', digest)
         self.assertIn('- org/repo: Oct 2', digest)
-        self.assertIn('### epic NET-1 "Gateway resilience": 1 items (1 yours, 1 merged), 10-10..10-12', digest)
-        self.assertIn('### repository org/repo: 1 items (0 yours, 0 merged), 10-13', digest)
+        self.assertIn('### epic NET-1 "Gateway resilience": 1 items (1 yours, 1 merged in window), 10-10..10-12', digest)
+        self.assertIn('### repository org/repo: 1 items (0 yours, 0 merged in window), 10-13', digest)
         self.assertIn(f'- [open] {OTHER} "Change 8" (author: someone): reviewed (10-13)', digest)
         self.assertNotIn('## GitHub: your PRs and issues', digest)
 
@@ -162,6 +163,38 @@ class CandidatesTest(unittest.TestCase):
         digest = candidates(data)
         self.assertLess(digest.index('- /work/repo'), digest.index('- /home/me/dotfiles'))
         self.assertIn('[only your own namespace: side project or fork?]', digest)
+
+    def test_quarter_collapses_fanned_out_changes_and_restricted_tickets(self):
+        data = capture()
+        data['metadata']['since_at'] = '2026-07-01T00:00:00Z'
+        data['github']['prs'] = []
+        data['github']['activity'] = []
+        for index, repo in enumerate(('org/a', 'org/b', 'org/c')):
+            for branch in ('devel', 'release-0.22'):
+                number = 10 * index + len(branch)
+                url = f'https://github.com/{repo}/pull/{number}'
+                data['github']['prs'].append({**pr(url, number, 'me', '2026-08-02T00:00:00Z'), 'repo': repo,
+                                              'title': f'Bump x/net for CVEs ({branch})'})
+        late = {**pr('https://github.com/org/a/pull/99', 99, 'me'), 'repo': 'org/a', 'title': 'Late fix',
+                'state': 'merged', 'merged_at': '2026-10-20T00:00:00Z'}
+        data['github']['prs'].append(late)
+        data['github']['activity'].append({'item_url': late['url'], 'repo': 'org/a', 'number': 99, 'actor': 'me',
+                                           'action': 'review', 'at': '2026-09-01T00:00:00Z', 'url': late['url'],
+                                           'id': 1, 'body': ''})
+        data['jira'] = {'metadata': {'status': 'ok'}, 'issues': [
+            {'key': f'SEC-{n}', 'url': f'https://jira.example.test/browse/SEC-{n}', 'title': 'Hidden', 'status': 'Closed',
+             'sensitive': True, 'roles': [], 'pr_links': [], 'review_links': [],
+             'detail': {'fields': {'issuetype': {'name': 'Vulnerability'}}}} for n in range(3)],
+            'activity': [{'key': f'SEC-{n}', 'kind': 'comment_created', 'occurred_at': '2026-08-03T00:00:00Z',
+                          'sensitive': True, 'source': {}} for n in range(3)]}
+        digest = candidates(data)
+        self.assertIn('## Cross-repository patterns', digest)
+        self.assertIn('- 6× "Bump x/net for CVEs (devel)" (merged ×6; 3 repos: org/a, org/b, org/c; 08-02)', digest)
+        self.assertIn('[merged after window 10-20] https://github.com/org/a/pull/99', digest)
+        self.assertIn('replied in review threads (09-01)', digest)
+        self.assertIn('- 3 restricted tickets (Vulnerability ×3): comment ×3; titles withheld; statuses now: Closed ×3',
+                      digest)
+        self.assertNotIn('SEC-1', digest)
 
     def test_untrusted_titles_stay_on_one_line(self):
         data = capture()

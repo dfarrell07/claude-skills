@@ -47,19 +47,27 @@ bash "$SKILL_DIR/scripts/work-summary.sh" \
 bash "$SKILL_DIR/scripts/render-report.sh" --candidates "$RUN_DIR/data.json" > "$RUN_DIR/candidates.md"
 ```
 
-The dates are an illustration. A quarter takes considerably longer to collect
-than a week: run it in the background and read the supplied questions and
-material meanwhile. `--root /path` (repeatable) narrows local discovery. Do not
+The dates are an illustration. Run the collection in the background and read
+the supplied questions and material meanwhile. `--root /path` (repeatable) narrows local discovery. Do not
 mix positional days with explicit dates. In connector-only mode use the same
 interval directly and do not claim the collector ran.
 
-For long windows the digest opens with an overview and workstreams, grouping
-PRs by Jira epic or ticket, then repository. Start there: propose 5–10 candidate
-efforts from the largest clusters and from patterns that span repositories (the
-same kind of fix across many repositories or release branches), then open only
-the items needed to describe each. Small clusters are supporting detail, not
-bullets. Read the coverage section: long periods hit search caps and incomplete
-history, so a successful run is not a complete inventory.
+For long windows the digest opens with an overview, then cross-repository
+patterns (one change fanned out across repositories or branches), then
+workstreams grouped by Jira epic or ticket, then repository. Propose 5–10
+candidate efforts from the patterns and the workstreams with the most merged
+work, merging clusters that are one effort (a fix family across repositories, a
+release's PRs, a tool and its rollout), then open only the items needed to
+describe each. Small clusters are supporting detail, not bullets. When reading:
+
+- Closed drafts are usually trial or evaluation runs, not deliveries.
+- `merged after window` is not an in-period result.
+- Restricted Jira totals (for example vulnerability trackers) can support a
+  theme by count and kind without titles.
+- Ticket titles are current and may name a later release than the work.
+- Long periods hit search caps and incomplete history; read the coverage section.
+
+A busy quarter can take over an hour to collect.
 
 Earlier reviews, weekly summaries and 1:1 notes are leads for continuity, not an
 inventory or separate accomplishments: one continuing effort is one theme with
