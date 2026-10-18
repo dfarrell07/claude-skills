@@ -25,7 +25,7 @@ from capabilities import collect_local_safely, empty_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, github_items, native_review_links  # noqa: E402
-from extended_evidence import github_reference_comments, jira_reference  # noqa: E402
+from extended_evidence import github_reference_comments  # noqa: E402
 from gitlab_sources import SCOPE as GITLAB_REF_SCOPE, collect_gitlab_refs  # noqa: E402
 from gitlab_api import collect_gitlab, public_get  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
@@ -452,10 +452,8 @@ def authored_line(text):
     return re.sub(r"^([-+*#>])(?=\s|$)", r"\\\1", text)
 
 
-def render_topic_lines(data, topic, depth=0, detailed=False, authored=False):
-    label = authored_line(topic['description']) if authored and not detailed else markdown(topic['description'])
-    if detailed:
-        label = f"**{markdown(topic['name'])}**: " + label
+def render_topic_lines(data, topic, depth=0, authored=False):
+    label = authored_line(topic['description']) if authored else markdown(topic['description'])
     lines = ['  ' * depth + '- ' + label]
     for url in display_urls(data, topic):
         # Intraword underscores (merge_requests) are already literal Markdown.
@@ -463,7 +461,7 @@ def render_topic_lines(data, topic, depth=0, detailed=False, authored=False):
         lines.append('  ' * (depth + 1) + '- ' +
                      (f'<{url}>' if re.search(r'(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|~', url) else url))
     for child in topic.get('subtopics', []):
-        lines.extend(render_topic_lines(data, child, depth + 1, detailed, authored))
+        lines.extend(render_topic_lines(data, child, depth + 1, authored))
     return lines
 
 
@@ -558,9 +556,7 @@ def fallback_topics(data, limit=12):
     return [topic for _, topic in sorted(candidates.values(), key=lambda value: value[0])[:limit]]
 
 
-def render(data, source=None, detailed=False):
-    if detailed:
-        return render_detailed(data, source)
+def render(data, source=None):
     validate(data, source)
     topics = list(data['analysis']['themes']) if 'analysis' in data else fallback_topics(data)
     represented = {url for topic in topic_nodes(topics)
@@ -610,250 +606,6 @@ def render(data, source=None, detailed=False):
     return '\n'.join(lines)
 
 
-def render_detailed(data, source=None):
-    validate(data, source)
-    m = data["metadata"]
-    prs, issues = data["github"]["prs"], data["github"]["issues"]
-    by_url = {item["url"]: item for item in reversed(github_items(data["github"]))}
-    jira_by_key = {item["key"]: item for item in data.get("jira", {}).get("issues", [])}
-    native_mrs = {url: item for item in data.get('gitlab', {}).get('items', [])
-                  for url in [item['url'], *item.get('requested_urls', [])]}
-
-    def linked(item):
-        original = by_url.get(item["url"], item)
-        related = original.get("jira_links", [])
-        suffix = " · " + ", ".join(jira_reference(entry) for entry in related) if related else (
-            " (Jira: no verified link found)" if is_pr_url(item["url"]) else "")
-        return link(item) + suffix
-
-    def jira_work(item):
-        original = jira_by_key.get(item["key"], item)
-        related = original.get("pr_links", [])
-        links = []
-        for entry in related:
-            parts = urlsplit(entry["url"]).path.strip("/").split("/")
-            links.append(link({"repo": "/".join(parts[:2]), "number": int(parts[3]), "url": entry["url"]}))
-        seen_reviews = set()
-        for entry in original.get("review_links", []):
-            if entry["url"] in seen_reviews:
-                continue
-            seen_reviews.add(entry["url"])
-            number = urlsplit(entry["url"]).path.rsplit("/", 1)[1]
-            native_mr = native_mrs.get(entry['url'])
-            state = ('native state: ' + native_mr['source']['state']) if native_mr else 'referenced; state/ownership unverified'
-            links.append(f"[GitLab MR !{number}]({entry['url']}) ({state})")
-        return jira_reference(item) + (" · " + ", ".join(links) if links else " (PR: no verified link found)")
-
-    title = (f"# Work Summary: Reporting Period ({m['since_date']} to {m['to_date']})"
-             if m.get('window_kind') == 'explicit'
-             else f"# Work Summary: Last {m['days']} Days ({m['since_date']} to {m['to_date']})")
-    lines = [title, "",
-             "GitHub scope: recently updated authored items, older open work, role context, and verified personal events.",
-             "Updates and review requests alone do not establish personal work during this period.",
-             "Private report: linked Jira context may include restricted tickets; restricted titles are hidden.",
-             "Comment edits require native editor proof; missing editor data and deleted events remain outside verified activity.",
-             "Local scope: configured or account-verified author emails across recorded refs and registered worktrees.", ""]
-    if "since_at" in m:
-        label = (f"Window (UTC, start inclusive, end exclusive): {m['since_at']} to {m['until_exclusive']}."
-                 if m.get('window_kind') == 'explicit'
-                 else f"Window (UTC, inclusive): {m['since_at']} to {m['to_at']}.")
-        lines += [label, ""]
-    if m.get("warnings"):
-        lines += [f"Coverage is incomplete: {len(m['warnings'])} recorded warnings. "
-                  "Full coverage details follow the work log.", ""]
-    lines += ["## Executive Summary", ""]
-    if "analysis" in data:
-        lines += ["### Key Accomplishments", ""]
-        for theme in data["analysis"]["themes"]:
-            lines.extend(render_topic_lines(data, theme, detailed=True))
-        if not data["analysis"]["themes"]:
-            lines.append("No evidence-backed accomplishments identified in this capture.")
-        lines += ["", "### In Progress", ""]
-        for item in data["analysis"]["in_progress"]:
-            lines.extend(render_topic_lines(data, ongoing_topic(item, prefix='')))
-        if not data["analysis"]["in_progress"]:
-            lines.append("No open items selected for this summary.")
-        lines.append("")
-    counts = {state: sum(pr["state"] == state for pr in prs) for state in ("merged", "open", "closed")}
-    commit_count = sum(len(entries) for entries in data["commits"].values())
-    lines += ["### Activity Stats", "",
-              f"- {len(prs)} PRs ({counts['merged']} currently merged, {counts['open']} open, "
-              f"{counts['closed']} closed without merge) | {len(issues)} issues | "
-              f"{commit_count} local commits across {len(data['commits'])} repos",
-              "- PR counts describe current state; merged totals are not necessarily merges during this period.",
-              "", "---", "", "## Detailed Work Log", "", "### GitHub Activity", ""]
-    for title, entries in (("Pull Requests", prs), ("Issues", issues)):
-        lines += [f"#### {title} ({len(entries)} total)", ""]
-        lines += [f"- {linked(item)} {markdown(item['title'])} ({item['state']})" for item in entries]
-        if not entries:
-            lines.append(f"No authored {title.lower()} found in this capture. Check the coverage details for any gaps.")
-        lines.append("")
-    for kind in ("prs", "issues"):
-        entries = data["github"].get("context_" + kind, [])
-        if entries:
-            lines += [f"#### Additional GitHub {kind.title()} Context ({len(entries)})", "",
-                      "Includes older open work and involvement leads; role matches do not establish weekly activity.", ""]
-            for item in entries:
-                roles = ", ".join(markdown(role) for role in item["roles"])
-                lines.append(f"- {linked(item)} {markdown(item['title'])} ({item['state']}; {roles})")
-            lines.append("")
-    if "activity" in data["github"]:
-        events = data["github"]["activity"]
-        lines += [f"#### Verified GitHub Actor Events ({len(events)})", ""]
-        for event in events:
-            action = event['action'] + (": " + event['review_state'] if event.get('review_state') else "")
-            reference = event.get('source', {}).get('issue')
-            source_link = f"; [referencing item]({reference['html_url']})" if reference else ""
-            lines.append(f"- {event['at']} [{markdown(event['repo'])}#{event['number']}]({event['url']}) {markdown(action)} — {linked(by_url[event['item_url']])}{source_link}")
-        if not events:
-            lines.append("No verified personal events captured; check coverage gaps before interpreting absence.")
-        lines.append("")
-    if 'reference_comments' in data['github']:
-        comments = data['github']['reference_comments']
-        lines += [f"#### Native GitHub Comment Context ({len(comments)})", "",
-                  "Comments from all captured authors and dates support reference discovery; "
-                  "they do not establish personal weekly activity. Native bodies remain in the saved capture.", ""]
-        for comment in comments:
-            actor = markdown(comment.get('author_login') or 'deleted author')
-            lines.append(f"- [{markdown(comment['repo'])}#{comment['number']}]({comment['url']}) "
-                         f"{markdown(comment['kind'])}; {actor}; created {comment['created_at']}; "
-                         f"updated {comment['updated_at']}")
-        lines.append("")
-    reviews = data['github'].get('reference_reviews', [])
-    if reviews:
-        lines += [f'#### Native GitHub Review Context ({len(reviews)})', '',
-                  'Review bodies from every captured author support reference discovery. '
-                  'The current body does not prove historical wording or personal weekly work.', '']
-        for record in reviews:
-            native = record['source']
-            author = (native.get('user') or {}).get('login') or 'deleted author'
-            lines.append(f"- [{markdown(record['repo'])}#{record['number']}]({native['html_url']}) "
-                         f"{markdown(author)}; {markdown(native['state'])}; "
-                         f"submitted {markdown(native.get('submitted_at') or 'unsubmitted')}")
-        lines.append('')
-    histories = data['github'].get('comment_edit_histories', [])
-    if histories:
-        lines += ['#### Native GitHub Comment Revision Context', '',
-                  'Native revisions distinguish historical editor evidence from the current body; '
-                  'unresolved personal revisions and deleted histories remain explicit gaps.', '']
-        for record in histories:
-            revisions = sum(len(page['response'].get('data', {}).get('node', {}).get(
-                'userContentEdits', {}).get('nodes', [])) for page in record['pages']
-                if isinstance(page.get('response', {}).get('data', {}).get('node'), dict))
-            lines.append(f"- [{markdown(record['repo'])}#{record['number']}]({record['rest_observation']['html_url']}): "
-                         f"{revisions} native revisions ({record['status']}).")
-        lines.append('')
-    if "jira" in data:
-        jira = data["jira"]
-        entries = jira.get("issues", [])
-        lines += ["### Jira Inventory and Participation", "",
-                  f"Source status: {jira['metadata']['status']}; {len(entries)} tickets captured. Assignment and watcher roles are context, not weekly accomplishments.", ""]
-        for item in entries:
-            title = markdown(item['title'])
-            if item["sensitive"]:
-                title = ("Restricted ticket (details retained in private capture)" if item.get("sensitivity_verified")
-                         else "Private ticket (sensitivity unverified; details retained in capture)")
-            lines.append(f"- {jira_work(item)} {title} ({markdown(item.get('status', 'unknown'))}; {', '.join(markdown(role) for role in item['roles'])})")
-        lines += ["", f"Verified Jira actor events: {len(jira.get('activity', []))}.", ""]
-        for event in jira.get("activity", []):
-            lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}) {markdown(event['kind'])} — {jira_work(jira_by_key[event['key']])}")
-        lines.append("")
-        field_events = list(public_field_events(jira, timestamp(m['since_at']) if m.get('since_at') else None,
-                                               timestamp(m['to_at']) if m.get('to_at') else None))
-        if field_events:
-            lines += ['#### Native Personal Jira Field Changes', '',
-                      'Exact actor/time field actions prove tracker updates; they do not establish implementation or delivery.', '']
-            for event in field_events:
-                fields = ', '.join(dict.fromkeys(markdown(change['field']) for change in event['fields']))
-                lines.append(f"- {event['occurred_at']} [{markdown(event['key'])}]({event['url']}): "
-                             f"{fields}; native history {event['history_id']}.")
-            lines.append('')
-        if 'public_history' in jira['metadata']:
-            history = jira['metadata']['public_history']
-            lines += ['#### Public Jira Field History', '',
-                      f"{history['history_rows']} native rows across {history['issues_complete']} complete visible streams "
-                      f"of {history['issues_attempted']} inspected issues ({history['status']}).",
-                      'Anonymous visibility is separate from authenticated coverage. Original authenticated details and comments remain intact.', '']
-            for item in entries:
-                record = item.get('public_history')
-                if record:
-                    count = sum(len(page.get('values', [])) for page in record['pages']
-                                if isinstance(page.get('values'), list))
-                    lines.append(f"- {jira_reference(item)}: {count} native history rows ({record['status']}); "
-                                 f"{len(record['pages'])} pages, {len(record['errors'])} recorded gaps.")
-            lines += ['', 'Historical review references below retain old field values and removals; '
-                      'they do not establish a current ticket pairing or weekly implementation.', '']
-            for item in entries:
-                for relation in item.get('history_review_links', []):
-                    lines.append(f"- {jira_reference(item)}: {relation['url']}; "
-                                 f"{markdown(relation['history_field'])} {relation['history_side']}; "
-                                 f"native history {relation['history_id']} at {relation['history_created']}")
-            lines.append('')
-    gitlab_api = data.get('gitlab')
-    if gitlab_api and gitlab_api.get('items'):
-        lines += ['### Public GitLab Merge Requests', '',
-                  'Native public details and public inventories are separate from API login and private visibility. '
-                  'Account attribution uses native public email matching an already verified alias; role matches remain context.', '']
-        for item in gitlab_api['items']:
-            native = item['source']
-            lines.append(f"- {item['url']} {markdown(native['title'])} ({native['state']}; "
-                         f"notes {item['notes_status']}; {len(item['notes'])} retained native notes).")
-        lines.append('')
-        for inventory in gitlab_api['metadata'].get('inventories', []):
-            lines.append(f"- {markdown(inventory['host'])}: {markdown(inventory['role'])} "
-                         f"({inventory['scope']}; {inventory['status']}).")
-        lines.append('')
-    lines += ["### Git Commits", "", f"Searched {m['repos_searched']} repositories; found commits in {len(data['commits'])}.", ""]
-    for repo, entries in data["commits"].items():
-        lines += [f"#### {markdown(repo)}", ""]
-        for entry in entries:
-            dates = ""
-            if entry.get("authored_at", m.get("since_at", "")) < m.get("since_at", ""):
-                dates = f" (authored {entry['authored_at']}; committed {entry['committed_at']})"
-            lines.append(f"- `{entry['hash'][:12]}` {markdown(entry['message'])}{dates}")
-        lines.append("")
-    if not data["commits"]:
-        lines += ["No matching local commits found.", ""]
-    if "branches" in data:
-        branches = data["branches"]
-        ref_count = sum(len(entry.get("refs", [])) for entry in m.get("repositories", []))
-        selected = [item for item in branches if item["object_type"] != "commit" or item.get("backup")
-                    or (item.get("recent_tip") and item.get("contained_in_cached_default") is not True)]
-        lines += ["### Local Branch and Backup Inventory", "",
-                  f"Recorded {ref_count} named refs and {len(branches)} relevant snapshots; {len(selected)} backup/recent snapshots are listed below.",
-                  "Older branch context remains in the saved evidence. Cached default-branch containment does not establish PR or release delivery.", ""]
-        for item in selected:
-            names = ", ".join(markdown(name) for name in item["refs"])
-            associations = ", ".join(linked(pr) for pr in item.get("prs", []))
-            mr_links = ", ".join(mr['url'] + (" (native state: " + native_mrs[mr['url']]['source']['state'] + ")"
-                                          if mr['url'] in native_mrs else " (state unread)")
-                                 for mr in item.get('merge_requests', []))
-            if mr_links:
-                associations += (", " if associations else "") + mr_links + " (advertised MR heads; state unread by Git)"
-            lines.append(f"- {markdown(item['repo'])}: {names} — `{item['hash'][:12]}` "
-                         f"({item['object_type']}; PR association: {item['pr_status']})" + (f" {associations}" if associations else ""))
-        lines += ["", "PR no_match means completed exact-snapshot lookups found no association; partial/unchecked/unsupported remain unresolved. It does not prove unpublished work."]
-        lines.append("")
-    gitlab = m.get('gitlab_discovery', {})
-    if gitlab.get('queries') or gitlab.get('failures'):
-        lines += ["### GitLab Advertised Merge-Request Refs", "",
-                  "Native Git refs can verify exact head associations. They do not supply MR state, authorship, discussion history or activity times.", ""]
-        for query in gitlab.get('queries', []):
-            lines.append(f"- {markdown(query['host'] + '/' + query['repo'])}: "
-                         f"{len(query['refs'])} advertised MR refs ({query['status']}); "
-                         f"source {markdown(query['local_repo'])}, remote {markdown(query['remote'])}.")
-        lines.append("")
-    if data.get("unattributed_commits"):
-        lines += ["### Unverified Authorship Leads", "",
-                  "These name-matching commits are not credited as your work without identity evidence.", ""]
-        for item in data["unattributed_commits"]:
-            lines.append(f"- {markdown(item['repo'])} `{item['hash'][:12]}` {markdown(item['author_email'])}")
-        lines.append("")
-    if m.get("warnings"):
-        lines += ["## Coverage Gaps", "", *[f"- {markdown(warning)}" for warning in m["warnings"]], ""]
-    return "\n".join(lines)
-
-
 def write_atomic(filename, text):
     partial = filename + ".partial"
     with open(partial, "w", encoding="utf-8") as handle:
@@ -873,7 +625,6 @@ def main():
                            help="Repository scan root (repeatable; use with explicit dates)")
     collector.add_argument("--output", help="Write the capture atomically to this file instead of stdout")
     renderer = modes.add_parser("render", help="Validate evidence and render Markdown")
-    renderer.add_argument("--detailed", action="store_true", help="Include the complete evidence and coverage audit")
     renderer.add_argument("--analysis", help="Analysis JSON to apply to the unchanged capture")
     renderer.add_argument("--candidates", action="store_true",
                           help="List cite-ready personal window evidence for writing an analysis")
@@ -894,7 +645,7 @@ def main():
         elif args.candidates:
             from candidates import candidates
             data = read_json(args.capture)
-            require(args.source is None and not args.analysis and not args.detailed and "analysis" not in data,
+            require(args.source is None and not args.analysis and "analysis" not in data,
                     "--candidates takes only the original capture")
             validate(data)
             output = candidates(data)
@@ -905,10 +656,9 @@ def main():
                 analysis = analysis["analysis"]
             source = read_json(args.capture)
             data = {**source, "analysis": analysis}
-            output = render(data, source, detailed=args.detailed) + "\n"
+            output = render(data, source) + "\n"
         else:
-            output = render(read_json(args.capture), read_json(args.source) if args.source else None,
-                            detailed=args.detailed) + "\n"
+            output = render(read_json(args.capture), read_json(args.source) if args.source else None) + "\n"
     except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

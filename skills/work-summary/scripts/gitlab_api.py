@@ -298,12 +298,21 @@ def read_notes(reader, host, repo, source):
 
 class PublicReader:
     def __init__(self, result, read):
-        self.result, self.read = result, read
+        self.result, self.read, self.unreachable = result, read, set()
 
     def get(self, url):
         host = urlsplit(url).hostname
         safe_api(url, host)
-        response = self.read(url)
+        # A host that cannot be reached (VPN down, firewall) times out on every request;
+        # one timeout is enough to skip the rest of its reads in this run.
+        if host in self.unreachable:
+            raise URLError('host unreachable earlier in this run')
+        try:
+            response = self.read(url)
+        except (URLError, OSError) as error:
+            if not isinstance(error, HTTPError):
+                self.unreachable.add(host)
+            raise
         require(isinstance(response, dict), 'Invalid native response')
         safe_api(response['url'], host)
         require(type(response.get('status')) is int and isinstance(response.get('headers'), dict),

@@ -65,9 +65,6 @@ class ConciseReportTest(unittest.TestCase):
         data['jira'] = jira
         ws.validate(data)
         self.assertEqual(ws.render(data), '- Updated tracker: Prepare release\n  - ' + item['url'])
-        detailed = ws.render(data, detailed=True)
-        self.assertIn('Native Personal Jira Field Changes', detailed)
-        self.assertIn('status; native history 77', detailed)
         jira['metadata']['account_id'] = 'another-person'
         self.assertNotIn('Updated tracker', ws.render(data))
 
@@ -130,9 +127,6 @@ class ConciseReportTest(unittest.TestCase):
                                            'items': [], 'branches': [{'repo': repo, 'hash': head}], 'links': [url]}],
                                 'in_progress': []}
         self.assertIn('  - ' + url, ws.render(enriched, data))
-        detailed = ws.render(enriched, data, detailed=True)
-        self.assertIn('advertised MR heads; state unread', detailed)
-        self.assertIn('GitLab Advertised Merge-Request Refs', detailed)
         self.assertNotIn('state', data['branches'][0]['merge_requests'][0])
         forged = copy.deepcopy(data)
         forged['branches'][0]['merge_requests'][0]['number'] = 999
@@ -188,17 +182,15 @@ class ConciseReportTest(unittest.TestCase):
         self.assertNotIn('](',report)
         self.assertEqual(enriched,original)
 
-    def test_cli_defaults_to_bullets_and_detailed_remains_explicit(self):
+    def test_cli_defaults_to_bullets(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)/'data.json'
             path.write_text(json.dumps(self.capture()))
             env = {**os.environ,'PYTHONDONTWRITEBYTECODE':'1'}
             command = ['bash',str(SCRIPTS/'render-report.sh'),str(path)]
             brief = subprocess.run(command,text=True,capture_output=True,env=env,check=True).stdout
-            detailed = subprocess.run(command+['--detailed'],text=True,capture_output=True,env=env,check=True).stdout
             self.assertTrue(brief.startswith('- Merged: '))
             self.assertNotIn('##',brief)
-            self.assertIn('## Executive Summary',detailed)
 
     def test_native_context_urls_survive_no_jira_auth_without_becoming_verified_relations(self):
         source = self.capture()
@@ -348,10 +340,6 @@ class ConciseReportTest(unittest.TestCase):
                     'at':'2026-01-12T12:00:00Z','url':pr['url'],'id':1,'body':''}]
                 original=copy.deepcopy(source)
                 self.assertEqual(ws.render(source),'No supported work found in the available evidence.')
-                audit=ws.render(source,detailed=True)
-                self.assertIn('Verified GitHub Actor Events (1)',audit)
-                self.assertIn(ws.markdown(action),audit)
-                self.assertIn(pr['url'],audit)
                 self.assertEqual(source,original)
         source['github']['activity'].append({'item_url':pr['url'],'repo':pr['repo'],
             'number':pr['number'],'actor':'person','action':'issue_comment',
@@ -387,8 +375,6 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('- Ongoing: Continue work\n  - '+context+'\n  - '+pr['url'],report)
         self.assertEqual(report.count(context),1)
         self.assertIn('Jira state is unverified',report)
-        detailed=ws.render(enriched,source,detailed=True).split('### Activity Stats',1)[0]
-        self.assertIn('- Continue work\n  - '+context+'\n  - '+pr['url'],detailed)
         for selected in (['https://forged.example/browse/TEST-1'],None,'invalid'):
             with self.subTest(selected=selected):
                 ongoing['links']=selected
@@ -577,11 +563,6 @@ class ConciseReportTest(unittest.TestCase):
         brief=ws.render(enriched,source)
         for url in candidates:
             self.assertEqual(url in brief,url in theme['links'])
-        detailed=ws.render(enriched,source,detailed=True)
-        summary,audit=detailed.split('## Detailed Work Log',1)
-        for url in candidates:
-            self.assertEqual(url in summary,url in theme['links'])
-            self.assertIn(url,audit)
         self.assertEqual(enriched,original)
 
     def test_legacy_links_are_direct_citations_even_with_many_native_relations(self):

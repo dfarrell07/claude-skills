@@ -29,8 +29,8 @@ Git is optional for remote-only collection, and remote CLIs are optional for Git
 The primary output is the concise work list. A short source note identifies
 material missing/partial sources. Collection takes several minutes and writes a
 large private capture; `render-report.sh --candidates` lists the personal window
-work an agent needs for its analysis, `--analysis` renders that analysis, and
-`--detailed` produces the full private inventory and diagnostics. Each scripted
+work an agent needs for its analysis, and `--analysis` renders that analysis.
+The capture itself keeps every inventory and diagnostic. Each scripted
 run uses its own temporary directory. Without agent analysis, `make work-summary`
 provides a conservative evidence-based fallback.
 See [the skill](../skills/work-summary/SKILL.md) for capability fallbacks,

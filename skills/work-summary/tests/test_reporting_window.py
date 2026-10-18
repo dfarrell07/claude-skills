@@ -165,7 +165,7 @@ print(json.dumps(value))
         return subprocess.run(['git', '-C', str(repo), *args], env={**self.env, **(dates or {})},
                               check=True, text=True, capture_output=True).stdout.strip()
 
-    def test_cli_exact_quarter_real_git_boundaries_and_detailed_render(self):
+    def test_cli_exact_quarter_real_git_boundaries(self):
         repo = self.home / 'repo'
         repo.mkdir()
         self.git(repo, 'init', '-q')
@@ -184,10 +184,6 @@ print(json.dumps(value))
         self.assertEqual({row['message'] for row in data['commits'][str(repo)]}, {'Event 1', 'Event 2'})
         self.assertEqual(data['metadata']['days'], 90)
         self.assertEqual(data['metadata']['repos_searched'], 1)
-        report = render(data, detailed=True)
-        self.assertIn('Reporting Period', report)
-        self.assertIn('start inclusive, end exclusive): 2026-01-01T00:00:00Z to 2026-04-01T00:00:00Z', report)
-        self.assertNotIn('Last 90 Days', report)
         # Git's second-precision lower filter can overfetch this commit; capture
         # reconciliation must remove it without damaging repository accounting.
         fraction = self.run_collect('--since', '2026-01-01T00:00:00.000001Z',
@@ -238,7 +234,6 @@ print(json.dumps(value))
                 self.assertEqual(data['metadata']['days'], 7)
                 self.assertNotIn('window_kind', data['metadata'])
                 self.assertNotIn('until_exclusive', data['metadata'])
-                self.assertIn('Last 7 Days', render(data, detailed=True))
 
     def test_explicit_window_filters_items_exactly_and_queries_whole_seconds(self):
         def row(number, at):

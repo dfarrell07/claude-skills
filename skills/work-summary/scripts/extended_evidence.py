@@ -98,10 +98,6 @@ def github_reference_comments(github):
 
 
 
-def jira_reference(item):
-    return f"[{item['key']}]({item['url']})"
-
-
 def jira_key_aliases(jira):
     """Resolve moved keys only through two authenticated native issue identities."""
     from jira_sources import KEY, _normalize

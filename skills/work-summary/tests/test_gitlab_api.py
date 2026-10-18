@@ -47,6 +47,19 @@ class GitLabApiTest(unittest.TestCase):
                                     verified_emails=emails, since='2026-10-09T00:00:00Z', read=transport)
         return result, calls, warnings
 
+    def test_unreachable_host_is_read_once(self):
+        from urllib.error import URLError
+        calls = []
+
+        def unreachable(url):
+            calls.append(url)
+            raise URLError('timed out')
+        other = 'https://' + HOST + '/group/project/-/merge_requests/8'
+        result = api.collect_gitlab([WEB, other], [].append, read=unreachable)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['items'], [])
+        self.assertEqual(len(result['metadata']['failures']), 2)
+
     def test_unconfigured_host_is_never_contacted(self):
         calls, warnings = [], []
         result = api.collect_gitlab([WEB], warnings.append, verified_emails=('own@example.test',),

@@ -102,8 +102,7 @@ different accounts or sites, keep their evidence separate.
 
 Validation checks that citations and links exist in the capture, not that the
 prose is true. Without `--analysis` the renderer produces a conservative list of
-merges and activity; use it only as a fallback. `render-report.sh --detailed`
-produces the full private audit (very large); it is not the requested output.
+merges and activity; use it only as a fallback.
 
 ## Credit only what happened
 
