@@ -522,17 +522,14 @@ def collect_jira(start, end, warn):
         ("recent", "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser() "
          f"OR creator = currentUser() OR assignee WAS currentUser()) AND updated >= {_quoted(since)} ORDER BY key"),
     ]
-    for role, clause in (("reporter", "reporter = currentUser()"), ("creator", "creator = currentUser()"),
-                         ("former_assignee", "assignee WAS currentUser()"),
-                         ("watcher", "watcher = currentUser()")):
-        queries.append((role, clause + " ORDER BY key"))
+    # All-time reporter, creator, watcher and former-assignee inventories reached back years
+    # (about 2,000 tickets) without contributing activity; tickets in those roles updated in
+    # the window arrive through "recent". Only the identity-bearing assigned search is recounted.
     for role, query in queries:
-        search(role, query)
-    # Role inventories reach back years, and Jira auto-watches every commented ticket.
-    # Read details for recently updated tickets and for unfinished owned/reported work,
-    # whose PR fields can pair with current changes; done or watch-only history stays
-    # as role context without a per-ticket read.
-    owned = {"assigned", "former_assignee", "reporter", "creator"}
+        search(role, query, checked=False)
+    # Read details for recently updated tickets and for unfinished assigned work, whose PR
+    # fields can pair with current changes; done assignments stay as role context.
+    owned = {"assigned"}
     selected = [item for item in issues.values()
                 if {"updated_by", "recent"} & set(item["roles"])
                 or (owned & set(item["roles"]) and item.get("status_category") != "done")]

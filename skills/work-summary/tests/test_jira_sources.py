@@ -193,16 +193,16 @@ else:
         self.assertEqual(result["metadata"]["coverage"]["details"]["skipped_inactive_count"], 1)
 
     def test_nonassigned_activity_lead_and_old_active_context_are_detailed(self):
-        for role, key in [("updated_by", "SIDE-2"), ("reporter", "SIDE-3"),
-                          ("former_assignee", "SIDE-4"), ("watcher", "SIDE-5"), ("recent", "SIDE-6")]:
+        for role, key in [("updated_by", "SIDE-2"), ("recent", "SIDE-6")]:
             row = issue(key, "done" if role == "recent" else "indeterminate", OTHER)
             self.data["searches"][role] = [row]
             self.data["details"][key] = detail(row, [comment(key, ME)])
         result = self.collect()
-        self.assertEqual(len(result["issues"]), 6)
-        # A watch-only ticket without recent updates is auto-watch history, not a detail target.
-        self.assertEqual(len(result["activity"]), 5)
-        self.assertEqual({row["key"] for row in result["issues"] if row["detail_status"] != "ok"}, {"SIDE-5"})
+        self.assertEqual(len(result["issues"]), 3)
+        self.assertEqual(len(result["activity"]), 3)
+        self.assertTrue(all(row["detail_status"] == "ok" for row in result["issues"]))
+        queries = [call[call.index("--jql") + 1] for call in self.calls() if "--jql" in call]
+        self.assertFalse(any(query.startswith(("reporter", "creator", "watcher", "assignee WAS")) for query in queries))
         self.assertEqual(result["metadata"]["account_id"], "self-id")
 
     def test_query_dates_are_widened_and_identity_is_quoted(self):
@@ -352,39 +352,6 @@ else:
         self.assertEqual(result["metadata"]["account_id"], "self-id")
         self.assertEqual(len(result["activity"]), 1)
 
-    def test_all_status_role_inventory_preserves_more_than_one_page(self):
-        for role, prefix in [("reporter", "REPORTED"), ("creator", "CREATED"),
-                             ("former_assignee", "FORMER"), ("watcher", "WATCHED")]:
-            self.data["searches"][role] = [issue(f"{prefix}-{n}", "done", OTHER) for n in range(1, 102)]
-            for row in self.data["searches"][role]:
-                self.data["details"][row["key"]] = detail(row)
-        # Searches still execute the disposable acli, exercising --paginate and
-        # its full 101-row arrays; avoid 405 redundant subprocesses for details.
-        real_command, viewed = jira.command, []
-
-        def command(args, **kwargs):
-            if args[:4] == ["acli", "jira", "workitem", "view"]:
-                viewed.append(args[4])
-                return json.dumps(self.data["details"][args[4]])
-            return real_command(args, **kwargs)
-
-        with patch.object(jira, "command", side_effect=command):
-            result = self.collect()
-        self.assertEqual(len(result["issues"]), 405)
-        for role in ["reporter", "creator", "former_assignee", "watcher"]:
-            self.assertEqual(result["metadata"]["coverage"][role]["returned_count"], 101)
-            self.assertEqual(result["metadata"]["coverage"][role]["count_before"], 101)
-            self.assertEqual(result["metadata"]["coverage"][role]["count_after"], 101)
-            self.assertEqual(result["metadata"]["coverage"][role]["status"], "ok")
-            query = result["metadata"]["coverage"][role]["query"]
-            self.assertNotIn("statusCategory", query)
-            self.assertNotIn("assignee !=", query)
-        # Completed role history is inventory context; only active work needs detail reads.
-        self.assertEqual(viewed, ["TEST-1"])
-        self.assertEqual(result["metadata"]["coverage"]["details"]["skipped_inactive_count"], 404)
-        recent = result["metadata"]["coverage"]["recent"]["query"]
-        self.assertIn("creator = currentUser()", recent)
-
     def test_count_drift_or_failure_preserves_inventory_and_blocks_identity_proof(self):
         for counts in [[1, 2], [None, 1], [1, None], ["not-a-count", 1]]:
             with self.subTest(counts=counts):
@@ -396,21 +363,11 @@ else:
                 self.assertEqual(result["metadata"]["coverage"]["assigned"]["status"], "partial")
 
     def test_failed_search_retains_valid_stdout_as_partial_evidence(self):
-        self.data["searches"]["watcher"] = {"_exit": 1, "_stdout": json.dumps([issue("SIDE-2", author=OTHER)])}
+        self.data["searches"]["recent"] = {"_exit": 1, "_stdout": json.dumps([issue("SIDE-2", author=OTHER)])}
         self.data["details"]["SIDE-2"] = detail(issue("SIDE-2", author=OTHER))
         result = self.collect()
         self.assertEqual(len(result["issues"]), 2)
-        self.assertEqual(result["metadata"]["coverage"]["watcher"]["status"], "partial")
-
-    def test_each_role_inventory_count_drift_is_named_without_discarding_leads(self):
-        row = issue("SIDE-2", "done", OTHER)
-        self.data["searches"]["creator"] = [row]
-        self.data["details"]["SIDE-2"] = detail(row)
-        self.data["role_counts"] = {"creator": [1, 2]}
-        result = self.collect()
-        self.assertIn("SIDE-2", {item["key"] for item in result["issues"]})
-        self.assertEqual(result["metadata"]["coverage"]["creator"]["status"], "partial")
-        self.assertTrue(any("creator counts changed" in warning for warning in self.warnings))
+        self.assertEqual(result["metadata"]["coverage"]["recent"]["status"], "partial")
 
     def test_invalid_duplicate_and_wrong_tenant_rows_are_skipped_without_losing_good_rows(self):
         wrong_site = issue("BAD-3")

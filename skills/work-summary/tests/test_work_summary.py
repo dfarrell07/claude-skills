@@ -493,17 +493,6 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         finally:
             root.chmod(0o700)
 
-    def test_captured_tips_can_replay_before_later_branch_changes(self):
-        repo = self.repo("snapshot", "First")
-        data = self.capture(repo)
-        tips = data["metadata"]["repositories"][0]["tips"]
-        first = self.git(repo, "rev-parse", "HEAD")
-        self.assertIn(first, tips)
-        self.git(repo, "commit", "--allow-empty", "-qm", "Later")
-        replay = self.git(repo, "log", *tips, "--format=%H")
-        self.assertEqual(replay.splitlines(), [first])
-        self.assertEqual([commit["hash"] for commit in data["commits"][str(repo)]], [first])
-
     def test_mailmap_does_not_change_raw_author_scope(self):
         for direction in ("own-away", "other-to-own"):
             with self.subTest(direction=direction):

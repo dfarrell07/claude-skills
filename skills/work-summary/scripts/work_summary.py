@@ -100,6 +100,10 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     gitlab_discovery = phase(
         "GitLab MR refs", lambda: collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn),
         lambda: {'status': 'unavailable', 'scope': GITLAB_REF_SCOPE, 'queries': [], 'routes': [], 'failures': []})
+    for entry in local['metadata'].get('repositories', []):
+        # Full ref listings and tips (most of a large capture) only serve local collection.
+        entry.pop('refs', None)
+        entry.pop('tips', None)
     progress("Jira: reading inventories and active tickets")
     jira = phase("Jira", lambda: collect_jira(start, end, warn),
                  lambda: {'metadata': {'status': 'unavailable', 'warnings': [], 'coverage': {}},
