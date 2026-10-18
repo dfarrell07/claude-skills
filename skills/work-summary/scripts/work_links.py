@@ -159,7 +159,7 @@ def associate_work(jira, github):
     for item in items:
         if not is_pr_url(item['url']):
             continue
-        for field in ('title', 'body', 'head_ref'):
+        for field in ('title', 'body'):
             for key in confirmed_keys(item.get(field), site):
                 source_key = key.upper()
                 key = ticket_aliases.get(source_key, source_key)

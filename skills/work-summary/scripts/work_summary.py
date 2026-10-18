@@ -645,7 +645,7 @@ def fallback_topics(data, limit=12):
     for event in data['github'].get('activity', []):
         # Actor/time proof establishes participation, not substantive work.
         # Passive notifications and unknown timeline actions stay in the audit.
-        if event['action'] not in actions:
+        if event['action'] not in actions or event['item_url'] not in items:
             continue
         item = items[event['item_url']]
         priority, verb = actions[event['action']]

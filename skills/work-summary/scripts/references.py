@@ -19,7 +19,7 @@ def active_items(github):
 
 def item_texts(github, items):
     urls = {item['url'] for item in items}
-    texts = [item.get(field) or '' for item in items for field in ('title', 'body', 'head_ref')]
+    texts = [item.get(field) or '' for item in items for field in ('title', 'body')]
     texts += [comment['body'] for comment in github_reference_comments(github) if comment.get('item_url') in urls]
     return texts
 
@@ -33,8 +33,11 @@ def referenced_keys(github, site=None, items=None):
 def active_tickets(jira):
     """Tickets the user commented on, updated, or that their PRs name."""
     commented = {event['key'] for event in jira.get('activity', [])}
-    return [issue for issue in jira.get('issues', [])
-            if issue['key'] in commented or {'updated_by', 'referenced_by_github'} & set(issue.get('roles', []))]
+    roles = {'updated_by', 'referenced_by_github'}
+    if jira.get('metadata', {}).get('coverage', {}).get('updated_by', {}).get('status') != 'ok':
+        # Without a complete updatedBy() answer, fall back to every ticket updated in the window.
+        roles.add('recent')
+    return [issue for issue in jira.get('issues', []) if issue['key'] in commented or roles & set(issue.get('roles', []))]
 
 
 def follow_references(jira, github, branches, read_tickets, read_gitlab, read_history=None, github_host='github.com'):

@@ -63,6 +63,13 @@ class FollowReferencesTest(unittest.TestCase):
         self.assertEqual(reads['history'], [['NET-9']])
         self.assertEqual(summary['gitlab_urls'], [])
 
+    def test_failed_updated_by_search_falls_back_to_recently_updated_tickets(self):
+        github = {'prs': [], 'issues': [], 'activity': []}
+        jira = {'metadata': {'site': SITE, 'coverage': {'updated_by': {'status': 'partial'}}}, 'activity': [],
+                'issues': [ticket('NET-8', ['watcher', 'recent']), ticket('NET-9', ['watcher'])]}
+        reads, _, _ = self.run_follow(github, jira)
+        self.assertEqual(reads['history'], [['NET-8']])
+
     def test_comments_on_active_items_count_but_other_items_do_not(self):
         github = {'prs': [pr(1, '')], 'issues': [], 'activity': [], 'context_prs': [pr(9, '', author='other')],
                   'reference_comments': [

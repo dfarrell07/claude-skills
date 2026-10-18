@@ -195,7 +195,7 @@ class WorkLinksTest(unittest.TestCase):
         self.assertEqual(referenced_keys(data['github'], 'jira.example.test'), ['TEST-123'])
 
     def test_lowercase_product_paths_and_branches_are_discovery_only(self):
-        samples = [('head_ref', 'product-5-support'), ('head_ref', 'product-5-tekton'),
+        samples = [('body', 'branch product-5-support'), ('body', 'branch product-5-tekton'),
                    ('body', 'plans/product-5-0-rollout.md'), ('body', 'plans/PRODUCT-5-0-rollout.md'),
                    ('body', 'product-5.0 rollout'), ('title', 'product-5 support')]
         for field, text in samples:
@@ -222,7 +222,7 @@ class WorkLinksTest(unittest.TestCase):
                                         'jira.example.test'), {'GO-2026'})
 
     def test_conventional_uppercase_and_explicit_browse_references_confirm_pairing(self):
-        for field, text in [('title', 'ACM-123: fix checks'), ('head_ref', 'fix/ACM-123-checks'),
+        for field, text in [('title', 'ACM-123: fix checks'), ('body', 'Branch fix/ACM-123-checks'),
                             ('body', 'See https://jira.example.test/browse/acm-123')]:
             with self.subTest(field=field, text=text):
                 data = self.capture()
