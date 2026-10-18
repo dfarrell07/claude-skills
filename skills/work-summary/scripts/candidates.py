@@ -62,6 +62,34 @@ def counted(names):
     return ', '.join(name + (f' ×{count}' if count > 1 else '') for name, count in Counter(names).most_common())
 
 
+def adf_text(value):
+    """Readable text from a plain string or an Atlassian document body."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        own = value.get('text') if isinstance(value.get('text'), str) else ''
+        children = ' '.join(adf_text(child) for key, child in value.items() if key != 'text')
+        return ' '.join(part for part in (own, children) if part)
+    if isinstance(value, list):
+        return ' '.join(adf_text(child) for child in value)
+    return ''
+
+
+def summary_line(body):
+    """First line of a PR description that says something, skipping template headings."""
+    for line in (body or '').splitlines():
+        line = line.strip().lstrip('-*> ').strip()
+        if line and not line.startswith(('#', '<!--', '|', '```')) and not line.endswith(':'):
+            return text(line, 160)
+    return ''
+
+
+def note(body):
+    """A comment worth showing: not a CI or bot command such as /test all."""
+    body = ' '.join(adf_text(body).split())
+    return '' if not body or body.startswith('/') else text(body, 160)
+
+
 def cite(item):
     return {key: item[key] for key in ('repo', 'number', 'url')}
 
@@ -111,7 +139,22 @@ class Digest:
         return (item.get('author_login') or '').casefold() == self.login
 
     def state(self, item):
-        return 'merged ' + day(item['merged_at']) if self.in_window(item.get('merged_at')) else item['state']
+        if self.in_window(item.get('merged_at')):
+            return 'merged ' + day(item['merged_at'])
+        if item['state'] == 'open' and item.get('draft'):
+            return 'draft'
+        if item['state'] == 'closed' and '/pull/' in item['url'] and not item.get('merged_at'):
+            return 'closed unmerged'
+        return item['state']
+
+    def latest_note(self, url):
+        events = sorted(self.events.get(url, []), key=lambda event: event['at'])
+        notes = [note(event.get('body')) for event in events if event['action'] in {'issue_comment', 'review', 'review_comment'}]
+        notes = [value for value in notes if value]
+        return notes[-1] if notes else ''
+
+    def capped(self, urls, limit=8):
+        return ' '.join(urls[:limit]) + (f' (+{len(urls) - limit} more)' if len(urls) > limit else '')
 
     def actions(self, url):
         events = self.events[url]
@@ -135,8 +178,9 @@ class Digest:
     def github(self):
         def rank(url):
             item = self.items[url]
-            return (not (self.own(item) and self.in_window(item.get('merged_at'))), not self.own(item),
-                    -len(self.events[url]), url)
+            # Days with activity, not event counts: twenty force-pushes are one afternoon.
+            days = len({day(event['at']) for event in self.events[url]})
+            return (not (self.own(item) and self.in_window(item.get('merged_at'))), not self.own(item), -days, url)
 
         sections = {True: [], False: []}
         for url in sorted(self.events, key=rank):
@@ -144,11 +188,18 @@ class Digest:
             line = f"- [{self.state(item)}] {url} \"{text(item['title'])}\""
             if not self.own(item):
                 line += f" (author: {item.get('author_login') or 'unknown'})"
-            sections[self.own(item)].append(line)
-            sections[self.own(item)].append(f'  - you: {self.actions(url)}')
+            section = sections[self.own(item)]
+            section.append(line)
+            section.append(f'  - you: {self.actions(url)}')
+            summary = summary_line(item.get('body')) if self.own(item) else ''
+            if summary:
+                section.append(f'  - summary: {summary}')
+            latest = self.latest_note(url)
+            if latest:
+                section.append(f'  - your latest note: {latest}')
             related = self.related({'items': [cite(item)]})
             if related:
-                sections[self.own(item)].append('  - related: ' + ' '.join(related))
+                section.append('  - related: ' + self.capped(related))
         lines = [f"## GitHub: your PRs and issues ({sum(1 for u in self.events if self.own(self.items[u]))})"]
         lines.extend(sections[True] or [self.github_none])
         lines.extend(['', f"## GitHub: reviews and discussion on others' work "
@@ -216,20 +267,27 @@ class Digest:
     def jira(self):
         jira = self.data.get('jira', {})
         events = {}
+        notes = {}
         for event in jira.get('activity', []):
             kind = 'comment' if event['kind'] == 'comment_created' else 'edited comment'
             events.setdefault(event['key'], []).append((kind, event['occurred_at']))
+            if not event.get('sensitive') and note((event.get('source') or {}).get('body')):
+                notes[event['key']] = note(event['source']['body'])
         for event in public_field_events(jira, self.start, self.end):
             events.setdefault(event['key'], []).append(('field update', event['occurred_at']))
         lines = [f'## Jira: tickets with your comments or field updates ({len(events)})']
         for key in sorted(events, key=lambda key: (-len(events[key]), key)):
             ticket = self.tickets[key]
             title = 'restricted ticket; keep its title out of the update' if ticket['sensitive'] else text(ticket['title'])
-            lines.append(f"- [{ticket['status']}] {ticket['url']} \"{title}\": "
+            linked = len(ticket.get('pr_links', []))
+            umbrella = f' (umbrella-like: {linked} linked PRs)' if linked >= 10 else ''
+            lines.append(f"- [{ticket['status']}] {ticket['url']} \"{title}\"{umbrella}: "
                          f"{counted(name for name, _ in events[key])} ({span(when for _, when in events[key])})")
+            if key in notes and not ticket['sensitive']:
+                lines.append(f'  - your latest note: {notes[key]}')
             related = self.related({'items': [], 'jira': [{'key': key, 'url': ticket['url']}]})
             if related:
-                lines.append('  - related: ' + ' '.join(related))
+                lines.append('  - related: ' + self.capped(related))
         if not events:
             lines.append('- Jira unavailable' if jira.get('metadata', {}).get('status') == 'unavailable' else '- none')
         # Jira's updatedBy() finds transitions, filings and field edits that comment
@@ -239,10 +297,13 @@ class Digest:
         if updated:
             lines.append(f'- tickets you updated in other ways ({len(updated)}; Jira reports you as an updater, '
                          'exact change unverified; open the ticket before claiming a transition):')
+            restricted = [key for key in updated if self.tickets[key]['sensitive']]
             for key in updated:
                 ticket = self.tickets[key]
-                title = 'restricted ticket' if ticket['sensitive'] else text(ticket['title'], 90)
-                lines.append(f"  - [{ticket['status']}] {ticket['url']} \"{title}\"")
+                if not ticket['sensitive']:
+                    lines.append(f"  - [{ticket['status']}] {ticket['url']} \"{text(ticket['title'], 90)}\"")
+            if restricted:
+                lines.append(f"  - {len(restricted)} restricted tickets (titles hidden): " + ', '.join(restricted))
         return lines
 
     def gitlab(self):
@@ -274,9 +335,9 @@ class Digest:
                 continue
             remotes = sorted({remote.get('repo') or remote.get('host', '') for remote in
                               identities.get(repo, {}).get('remotes', []) if remote.get('repo') or remote.get('host')})
-            # Clones, worktrees and scratch copies often repeat the same commits under new hashes.
-            fingerprint = (tuple(remotes) or (Path(repo).name,),
-                           tuple(sorted({(entry['message'], entry.get('authored_at')) for entry in own})))
+            # Clones, worktrees, scratch copies and re-runs repeat the same commits under new
+            # hashes and dates; the subjects identify them.
+            fingerprint = (tuple(remotes) or (Path(repo).name,), tuple(sorted({entry['message'] for entry in own})))
             groups.setdefault(fingerprint, []).append((repo, own, remotes))
 
         def primary(row):
@@ -284,15 +345,21 @@ class Digest:
             parts = Path(row[0]).parts
             return sum(1 for part in parts if SCRATCH.search(part)), len(parts), row[0]
 
+        def personal(remotes):
+            # Remotes only under the user's own account usually hold side projects or forks.
+            return bool(self.login) and bool(remotes) and all(
+                remote.casefold().startswith(self.login + '/') for remote in remotes)
+
         ordered = sorted((sorted(rows, key=primary) for rows in groups.values()),
-                         key=lambda rows: (-len(rows[0][1]), rows[0][0]))
-        limit = 5 if self.long else 20
+                         key=lambda rows: (personal(rows[0][2]), -len(rows[0][1]), rows[0][0]))
         lines = [f"## Local commits you authored ({len(ordered)} repositories, "
                  f"{sum(len(rows[0][1]) for rows in ordered)} commits)"]
         for rows in ordered:
             repo, own, remotes = rows[0]
+            limit = 5 if self.long or personal(remotes) else 20
             rewritten = sum(1 for entry in own if not self.in_window(entry.get('authored_at')))
             lines.append(f"- {repo}" + (f" (remote {', '.join(remotes[:3])})" if remotes else ' (no remote)')
+                         + (' [only your own namespace: side project or fork?]' if personal(remotes) else '')
                          + f": {len(own)} commits {span(entry['committed_at'] for entry in own)}"
                          + (f"; {rewritten} authored before the window (rebased or cherry-picked)" if rewritten else ''))
             if len(rows) > 1:

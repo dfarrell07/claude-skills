@@ -749,13 +749,11 @@ def render(data, source=None, detailed=False):
               ('GitLab refs', data['metadata'].get('gitlab_discovery', {}).get('status')),
               ('GitLab API', data.get('gitlab', {}).get('metadata', {}).get('status'))]
     unavailable = [name + ' unavailable' for name, status in states if status == 'unavailable']
-    if unavailable:
+    # With an analysis the agent writes the one source sentence the reader needs.
+    if unavailable and 'analysis' not in data:
         notes.append('Coverage is incomplete: ' + '; '.join(unavailable) + '.')
-    if any(status == 'partial' for _, status in states):
-        notes.append('Some history or cross-references could not be fully verified; '
-                     'details are in the private audit.')
-    elif not unavailable and data['metadata'].get('warnings'):
-        notes.append('Additional verification limits are recorded in the private audit.')
+    if any(status == 'partial' for _, status in states) and 'analysis' not in data:
+        notes.append('Some sources were only partly read; the run directory has the details.')
     if notes:
         lines += ['', ' '.join(notes)]
     return '\n'.join(lines)

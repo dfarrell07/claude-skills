@@ -77,7 +77,10 @@ different accounts or sites, keep their evidence separate.
    the URL or hashes to cite and the related links you may select. It ends with
    source status and warning counts. Jira changes marked "exact change unverified"
    and open PRs "updated in the window without recorded events" are leads: confirm
-   them with `acli`/`gh` or local commits before crediting them. Open PR bodies or tickets through `gh`/`acli` or
+   them with `acli`/`gh` or local commits before crediting them. For details the
+   digest lacks, `jq` the capture: `.github.prs`, `.github.context_prs`,
+   `.github.activity`, `.jira.issues`, `.jira.activity`, `.commits["PATH"]` and
+   `.gitlab.items`. Open PR bodies or tickets through `gh`/`acli` or
    targeted `jq` reads of `data.json` when a claim needs more than a title.
 
 3. **Choose and rank topics** using [Credit only what happened](#credit-only-what-happened)
@@ -93,10 +96,9 @@ different accounts or sites, keep their evidence separate.
 
 5. **Reread `report.md` as the manager.** Check every claim and URL against the
    evidence, remove peripheral or redundant links, confirm the order, and make
-   sure each link sits under the description it supports. The report may end with
-   an automatic coverage note: keep one source sentence only if a gap could hide
-   important work, rewritten plainly (see [Weekly output](#weekly-output)),
-   otherwise delete it. Return the list.
+   sure each link sits under the description it supports. Add one source
+   sentence only if a gap could hide important work (see
+   [Weekly output](#weekly-output)). Return the list.
 
 Validation checks that citations and links exist in the capture, not that the
 prose is true. Without `--analysis` the renderer produces a conservative list of

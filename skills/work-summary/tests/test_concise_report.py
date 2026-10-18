@@ -210,7 +210,7 @@ class ConciseReportTest(unittest.TestCase):
         report = ws.render(enriched, source)
         self.assertIn('  - https://other-jira.example/browse/CONTEXT-9',report)
         self.assertIn('Jira state is unverified',report)
-        self.assertIn('Jira unavailable',report)
+        self.assertNotIn('Coverage is incomplete',report)
         self.assertNotIn('jira_links',pr)
         self.assertEqual(source['jira']['issues'],[])
         proof = ws.contextual_jira_links(pr)[0]
@@ -415,7 +415,7 @@ class ConciseReportTest(unittest.TestCase):
                                   warnings=['Private failure detail '+str(n) for n in range(2000)])
         report=ws.render(source)
         self.assertIn('local Git unavailable',report)
-        self.assertIn('Some history or cross-references could not be fully verified',report)
+        self.assertIn('Some sources were only partly read',report)
         self.assertNotIn('GitHub unavailable',report)
         self.assertNotIn('Private failure',report)
         self.assertLess(len(report.splitlines()),8)
@@ -446,7 +446,7 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('  - https://github.com/org/repo/pull/8',report)
         self.assertIn('Jira state is unverified',report)
         self.assertIn('GitHub state is unverified',report)
-        self.assertIn('GitHub unavailable; Jira unavailable',report)
+        self.assertNotIn('Coverage is incomplete',report)
         self.assertEqual(source,original)
         proofs=ws.local_context_links(source,topic)
         self.assertEqual({proof['hash'] for proof in proofs},{entry['hash']})
@@ -510,6 +510,13 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('  - '+url,report)
         self.assertNotIn('<'+url+'>',report)
 
+    def test_agent_analysis_gets_no_automatic_coverage_note(self):
+        source=self.capture()
+        source['metadata'].update(github_status='partial',local_status='unavailable',warnings=['gap'])
+        report=ws.render(self.enrich(source),source)
+        self.assertNotIn('Coverage is incomplete',report)
+        self.assertNotIn('partly read',report)
+
     def test_partial_verification_is_distinct_from_unavailable_sources(self):
         source=self.capture()
         source['metadata'].update(github_status='partial',local_status='partial',
@@ -517,7 +524,7 @@ class ConciseReportTest(unittest.TestCase):
         source['jira']={'metadata':{'status':'partial','site':'jira.example.test'},
                         'issues':[],'activity':[]}
         report=ws.render(source)
-        self.assertIn('Some history or cross-references could not be fully verified',report)
+        self.assertIn('Some sources were only partly read',report)
         self.assertNotIn('unavailable',report)
         self.assertNotIn('Coverage is incomplete:',report)
         self.assertEqual(source['metadata']['github_status'],'partial')
