@@ -19,28 +19,6 @@ from capabilities import empty_local  # noqa: E402
 
 
 class ConciseReportTest(unittest.TestCase):
-    def test_graphql_note_credit_requires_native_actor_and_actual_edit(self):
-        data = self.capture()
-        data['github']['prs'] = []
-        url = 'https://gitlab.example.test/group/project/-/merge_requests/42'
-        note = {'source_kind': 'graphql', 'system': False, 'author': {
-            'id': 'gid://gitlab/User/7', 'username': 'different-provider-name'},
-            'created_at': '2026-01-10T12:00:00Z', 'updated_at': '2026-01-11T12:00:00Z',
-            'last_edited_at': None, 'last_edited_by': None}
-        data['gitlab'] = {'metadata': {'identities': [{'host': 'gitlab.example.test', 'user_id': 7}]},
-            'items': [{'url': url, 'host': 'gitlab.example.test', 'source': {
-                'author': {'id': 99}, 'title': 'Prepare catalog pipeline'}, 'notes': [note]}]}
-        self.assertEqual(ws.fallback_topics(data)[0]['description'], 'Discussed: Prepare catalog pipeline')
-        note['author']['id'] = 'gid://gitlab/User/99'
-        note['author']['username'] = 'person'
-        self.assertEqual(ws.fallback_topics(data), [])
-        note.update(created_at='2025-01-01T00:00:00Z', last_edited_at='2026-01-12T12:00:00Z',
-                    last_edited_by={'id': 'gid://gitlab/User/7', 'username': 'different-provider-name'})
-        self.assertEqual(ws.fallback_topics(data)[0]['description'],
-                         'Edited a discussion: Prepare catalog pipeline')
-        note['system'] = True
-        self.assertEqual(ws.fallback_topics(data), [])
-
     def test_native_own_field_change_supports_tracker_update_without_delivery_claim(self):
         data = self.capture()
         data['github']['prs'] = []
@@ -87,8 +65,7 @@ class ConciseReportTest(unittest.TestCase):
                 body = native
             return {'url': request, 'status': 200, 'headers': {'x-next-page': ''},
                     'source': copy.deepcopy(body), 'redirects': []}
-        data['gitlab'] = ws.collect_gitlab([url], self.fail, verified_emails=['own@example.test'],
-                                         since=data['metadata']['since_at'], read=read)
+        data['gitlab'] = ws.collect_gitlab([url], self.fail, verified_emails=['own@example.test'], read=read)
         ws.validate(data)
         self.assertIn('- Opened: Prepare catalog pipeline\n  - ' + url, ws.render(data))
         enriched = copy.deepcopy(data)
@@ -96,8 +73,6 @@ class ConciseReportTest(unittest.TestCase):
                                            'items': [], 'merge_requests': [{'url': url}], 'links': [url]}],
                                 'in_progress': []}
         self.assertIn('  - ' + url, ws.render(enriched, data))
-        forged = copy.deepcopy(data)
-        forged['gitlab']['metadata']['identities'][0]['user_id'] = 999
 
     def test_native_gitlab_heads_supply_selectable_links_without_mr_state(self):
         data = self.capture()

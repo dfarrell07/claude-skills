@@ -117,7 +117,7 @@ refs or scan unreachable objects.
   URL from an empty directory rather than inside the checkout, so the checkout's
   own config (credential helpers, proxies, SSH commands) cannot take part. A match
   supplies an MR link, not its state, author or activity.
-  Anonymous public MR and note reads can work without login, but only for hosts
+  Anonymous public MR detail reads can work without login, but only for hosts
   the user already works with.
 - **Per-operation access:** a denied user endpoint does not make public item,
   comment or history endpoints unreadable, and an anonymous 404 cannot erase an

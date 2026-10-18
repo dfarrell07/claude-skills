@@ -376,10 +376,6 @@ class Digest:
             authored = (item['host'], (native.get('author') or {}).get('id')) in principals
             what = [verb for field, verb in (('created_at', 'opened'), ('merged_at', 'merged'))
                     if authored and self.in_window(native.get(field))]
-            notes = sum(1 for note in item.get('notes', []) if note.get('system') is False
-                        and self.in_window(note.get('created_at'))
-                        and (item['host'], (note.get('author') or {}).get('id')) in principals)
-            what += [f'commented ×{notes}'] if notes else []
             if what:
                 lines.append(f"- {item['url']} \"{text(native.get('title', ''))}\": {', '.join(what)}")
         return ['## GitLab merge requests'] + lines if lines else []

@@ -65,7 +65,7 @@ changing the collector. SKILL.md's credit rules are the short version.
   empty directory against the verified remote URL, so the checkout's own config
   (credential helpers, proxies, SSH commands) cannot take part. A match supplies
   an MR link, not its state or activity.
-- Read MR details and notes anonymously only from gitlab.com, configured remote
+- Read MR details anonymously only from gitlab.com, configured remote
   hosts and hosts named in Jira review fields or the user's own PR descriptions.
   Credit a GitLab account only when its public email matches an already verified
   alias.
