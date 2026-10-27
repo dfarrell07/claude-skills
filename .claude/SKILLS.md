@@ -2,26 +2,21 @@
 
 ## /work-summary
 
-Show recent work: git commits and GitHub activity (PRs, issues).
+Draft a ranked, link-selective list of recent work for a 1:1, or a quarterly
+accomplishment briefing (`quarterly`). Uses whatever is available: Python 3.10+
+with Git 2.37+, authenticated `gh` and `acli`, GitHub/Jira connectors, or
+supplied notes; missing sources reduce coverage instead of blocking the rest.
+`make work-summary` prints a conservative fallback list without agent analysis.
+See [the skill](../skills/work-summary/SKILL.md).
 
 ```bash
-/work-summary           # Last 7 days with AI analysis (default)
-/work-summary 14        # Last 14 days with AI analysis
-make work-summary       # Last 7 days without AI analysis
-make work-summary DAYS=14  # Last 14 days without AI analysis
+/work-summary
+/work-summary 14
+/work-summary quarterly
+make work-summary
+make work-summary DAYS=14
+make work-summary-test
 ```
-
-**With skill (AI analysis):**
-
-- Executive Summary with themed accomplishments
-- In Progress section
-- Activity Stats
-- Detailed Work Log
-
-**With make target (no AI):**
-
-- Activity Stats
-- Detailed Work Log only
 
 ## /jira
 

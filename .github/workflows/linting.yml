@@ -85,6 +85,29 @@ jobs:
       - name: Run offline unit tests
         run: make unit-test
 
+  work-summary-platforms:
+    name: Work summary (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.10', '3.13']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Test work summary collection and rendering
+        run: |
+          python3 --version
+          git --version
+          make work-summary-test
+
   skillsaw:
     name: Plugin Lint
     runs-on: ubuntu-latest
