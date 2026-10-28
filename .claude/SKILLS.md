@@ -48,6 +48,7 @@ prompt; `chain` has each agent verify and improve the previous result.
 /delegate [parallel|chain] [tool:account ...] <task>
 skills/delegate/scripts/multi.sh parallel|chain <prompt-file> <tool:account>...
 skills/delegate/scripts/delegate.sh <agy|codex|claude>:<work|personal|personal2> <prompt-file> [out-file]
+skills/delegate/scripts/quota.sh <tool:account>...   # each target's own usage numbers (free), probe only if none
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/delegate.sh ...
 ```
 

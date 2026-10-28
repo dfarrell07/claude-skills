@@ -9,6 +9,9 @@
 #   DELEGATE_MODEL, DELEGATE_EFFORT (low|medium|high|xhigh|max). Unset: per-target defaults
 #     below, trying fallback models in order. Setting DELEGATE_MODEL uses only that model.
 #   DELEGATE_WRITE=1   allow edits (default read-only; agy cannot enforce this)
+#   DELEGATE_USAGE=1   print the account's usage/quota from the CLI itself (no model call), then exit; exit 3 if
+#                      the account has no such source (quota.sh then probes instead)
+#   DELEGATE_PROBE=1   claude only: no tools, settings or default system prompt, for cheap quota probes
 #   DELEGATE_TIMEOUT   seconds before the run is killed (default 1800; agy 3000, since high effort takes ~17 min)
 set -Eeuo pipefail
 umask 077
@@ -33,7 +36,7 @@ model=${DELEGATE_MODEL:-} effort=${DELEGATE_EFFORT:-} write=${DELEGATE_WRITE:-}
 
 # Defaults per target (see references/models.md for what each account can use).
 case $tool:$account in
-  agy:*)       dmodels="gemini-4-argon"           deffort=medium; dtimeout=3000 ;;
+  agy:*)       dmodels="gemini-4-argon gemini-3.8-flash" deffort=medium; dtimeout=3000 ;;  # quotas are per model
   codex:work)  dmodels="gpt-6.1-sol gpt-5.6-luna" deffort=high ;;    # sol needs budget; luna is the fallback
   codex:*)     dmodels="gpt-6-luna"               deffort=medium ;;  # personal quota is scarce
   claude:work) dmodels="haiku"                    deffort=high ;;
@@ -41,6 +44,7 @@ case $tool:$account in
 esac
 timeout_s=${DELEGATE_TIMEOUT:-${dtimeout:-1800}}
 if [[ -n $model ]]; then models=("$model"); else read -ra models <<<"$dmodels"; effort=${effort:-${deffort:-}}; fi
+[[ -z ${DELEGATE_LIST:-} ]] || { echo "${models[*]}"; exit 0; }  # the candidates only (quota.sh)
 unsupported() { echo "unsupported: $target ($1)" >&2; exit 2; }
 need_dir() { [[ -d $1 ]] || unsupported "$1 missing; log in there first"; }
 
@@ -66,6 +70,7 @@ case $tool in
       *) unsupported "no agy $account login configured" ;;
     esac
     need_dir "$dir"
+    if [[ -n ${DELEGATE_USAGE:-} ]]; then run agy --prompt=/usage --gemini_dir="$dir" --mode=plan </dev/null; exit; fi
     run agy --prompt="$prompt" --gemini_dir="$dir" "${opts[@]}" >"$out" 2>"$err" ;;
   codex)
     # No connectors, plugins, browser, memory or analytics (web search stays on).
@@ -81,12 +86,16 @@ case $tool in
       *) unsupported "unknown account" ;;
     esac
     need_dir "$dir"
+    if [[ -n ${DELEGATE_USAGE:-} ]]; then CODEX_HOME=$dir run python3 -I "$(dirname "${BASH_SOURCE[0]}")/codex-usage.py"; exit; fi
     CODEX_HOME=$dir run codex exec "${opts[@]}" -o "$out" -- "$prompt" </dev/null >/dev/null 2>"$err" ;;
   claude)
     # No MCP servers/connectors, user skills, memory writes or telemetry (web tools stay on).
     opts=(--no-session-persistence --strict-mcp-config --disable-slash-commands)
-    [[ -n $write ]] && opts+=(--dangerously-skip-permissions) \
-                    || opts+=(--tools "Read,Grep,Glob,WebFetch,WebSearch" --allowedTools "Read Grep Glob WebFetch WebSearch" --permission-mode dontAsk)
+    if [[ -n ${DELEGATE_PROBE:-} ]]; then  # ~6.6k tokens down to ~400
+      opts+=(--tools "" --system-prompt "Be terse." --setting-sources "")
+    elif [[ -n $write ]]; then opts+=(--dangerously-skip-permissions)
+    else opts+=(--tools "Read,Grep,Glob,WebFetch,WebSearch" --allowedTools "Read Grep Glob WebFetch WebSearch" --permission-mode dontAsk)
+    fi
     [[ -n $model ]] && opts+=(--model "$model")
     [[ -n $effort ]] && opts+=(--effort "$effort")
     # The child must not think it is the parent session or reuse its account.
@@ -99,6 +108,10 @@ case $tool in
       personal2) export CLAUDE_CODE_USE_VERTEX=0 CLAUDE_CONFIG_DIR=$HOME/.claude-per2 ;;
       *) unsupported "unknown account" ;;
     esac
+    if [[ -n ${DELEGATE_USAGE:-} ]]; then
+      [[ $account != work ]] || exit 3  # Vertex bills per token; there is no quota to report
+      run claude -p /usage --no-session-persistence </dev/null | grep '^Current' || exit 3; exit
+    fi
     run claude -p "${opts[@]}" -- "$prompt" </dev/null >"$out" 2>"$err" ;;
   *) unsupported "unknown tool" ;;
 esac || return 1
