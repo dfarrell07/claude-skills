@@ -6,9 +6,11 @@ re-probe before trusting a denial. The defaults live in `scripts/delegate.sh` (t
 
 ## Defaults
 
-- `agy:personal`, `agy:personal2`: `gemini-4-argon`, medium. agy tokens are plentiful and wasted on weak models, so use the
-  strongest Gemini. Medium beat high on a real audit (7.5 min and no wrong claims, vs 17.5 min and 3 wrong); pass
-  `DELEGATE_EFFORT=high` to try it.
+- `agy:personal`, `agy:personal2`: `gemini-4-argon`, then `gemini-3.8-flash`, medium. agy tokens are plentiful and wasted
+  on weak models, so use the strongest Gemini. Medium beat high on a real audit (7.5 min and no wrong claims, vs 17.5 min
+  and 3 wrong); pass `DELEGATE_EFFORT=high` to try it. `agy /usage` shows three pools: Gemini models and Claude/GPT
+  models (each 5-hour and weekly), and argon alone (weekly). A 429 "Individual quota reached" names the reset (days for
+  argon), so flash is the fallback; the Claude models on agy share one smaller quota.
 - `codex:personal`: `gpt-6-luna`, medium. The free personal account has few tokens.
 - `codex:work`: `gpt-6.1-sol`, then `gpt-5.6-luna`, high. Sol when the budget allows; luna is what the work project can use.
 - `claude:personal`, `claude:personal2`: `claude-sonnet-5-5`, medium. Good quality per token; pass `DELEGATE_MODEL=opus` for
@@ -49,7 +51,8 @@ on a hard task before relying on it.
   - `gemini-3.8-flash-low`: 7 min; 0 REAL, 3 TRIVIAL, 4 WRONG of 7.
   - `gpt-oss-120b-medium`: 7.5 min; 0 REAL, 0 TRIVIAL, 7 WRONG of 7. Every claim was false (it called helpers with many
     callers one-use). Do not use it for audits.
-  - `gemini-3.8-flash-high`: timed out at 10 min.
+  - `gemini-3.8-flash-high`: timed out at 10 min. Later (2026-10-28, alone, five focused per-area prompts on another
+    repo): 32 findings, 16 graded REAL by codex/flash, 4 survived a Sonnet re-check. A fallback only with both passes.
 
   One run per model, so treat differences as indicative, not settled. The strongest finding is that a separate grading
   pass flagged 17 of 52 items as wrong cheaply; I spot-checked a sample and the test run agreed where it could.
@@ -87,4 +90,4 @@ echo "Reply with exactly: ok" > /tmp/p.md
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=low bash scripts/delegate.sh <tool>:<account> /tmp/p.md
 ```
 
-Work accounts spend real budget, so probe a model once rather than sweeping.
+Work accounts spend real budget, so probe a model once rather than sweeping. `scripts/quota.sh` does this for you.
