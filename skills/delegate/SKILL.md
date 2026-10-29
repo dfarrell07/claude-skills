@@ -50,11 +50,22 @@ killed after `DELEGATE_TIMEOUT` seconds (default 1800, agy 3000).
 
 ## Quota
 
-Before a wave, `quota.sh agy:personal codex:personal` asks each CLI for its own `/usage` numbers: free,
+Before a wave, `quota.sh codex:personal agy:personal` asks each CLI for its own `/usage` numbers: free,
 about a second, one line per limit (`agy:personal usage Gemini 4 Argon Weekly Limit 0% 2026-11-03T...`). agy reports
 percent *remaining* per model pool; claude and codex report percent *used*. Pick targets that have room. `codex:work`
 has no usage source, so it gets a minimal probe per model (`ok` or the error). A usage number
 shows quota left, not that a model is allowed; check that with `MODELS="a b" quota.sh <target>`.
+
+## Balance agy and codex
+
+Spread work across `agy` and `codex` roughly evenly **by quota left**, not by habit. Listing order, the examples
+here and agy's ability to run on two accounts are not reasons to prefer agy. After `quota.sh`, convert both to percent
+*remaining* (codex reports percent *used*, so remaining is 100 minus it), then give more runs to the one with more
+left, and weigh the reset time: a pool that resets soon can be spent harder than one that lasts a month. For N runs of
+one task, split them between the two tools (and mix families in a `parallel` run, which also makes agreement worth
+more). Send everything to one tool only when the other has no room or is not set up for that group; say which.
+`models.md` notes that agy's tokens are plentiful and codex's free account is small; that is a reason to size runs,
+not to skip codex. Check quota first every time, since the numbers drift.
 
 ## Settings
 

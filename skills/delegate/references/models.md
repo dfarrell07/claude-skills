@@ -11,7 +11,8 @@ re-probe before trusting a denial. The defaults live in `scripts/delegate.sh` (t
   and 3 wrong); pass `DELEGATE_EFFORT=high` to try it. `agy /usage` shows three pools: Gemini models and Claude/GPT
   models (each 5-hour and weekly), and argon alone (weekly). A 429 "Individual quota reached" names the reset (days for
   argon), so flash is the fallback; the Claude models on agy share one smaller quota.
-- `codex:personal`: `gpt-6-luna`, medium. The free personal account has few tokens.
+- `codex:personal`: `gpt-6-luna`, medium. The free personal account has few tokens, so keep prompts tight, but use it
+  for its fair share of runs; it has a 30-day window, so unspent quota is lost at reset.
 - `codex:work`: `gpt-6.1-sol`, then `gpt-5.6-luna`, high. Sol when the budget allows; luna is what the work project can use.
 - `claude:personal`, `claude:personal2`: `claude-sonnet-5-5`, medium. Off-limits: claude is the orchestrator, and
   delegate exists to use weaker models. Only if the user names the target in that request.
