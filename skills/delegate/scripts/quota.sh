@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # What each target can run now.
 # Usage: quota.sh <tool>:<account>...
-# First asks the CLI for its own usage numbers (agy, claude subscriptions, codex ChatGPT accounts): no model call,
-# one line per limit as `<target> usage <limit>`. Targets with no such source (claude:work, codex:work) get a minimal
+# First asks the CLI for its own usage numbers (agy, codex ChatGPT accounts; claude targets are refused, see delegate.sh): no model call,
+# one line per limit as `<target> usage <limit>`. Targets with no such source (codex:work) get a minimal
 # probe prompt per model instead: `<target> <model> ok` or `<target> <model> FAIL <reset or error>`. A usage figure
 # says how much quota is left, not whether a model is allowed; a probe also proves that. MODELS="a b" forces probes
 # of those models. Probes spend a little quota (about 400 tokens on claude; codex cannot be slimmed, ~12k cold, less once cached).

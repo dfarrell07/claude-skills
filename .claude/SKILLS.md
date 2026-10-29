@@ -38,7 +38,7 @@ Query, view, and update Jira issues via acli.
 
 ## /delegate
 
-Run a task on another agent CLI (agy, codex, claude) under a chosen account. The answer goes to a file and only its
+Run a task on another agent CLI (agy, codex; never claude unless named) under a chosen account. The answer goes to a file and only its
 path is printed, so results cost tokens only when read. Codex and claude runs
 are read-only unless `DELEGATE_WRITE=1`. Each target has a default model and effort
 (see `skills/delegate/references/models.md`). `parallel` runs N agents on the same
@@ -47,7 +47,7 @@ prompt; `chain` has each agent verify and improve the previous result.
 ```bash
 /delegate [parallel|chain] [tool:account ...] <task>
 skills/delegate/scripts/multi.sh parallel|chain <prompt-file> <tool:account>...
-skills/delegate/scripts/delegate.sh <agy|codex|claude>:<work|personal|personal2> <prompt-file> [out-file]
+skills/delegate/scripts/delegate.sh <agy|codex>:<work|personal|personal2> <prompt-file> [out-file]
 skills/delegate/scripts/quota.sh <tool:account>...   # each target's own usage numbers (free), probe only if none
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/delegate.sh ...
 ```
