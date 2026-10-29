@@ -13,17 +13,18 @@ re-probe before trusting a denial. The defaults live in `scripts/delegate.sh` (t
   argon), so flash is the fallback; the Claude models on agy share one smaller quota.
 - `codex:personal`: `gpt-6-luna`, medium. The free personal account has few tokens.
 - `codex:work`: `gpt-6.1-sol`, then `gpt-5.6-luna`, high. Sol when the budget allows; luna is what the work project can use.
-- `claude:personal`, `claude:personal2`: `claude-sonnet-5-5`, medium. Good quality per token; pass `DELEGATE_MODEL=opus` for
-  hard work.
-- `claude:work`: `haiku`, high. The only model the org policy allows.
+- `claude:personal`, `claude:personal2`: `claude-sonnet-5-5`, medium. Off-limits: claude is the orchestrator, and
+  delegate exists to use weaker models. Only if the user names the target in that request.
+- `claude:work`: `haiku`, high. The only model the org policy allows. Off-limits unless the user names it.
 - `agy:work` and `codex:personal2`: not set up (no login on this machine).
 
 A failed model falls through to the next candidate; the last error is what `FAIL` prints. A 403 takes about 25 seconds
 (codex retries), so when you know sol is out of budget set `DELEGATE_MODEL=gpt-5.6-luna` to skip it.
 
 **Work, out of budget (the normal state here):** the strong work models are unavailable, so work targets default to the
-basic ones at high effort: `gpt-5.6-luna` for codex and `haiku` for claude. Codex still tries `gpt-6.1-sol` first and falls
-back automatically, so no setting changes when budget returns. Both basic models accept every effort level, so high is
+basic ones at high effort: `gpt-5.6-luna` for codex (and `haiku` for the off-limits claude:work). Codex still tries
+`gpt-6.1-sol` first and falls back automatically, so no setting changes when budget returns.
+Both basic models accept every effort level, so high is
 the default. On a trivial arithmetic prompt effort changed nothing measurable (codex luna 11,605 tokens at low vs 11,618 at
 max; haiku 152 vs 171 output tokens), so it is unproven whether effort helps these models. It is cheap to ask for; test
 on a hard task before relying on it.
@@ -74,6 +75,8 @@ on a hard task before relying on it.
 - Efforts: low, medium, high, xhigh, max (some models add ultra, and `minimal` is rejected).
 
 ## claude
+
+Off-limits as a delegate target unless the user names it (scripts need `DELEGATE_ALLOW_CLAUDE=1`). Kept for reference.
 
 - Personal accounts: any model, e.g. `claude-sonnet-5-5`, `opus`. `personal2` uses `~/.claude-per2`.
 - Work runs on Vertex under an org allow-list: `haiku` works at every effort. These all failed:

@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Offload a task to another agent CLI (agy, codex, claude; any account) and get back a file path instead of the answer. Use for N parallel runs of one task, sequential verify-and-improve chains, or independent second opinions.
+description: Offload a task to a weaker agent CLI (agy, codex; never claude unless named) and get back a file path instead of the answer. Use for N parallel runs of one task, sequential verify-and-improve chains, or independent second opinions.
 version: 0.4.0
 argument-hint: "[parallel|chain] [tool:account ...] <task>"
 user-invocable: true
@@ -12,7 +12,8 @@ allowed-tools: Bash, Read, Write
 **Arguments:** $ARGUMENTS
 
 If invoked with a task: pick the mode and targets if not named (check quota first), write the
-prompt file, run, and report the verdicts and out-file paths, not the answers.
+prompt file, run, and report the verdicts and out-file paths, not the answers. Targets are agy and codex only;
+see the claude rule below.
 Otherwise use this as reference while working.
 
 Other agents are cheap, parallel, and unreliable. Treat their output as
@@ -30,9 +31,17 @@ agents: `multi.sh` already runs them concurrently, keeps work and personal apart
 | Verify-and-improve sequence | `bash "$SKILL_DIR/scripts/multi.sh" chain <prompt-file> <target>...` |
 | What can run now | `bash "$SKILL_DIR/scripts/quota.sh" <target>...` |
 
-Targets are `<tool>:<account>`. Tools: `agy`, `codex`, `claude`. Accounts: `work`, `personal`, `personal2`. Any tool
-can delegate to any other, including `claude` to `claude` (e.g. a personal Opus orchestrator delegating to
-`claude:work`). Repeat a target to run it several times.
+Targets are `<tool>:<account>`. Tools: `agy`, `codex`; `claude` exists but is off-limits (below). Accounts: `work`, `personal`,
+`personal2`. Repeat a target to run it several times.
+
+**Never use `claude` as a delegate target: not `claude:work`, `claude:personal` or `claude:personal2`.** The orchestrator
+(you) is already the strong model; delegate exists to spend cheap, weaker models (`agy`, `codex`). Don't pick a claude
+target, don't add one to a default or "diverse" list, and don't use one as a fallback when agy or codex are out of
+quota, even if a script accepts it. If agy and codex have no room, report that and stop (ask if a user is present).
+The only exception is a user who names a `claude:...` target in that request; then use only the claude target(s) they
+named, plus any agy/codex targets they asked for, with `DELEGATE_ALLOW_CLAUDE=1` set. The scripts refuse claude
+targets (exit 2) without it; never set it on your own to get past that refusal.
+Claude models reached through agy (`claude-*` in `agy models`) count as claude and are off-limits too.
 
 Each run prints one line, `<out-file> <bytes>`, and the answer stays in the file; read it only when needed. On failure it
 prints `FAIL ...` and leaves no out-file. Unconfigured combos fail fast with `unsupported`. Always launch with
@@ -41,10 +50,10 @@ killed after `DELEGATE_TIMEOUT` seconds (default 1800, agy 3000).
 
 ## Quota
 
-Before a wave, `quota.sh agy:personal claude:personal2 codex:personal` asks each CLI for its own `/usage` numbers: free,
+Before a wave, `quota.sh agy:personal codex:personal` asks each CLI for its own `/usage` numbers: free,
 about a second, one line per limit (`agy:personal usage Gemini 4 Argon Weekly Limit 0% 2026-11-03T...`). agy reports
-percent *remaining* per model pool; claude and codex report percent *used*. Pick targets that have room. `claude:work`
-(Vertex) and `codex:work` have no usage source, so they get a minimal probe per model (`ok` or the error). A usage number
+percent *remaining* per model pool; claude and codex report percent *used*. Pick targets that have room. `codex:work`
+has no usage source, so it gets a minimal probe per model (`ok` or the error). A usage number
 shows quota left, not that a model is allowed; check that with `MODELS="a b" quota.sh <target>`.
 
 ## Settings
@@ -55,12 +64,12 @@ use and afford (work, being out of budget, defaults to its basic models at high 
 [references/models.md](references/models.md) before changing them or when a model is denied. `DELEGATE_MODEL` uses only
 that model. agy takes either a suffixed model (`agy models`) or a base model plus effort, not both.
 
-**Read-only by default** for codex and claude. agy has no read-only mode, so tell it not to edit.
+**Read-only by default** for codex. agy has no read-only mode, so tell it not to edit.
 `DELEGATE_WRITE=1` grants full, unsandboxed permissions.
 
-**Accounts are a data boundary.** A run is one group: all `work`, or all `personal`/`personal2` (mix tools freely
-inside a group); `multi.sh` refuses to mix them. Content goes only to the group you chose. Which account the
-orchestrator runs on is separate: a personal Opus may delegate to an all-work group, e.g. to spend work-account tokens.
+**Accounts are a data boundary.** A run is one group: all `work`, or all `personal`/`personal2` (mix agy and codex
+freely inside a group); `multi.sh` refuses to mix them. Content goes only to the group you chose. Which account the
+orchestrator runs on is separate: the orchestrator may delegate to an all-work group, e.g. `codex:work`, to spend work-account tokens.
 
 Agents read everything under the cwd, git-ignored files too. When a repo holds ignored private data, run them in a fresh
 `git clone` of it (tracked files only).

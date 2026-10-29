@@ -12,6 +12,10 @@ mode=${1:?usage: multi.sh parallel|chain <prompt-file> <tool:account>...}
 prompt=$(realpath "${2:?prompt file}")
 shift 2
 (($#)) || { echo "need at least one target" >&2; exit 2; }
+for t; do
+  [[ ${t%%:*} != claude || ${DELEGATE_ALLOW_CLAUDE:-} == 1 ]] || {
+    echo "refusing claude target $t: set DELEGATE_ALLOW_CLAUDE=1 only if the user named it" >&2; exit 2; }
+done
 # A run is one data group: all work, or all personal/personal2. Never both.
 work=0 other=0
 for t; do [[ ${t#*:} == work ]] && work=1 || other=1; done

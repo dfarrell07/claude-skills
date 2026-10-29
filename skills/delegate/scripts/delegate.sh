@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Run one prompt on one agent CLI under one account; write the final answer to a file.
 # Usage: delegate.sh <tool>:<account> <prompt-file> [out-file]
-#   tool:    agy | codex | claude
+#   tool:    agy | codex (claude is refused unless DELEGATE_ALLOW_CLAUDE=1)
 #   account: work | personal | personal2
 # Prints only the output path and size, so callers never pay for the answer
 # until they choose to read it. On failure prints FAIL and leaves no out-file.
 # Optional env:
 #   DELEGATE_MODEL, DELEGATE_EFFORT (low|medium|high|xhigh|max). Unset: per-target defaults
 #     below, trying fallback models in order. Setting DELEGATE_MODEL uses only that model.
+#   DELEGATE_ALLOW_CLAUDE=1   claude targets are refused unless set: claude orchestrates, delegate is for weaker models
 #   DELEGATE_WRITE=1   allow edits (default read-only; agy cannot enforce this)
 #   DELEGATE_USAGE=1   print the account's usage/quota from the CLI itself (no model call), then exit; exit 3 if
 #                      the account has no such source (quota.sh then probes instead)
@@ -21,6 +22,8 @@ prompt_file=${2:?prompt file}
 [[ $target == *:* ]] || { echo "target must be <tool>:<account>" >&2; exit 2; }
 [[ -r $prompt_file ]] || { echo "cannot read $prompt_file" >&2; exit 2; }
 tool=${target%%:*} account=${target#*:}
+[[ $tool != claude || ${DELEGATE_ALLOW_CLAUDE:-} == 1 ]] || {
+  echo "refusing claude target $target: claude runs delegate, it is not a sub-agent. Set DELEGATE_ALLOW_CLAUDE=1 only if the user named it" >&2; exit 2; }
 out=${3:-$(mktemp "${TMPDIR:-/tmp}/delegate-${tool}-${account}-XXXXXX.md")}
 err="$out.err"
 mkdir -p "$(dirname "$out")"
