@@ -88,9 +88,9 @@ Two items join when:
 - they are the user's authored PRs in one repository, with the same `family()`
   title key, created within 90 days of the group's earliest PR. That covers a fix
   and its backports, never a chain of monthly releases.
-- one is a local commit whose remote is the other's repository, whose subject
-  matches the other (a PR), and whose author time falls between that PR's creation
-  and its merge or close.
+- one is a local commit whose remote is the other's repository and whose subject
+  matches the other (a PR), authored no more than 90 days before that PR's merge
+  or close. Commits usually predate their PR, and rebases keep the author time.
 
 A credited ticket, and a credited review or comment on someone else's PR, are each
 their own unit. They never join authored work. Review and coordination are cited
@@ -118,21 +118,27 @@ quarters.
 opens a capture itself.
 
 - **`close(period)`** collects a period one full quarter after it ends, so commits
-  rebased, merged or pushed in that time are included.
-  - It writes `periods/<period>/data.json` through `--output`, so a period is either
-    complete or absent.
+  rebased, merged or pushed in that time are included. It writes
+  `periods/<period>/data.json` through `--output`, so a period is either complete
+  or absent.
+  - If GitHub or local Git reports `unavailable`, the capture is discarded and the
+    period stays open for the next run.
+  - A `partial` source, which local Git reports for routine warnings, is kept as a
+    stated limit.
   - A closed period is never collected again unless the user asks.
-- **`units()`** runs the JSON digest once over every closed capture, plus a scratch
-  capture.
-  - The scratch capture runs from the last closed period's end to today. It is
-    collected every run and never stored. It keeps the "operating now" evidence
-    current, and the packet marks its units provisional.
-  - It adds the `recorded.md` entries.
-  - It returns the units, each period's limits, and the ended periods since
-    `start_year` that have no capture yet.
-  - A later credit-rule fix thus applies to every period without recollecting.
-- **`resolve(ref)`** returns the unit or entry that a member link or slug names. A
-  unit's reference is its smallest member link.
+- **`snapshot()`** runs once per run, after closing:
+  - It collects the current window, from the last closed period's end to today,
+    into `periods/current/data.json`, overwritten each run. Its units are marked
+    provisional, which keeps the "operating now" evidence current.
+  - It runs the JSON digest once over every capture and adds the `recorded.md`
+    entries.
+  - It writes `units.json`: the units with a content hash each, each period's
+    limits, and the ended periods since `start_year` with no capture yet.
+
+  Every later step reads only `units.json`, so all hashes in a run come from one
+  snapshot. A later credit-rule fix applies to every period without recollecting.
+- **`resolve(ref)`** returns, from `units.json`, the unit or entry that any member
+  link or slug names.
 
 **`recorded.md`** holds what no collector sees: mentoring, feedback quotes, talks,
 design documents, adoption by other teams, decisions influenced, and older work on
@@ -180,12 +186,13 @@ has been sustained. One unit may support several clauses.
 
 **`/career-advocate` runs every step and writes a new packet:**
 
-1. **Close.** Close every eligible period, newest first. Folding waits until this
-   finishes, so units are stable while they are read.
-2. **Fold.** `mapping.json` keeps `{reference: hash(resolve(reference))}` for
-   everything folded.
-   - Read references that are new or whose hash changed, newest first, in batches
-     that fit in context. This includes a PR that gained actions.
+1. **Close and snapshot.** Close every eligible period, newest first, then run
+   `snapshot()`.
+2. **Fold.** `mapping.json` keeps `{member link or slug: unit hash}` for everything
+   folded.
+   - Read units that are new or whose hash changed, newest first, in batches that
+     fit in context. This includes a PR that gained actions or a unit that merged
+     with another.
    - Add references to clause arguments, and save after each batch.
    - Then rewrite arguments and ratings.
 3. **Review.** A reviewer subagent acts as a skeptical committee member.
@@ -195,7 +202,7 @@ has been sustained. One unit may support several clauses.
      challenge only by editing the argument, for example by adding evidence.
    - Once the reviewer accepts a clause, it runs `packet.py stamp <key>`. That
      command runs the checkable rules and refuses if any fails. Otherwise it stores
-     a hash of the clause's text, rating, argument and resolved evidence.
+     a hash of the clause's text, rating, argument and the cited units' hashes.
 4. **Render.** `packet.py render` refuses unless every stamp matches a fresh hash,
    so no edit and no evidence change reaches the packet unreviewed. It builds the
    packet from `mapping.json` and `resolve()` alone, and lists each unit once per
@@ -216,7 +223,8 @@ plugin cache:
 ```text
 config.json
 recorded.md
-periods/<YYYY or YYYY-QN>/data.json
+periods/<YYYY, YYYY-QN or current>/data.json
+units.json
 mapping.json
 packets/<date>.md
 ```
