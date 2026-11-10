@@ -11,9 +11,9 @@ Senior assessment.
 
 Today's skill has its own weaker collector. It credited a Kubernetes rebase as
 authored work in July 2026, and it cannot see its private data once installed. Its
-replacement is a thin layer over `work-summary`: work-summary finds and verifies
-what the user did, and career-advocate keeps that evidence for every period and
-argues it against the criteria.
+replacement is a thin layer over `work-summary`: work-summary finds what the user
+did and decides what counts as the user's own work; career-advocate keeps that
+evidence for every period and argues it against the criteria.
 
 ## Layers
 
@@ -21,121 +21,107 @@ Each layer reads only the one below it.
 
 ### 1. Collection (work-summary)
 
-**Period scheme.** Periods are fixed when the store is created:
+**Period scheme.** The periods are fixed when the store is created:
 
-- **Before the first run's year: one period per calendar year.** This is the
-  coarser pass. It uses the same collector over a longer window, and the digest
-  already groups long windows by workstream.
-- **From that year on: one period per quarter, permanently.**
+- years before the first run's year get one period each, a coarser pass that
+  uses the same collector over a longer window,
+- from that year on, every period is a quarter.
 
 A period never changes shape, so the `periods/` directory listing is the period
-scheme, and the end of a year needs no special handling.
+scheme.
 
-**Closed periods.** A period is written to `periods/` only after it has ended and
-every source in its capture reports `ok`, or the user accepts the gap. Once written,
-it is never collected again. Anything else is collected again on the next run:
-
-- an incomplete capture,
-- the open quarter, which lives only in the run directory.
-
-**Prerequisite work-summary change.** Today the "recent" searches have only a lower
-date bound. A 2016 window would therefore sweep every item from then to now and
-exhaust caps and rate limits. In explicit-window mode, bound them at the window end:
-
-- GitHub `recent_*` searches: `created:<=until`,
-- the Jira `recent` query: `created <= until`.
-
-An item created after a window cannot hold activity inside it, and weekly and
-quarterly runs are unaffected.
+**Closed periods.** A period is written to `periods/` after it has ended and one
+collection of it has finished. It is never collected again unless the user asks.
+Sources the collection could not reach are recorded in its coverage section, and
+the packet states them as limits, never as zero activity. The open quarter is not
+stored or mapped.
 
 **Running it.**
 
 - Call work-summary's explicit-window collection as
   `references/quarterly-reviews.md` shows.
-- Resolve its scripts at `$SKILL_DIR/../work-summary/scripts/`, because both
-  skills ship in one plugin. Find `SKILL_DIR` the way work-summary does, not with
-  `BASH_SOURCE`.
-- On the first run, backfill in the background, newest first. Each period is
-  written as soon as it is done, so an interrupted backfill resumes where it
-  stopped.
+- Resolve its scripts at `$SKILL_DIR/../work-summary/scripts/`; both skills ship in
+  one plugin. Find `SKILL_DIR` the way work-summary does, not with `BASH_SOURCE`.
+- On the first run, backfill in the background, newest first. Write each period as
+  soon as it finishes, so an interrupted backfill resumes where it stopped.
+
+**Two prerequisite work-summary changes:**
+
+1. **Bound "recent" searches at the window end.** In explicit-window mode, add
+   `created:<=until` to the GitHub `recent_*` searches and `created <= until` to the
+   Jira `recent` query. Without an upper bound, a 2016 window sweeps every item
+   from then to now and exhausts caps and rate limits. An item created after a
+   window cannot hold activity inside it.
+2. **Make one function decide credit.** Today the rules for what counts as the
+   user's own work are split between `references.active_items` and the
+   `candidates` digest (`SUBSTANTIVE`, rebase detection). Consolidate them into
+   `credited(data)`, used by both work-summary's digest and career-advocate. It
+   returns:
+   - items with a substantive event by the user inside the window, which
+     excludes mentions, subscriptions and labels,
+   - local commits whose author time falls inside the window, which excludes
+     rebases, cherry-picks and backup branches,
+   - Jira tickets the user commented on or changed.
 
 ### 2. Evidence (career-advocate)
 
 The evidence is the closed periods' captures (`periods/<period>/data.json`) and
-`recorded.md`. Nothing is summarized per period. When a pass needs a period's
-digest, it regenerates it with `render-report.sh --candidates`.
+`recorded.md`. A reference is one of:
 
-A reference is one of:
-
-- **Captured work:** a URL, or `repo@hash` for a local commit, that a capture
-  credits to the user. That means the capture records the user's own event on it
-  inside that period. Items that appear only as context, such as mentions or review
-  requests, do not count.
+- **Captured work:** a URL, or `repo@hash` for a local commit, that `credited()`
+  returns for the cited period.
 - **Recorded work:** a `## YYYY-MM-DD title` heading in `recorded.md`.
 
-**`recorded.md`** holds what no collector sees: mentoring, feedback quotes, talks,
+`recorded.md` holds what no collector sees: mentoring, feedback quotes, talks,
 design documents, adoption by other teams, decisions influenced, and older work on
-Gerrit, mailing lists or other Jira sites.
-
-- Each entry names its source: a link, a named person, or "own account".
-- Ask the user for entries era by era. Never infer them from commits.
-- Search external services for the user's name only with the user's approval.
-- Check that a link opens before citing it.
+Gerrit, mailing lists or other Jira sites. Each entry names its source: a link, a
+named person, or "own account". Ask the user for entries era by era, never infer
+them from commits, and check that a link opens before citing it.
 
 ### 3. Mapping (career-advocate)
 
-**Categories.** The Principal level document defines the structure: each `##`
-section holding numbered items (responsibilities, skills, and any metrics or goals
-section), then each item within it. Categories are read from the document, never
-hardcoded. Items are keyed by section, such as `Skills/5`, because Collaboration
-and Business Impact appear under both Responsibilities and Skills.
+**Criteria.** At setup, split each numbered item in `levels/target.md` into
+clauses once and annotate them in that file. A clause key gives the section, item
+and clause, such as `Skills/10.d`. Sections are read from the document (its
+responsibilities, skills, and any metrics or goals section), never hardcoded.
+Section keys keep apart the Collaboration and Business Impact items that appear in
+both lists. The annotated file is reviewed with the user once, so clause keys stay
+stable.
 
-**Clauses.** Many items are compound. Skills/10 asks for design documents, blog
-posts, documentation mentoring and conference talks. So `mapping.json` splits each
-item into clauses (`Skills/10.d`) that together cover the item's full text.
-
-**Ratings.** Each clause gets an argument, its references and one rating:
+**Ratings.** For each clause, `mapping.json` holds an argument, its references and
+one rating:
 
 - **exceeds**: the evidence goes beyond the clause in scope, reach or duration,
 - **meets**: the evidence shows the clause as written,
 - **not yet shown**: also names the specific evidence or action that would show it.
 
-**How arguments are written.**
+Arguments answer the clause in its own words. They lead with the most recent
+periods, which show the user operates at Principal now, and use earlier periods to
+show it has been sustained.
 
-- Lead with recent evidence, which shows the user operates at Principal now.
-- Use earlier periods to show this has been sustained for years.
-- Answer the clause in its own words.
+**Each run:**
 
-**How the mapping is built.** The mapping accumulates. Each newly closed period, and
-the open quarter on every run, is read once to add references to clauses. Arguments
-and ratings are then rewritten over everything cited, so no pass ever has to read
-the whole career at once.
+1. **Fold.** Read each newly closed period's digest once and add its references to
+   clauses. `mapping.json` lists the periods it has folded, so no pass ever reads
+   the whole career at once. Then rewrite arguments and ratings over everything
+   cited.
+2. **Review.** A reviewer subagent acts as a skeptical committee member. It sees
+   only each clause's text and the evidence that clause cites. It downgrades any
+   claim or "exceeds" the evidence does not carry, and challenges arguments that
+   rest only on the user's own account or lack recent evidence.
+3. **Check.** `scripts/check.py` (about 40 lines) fails when:
+   - the mapping's clause keys differ from the annotated criteria,
+   - a clause has no rating,
+   - a reference does not resolve,
+   - a `recorded.md` heading appears twice.
+4. **Render.** Render runs only after a passing check, and writes the packet:
+   - a one-page summary citing only references from the mapping,
+   - one section per category in the document's order, each with one subsection
+     per item holding its clause arguments, links and any next steps,
+   - a statement of the coverage limits.
 
-**`scripts/check.py`** (about 50 lines) fails when:
-
-- the mapping has a missing or extra item,
-- a clause has no rating,
-- a reference does not resolve under the rules above,
-- a `recorded.md` heading is duplicated.
-
-**Reviewer pass.** A reviewer subagent then acts as a skeptical committee member.
-It receives each clause's text and cited evidence, plus an index of every period's
-digest and of `recorded.md`. It:
-
-- downgrades any claim or "exceeds" the evidence does not carry,
-- challenges arguments that rest only on the user's own account or lack recent
-  evidence,
-- points to stronger evidence that went uncited.
-
-**The packet**, rendered from the mapping:
-
-- a one-page summary of the case,
-- one section per category, in the document's order,
-- within each section, one subsection per item with its clause arguments, links and
-  any next steps.
-
-Numbers come only from cited sources or a capture's coverage section. There are no
-activity statistics.
+   Numbers come only from cited sources or coverage sections. The packet has no
+   activity statistics.
 
 ## Store and interface
 
@@ -157,20 +143,21 @@ packets/<date>.md
 criteria.
 
 **Usage.** `/career-advocate [start year]` runs every layer and writes a new
-packet. The first run asks for the career start year if it isn't given.
+packet. The first run asks for the career start year if none is given.
 
-**Removed modes.** `assess`, `meeting` and `scan` are dropped; work-summary's
+**Removed modes.** `assess`, `meeting` and `scan` go, because work-summary's
 quarterly, weekly and discovery modes cover them.
 
 ## Steps
 
-1. **work-summary window bound.** Make it its own change, with tests. Then time one
-   real calendar-year collection and read its coverage. If it is still unusable,
-   fix work-summary further; never add a second collector here.
-2. **Evidence.** Build the period scheme, the closed-period rule and the backfill.
-   Write `check.py`'s reference resolution, with unit tests on synthetic captures.
-3. **Mapping.** Finish `check.py`, then the incremental mapping pass, the reviewer
-   pass and the packet.
+1. **work-summary changes.** Each is its own change with tests: the window bound,
+   then `credited()`, with the digest switched over to it. Then time one real
+   calendar-year collection and read its coverage. If it is unusable, fix
+   work-summary further; never add a second collector here.
+2. **Evidence.** The period scheme, closing, backfill, and `check.py`'s reference
+   resolution, with unit tests on synthetic captures.
+3. **Mapping.** Clause annotation, the rest of `check.py`, the fold, review and
+   render steps.
 4. **Removal.** Delete `scripts/`, `lenses/`, `reference/analysis-guide.md`,
    `tests/TEST-PLAN.md` and the `private/` gitignore entry. Rewrite SKILL.md's
    description and argument hint. Update `.claude/SKILLS.md` and the README.
