@@ -35,10 +35,12 @@ Three work-summary changes come first.
 
 **1. Bound searches by when the work happened.** In explicit-window mode:
 
-- Add `created:<=until` to the GitHub `recent_*` searches and `created <= until`
-  to the Jira `recent` query. Today a 2016 window sweeps every item from then to
-  now, exhausting caps and rate limits. An item created after a window cannot
-  hold activity in it.
+- Cap creation time at the window end. For GitHub `recent_*` searches, this means
+  the creation-time partitioning (`github_sources.py` `search`) spans epoch to
+  `until` instead of epoch to now, with no second `created:` qualifier in the
+  query. For the Jira `recent` query, add `created <= until`. Today a 2016 window
+  sweeps every item from then to now, exhausting caps and rate limits. An item
+  created after a window cannot hold activity in it.
 - Select local commits by commit time from the window start, with no end bound,
   in both the git call (`local_sources.py`) and the post-filter
   (`work_summary.py` after local collection). This keeps commits written in the
@@ -55,15 +57,25 @@ switch the digest to it, and expose it as `--credited`.
 `references.active_items` and `active_tickets` stay as they are: they set the
 collector's deliberately wider crawl, not credit.
 
-It returns one record per unit of work, holding facts only: member links, context
-links, title, the user's actions, and their dates. Units are built only from the
-user's own credited work and only from what the capture holds. Within one
-repository, credited items sharing the digest's `family()` title key form one unit,
-so a fix and its per-branch backports count once. A local commit joins a PR unit
-when its subject matches. In a repository whose GitHub remote was captured, an
-unmatched commit is context, never a unit of its own, because squash and rebase
-merges leave no other link. Tickets and other people's PRs are context and never
-join units. Credited work is:
+It returns one record per unit of work, holding facts only:
+
+- member links, and context links (related links that are not credited),
+- title,
+- the user's actions and their dates,
+- Jira's `sensitive` flag.
+
+Units are built only from credited work, using only what the capture holds:
+
+- The user's authored PRs in one repository that share the digest's `family()`
+  title key form one unit, so a fix and its per-branch backports count once.
+- A local commit joins a PR unit when its subject matches. Otherwise it is its own
+  unit. Its link is a commit URL built from its remote, or, with no web remote, a
+  local reference marked "not publicly verifiable".
+- A credited ticket, and a credited review or comment on someone else's PR, are
+  each their own unit, because that is how leadership through review and
+  coordination is cited.
+
+Credited work is:
 
 - **GitHub or GitLab:** an item with a substantive event by the user in the window
   (`candidates.SUBSTANTIVE`, so not mentions, subscriptions or labels), or an
@@ -88,14 +100,16 @@ quarter is neither stored nor mapped.
   `periods/<period>/data.json`, with coverage gaps as the period's stated limits.
   A closed period is never collected again unless the user asks. Each run lists
   the periods with gaps so the user can decide.
-- **`index()`** runs `--credited` once per closed period, a few seconds each,
-  and builds a single index from member link or slug to records. A later fix to
-  the credit rule then applies to every period without recollecting. The index
-  also returns a hash of each period's credited output and of `recorded.md`.
-- **`resolve(ref)`** looks a member link or slug up in the index. It returns every
-  matching record across periods, or the recorded entry with its source kind,
-  each with its dates. Context links never resolve, so others' work cannot be
-  cited.
+- **`index()`** runs `--credited` once per closed period, a few seconds each. It
+  merges records into career units: records from any period that share a member
+  link, or a repository and `family()` key, are one unit with all their dated
+  actions. A later fix to the credit rule then applies to every period without
+  recollecting.
+- **`records(source)`** returns the units a period contributes, or the entries in
+  `recorded.md`, with a hash of exactly that output for the fold step.
+- **`resolve(ref)`** looks up a member link or slug and returns its one career unit,
+  or the recorded entry with its source kind. Context links never resolve, so
+  others' work cannot be cited.
 
 **`recorded.md`** holds what no collector sees: mentoring, feedback quotes, talks,
 design documents, adoption by other teams, decisions influenced, and older work on
@@ -132,10 +146,10 @@ periods to show it has been sustained. One unit may support several clauses.
 
 1. **Close.** In the background, newest first, `close()` every ended period that
    is not yet closed.
-2. **Fold.** `mapping.json` keeps the hash of each evidence source it last folded:
-   each period's credited output, and `recorded.md`. One source at a time, newest
-   first, fold every source whose hash is missing or changed. Read its records, add
-   references to clause arguments, and save. A newly closed period, an edited
+2. **Fold.** `mapping.json` keeps the last folded `records()` hash of each source:
+   each period, and `recorded.md`. One source at a time, newest first, fold every
+   source whose hash is missing or changed. Read `records(source)`, add references
+   to clause arguments, and save. A newly closed period, an edited
    `recorded.md` and a credit-rule fix are all handled this way. Then rewrite
    arguments and ratings.
 3. **Review.** A reviewer subagent acts as a skeptical committee member. For each
@@ -150,10 +164,13 @@ periods to show it has been sustained. One unit may support several clauses.
      edits, new evidence and credit-rule changes,
    - every reference resolves,
    - every "meets" or "exceeds" cites at least one reference,
-   - no "exceeds" rests only on "own account" entries.
+   - no "exceeds" rests only on "own account" entries or work that is "not
+     publicly verifiable".
 
-   It then builds the packet from `mapping.json` and `resolve()` alone, listing
-   each unit once per clause:
+   It then builds the packet from `mapping.json` and `resolve()` alone. Each
+   reference resolves to one career unit, so each unit is listed once per clause.
+   For tickets flagged `sensitive`, it prints only the key, never the title. The
+   packet holds:
    - a case summary assembled from the reviewed ratings and arguments,
    - one section per section of the level document, in its order, with each item
      as a subsection holding its clause arguments, links and any next steps,
@@ -184,7 +201,9 @@ hand. Nothing in the store is committed; tests use synthetic people and criteria
 
 1. **work-summary.** Make the three changes, each with tests: window bounds,
    `--author-email`, and `credited()` with `--credited` and the digest switched to
-   it. Then time one real calendar-year collection and read its coverage. If it is
+   it. Captures record a format version. A saved synthetic capture for each version
+   is tested against `credited()`, so stored periods keep working as the collector
+   changes. Then time one real calendar-year collection and read its coverage. If it is
    unusable, fix work-summary further; never add a second collector here.
 2. **career-advocate.** Build `store.py` and `packet.py` with unit tests on
    synthetic captures, then setup, fold and review.
