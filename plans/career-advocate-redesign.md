@@ -107,11 +107,16 @@ How to fill it:
 
 ### 3. Mapping (career-advocate)
 
-**Clauses.** Many Principal criteria are compound. Skills/10 alone asks for design
-documents, blog posts, documentation mentoring and conference talks. So
-`mapping.json` splits each numbered item of the level document into its clauses,
-keyed by section and clause (`Skills/10.d`). Responsibilities and Skills are kept
-apart because both lists contain Collaboration and Business Impact.
+**Categories.** The level document's own categories are the structure: every `##`
+section holding numbered items (responsibilities, skills, and any metrics or goals
+section), then each numbered item within it. They are read from the document, not
+hardcoded, so the case follows the ladder as written. Items are keyed by section
+(`Skills/5`) because both Responsibilities and Skills contain Collaboration and
+Business Impact.
+
+**Clauses.** Many items are compound. Skills/10 alone asks for design documents,
+blog posts, documentation mentoring and conference talks. So `mapping.json` splits
+each item into its clauses (`Skills/10.d`) and rates each clause on its own.
 
 **Ratings.** Each clause gets an argument, cited references and one rating:
 
@@ -150,10 +155,13 @@ themes, every period's digest and the `recorded.md` headings. It then:
 This pass replaces the four lens subagents and targets July's failure,
 overclaiming.
 
-**Packet.** The packet is rendered from the mapping:
+**Packet.** The packet is rendered from the mapping. Its sections roughly follow
+the level document's categories:
 
 1. a one-page summary of the case,
-2. one section per criterion, with its arguments and links,
+2. one section per category, in the document's order, holding one subsection per
+   item with its clause arguments and links (closely overlapping items, such as the
+   two Collaboration entries, may share evidence but each is answered),
 3. the "not yet shown" clauses, each with its next step.
 
 Numbers come only from cited sources or a capture's coverage section. The packet
@@ -173,7 +181,9 @@ packets/<date>.md
 ```
 
 **Setup.** Copy the Principal level document into the store by hand once, along
-with anything useful from `career-context.md`.
+with anything useful from `career-context.md`. Include every category the source
+ladder defines for Principal, such as metrics or goals, not only responsibilities
+and skills.
 
 **Privacy.** Nothing in the store is committed. Tests use synthetic people and
 criteria.
