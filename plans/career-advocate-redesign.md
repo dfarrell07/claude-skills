@@ -33,7 +33,7 @@ modules:
   units.
 
 Scripts resolve at `$SKILL_DIR/../work-summary/scripts/`, because both skills ship
-in one plugin. Find `SKILL_DIR` the way work-summary does, not with `BASH_SOURCE`.
+in one plugin.
 
 Five work-summary changes come first.
 
@@ -41,11 +41,14 @@ Five work-summary changes come first.
 
 - **GitHub `recent_*` searches:** put `created:<=until` in the root query. If that
   overflows, partition the base query by `created:a..b` over epoch to `until`
-  (`github_sources.py` `search`), so the partition totals match the root.
+  (`github_sources.py` `search`), so the partition totals match the root. Sort by
+  `created`, which never changes, so paging stays stable while old items are still
+  being updated.
 - **Jira `recent` query:** add `created <= until`.
-- **Local commits:** select by commit time from the window start with no end bound,
-  in both the git call (`local_sources.py`) and the post-filter (`work_summary.py`
-  after local collection).
+- **Local commits:** the git call (`local_sources.py`) selects by commit time from
+  the window start, with no end bound, so commits amended or rebased later are
+  found. The post-filter (`work_summary.py` after local collection) keeps commits
+  *authored* in the window, so each commit lands in exactly one period's capture.
 
 Today a 2016 window sweeps every item from then to now, exhausting caps and rate
 limits. An item created after a window cannot hold activity in it.
@@ -69,10 +72,14 @@ checkout may be gone years later, so this can only be decided while collecting.
 `references.active_items` and `active_tickets` stay as they are: they set the
 collector's deliberately wider crawl, not credit.
 
-**5. `--require <sources>`.** `work-summary.sh` exits non-zero and writes nothing
-when a required source is unavailable or failed transiently, for example a failed
-page or a rate limit. A permanent search cap is recorded as a coverage limit
-instead.
+**5. `--require <sources>`.** `problem()` (`github_sources.py`) records a kind:
+
+- `transient` for failed reads and the exhausted request budget,
+- `limit` for permanent caps such as the 10,000-row cap.
+
+`work-summary.sh` exits non-zero and writes nothing when a required source is
+unavailable or has a `transient` problem. A `limit` is recorded as a coverage
+limit.
 
 **Credited work:**
 
@@ -85,8 +92,8 @@ instead.
 - **Local commits:** a non-merge commit by one of the user's emails, *authored*
   in the window. A merge-button commit carries the user's email but records
   someone else's work.
-  - Copies with the same author, author time and subject are one commit.
-  - It is credited once, in the period it was written.
+  - Copies in one capture with the same author, author time and subject, such as
+    cherry-picks and backports, count as one commit.
   - Deduplication prefers a copy with a web URL.
 
 **Units** are connected components over the credited work of all given captures.
@@ -99,6 +106,9 @@ Two items join when:
 - one is a local commit whose remote is the other's repository and whose subject
   matches the other (a PR), authored no more than 90 days before that PR's merge
   or close. Commits usually predate their PR, and rebases keep the author time.
+
+A repository's remaining commits in one period form one unit that never joins
+anything. That way a multi-commit branch counts once, not once per commit.
 
 A credited ticket, and a credited review or comment on someone else's PR, are each
 their own unit. They never join authored work. Review and coordination are cited
@@ -120,7 +130,8 @@ title or an excerpt.
 
 **Periods.** `config.json` holds `start_year`, `quarterly_from`, the user's `emails`,
 repository `roots`, and the sources to `require`: by default GitHub and local Git,
-plus Jira once it is set up. Each year before `quarterly_from` is one period: a coarser
+plus Jira once it is set up. The first run asks for these values and the Principal
+level document, and it sets `quarterly_from` to the current year. Each year before `quarterly_from` is one period: a coarser
 pass with the same collector over a longer window. From then on, periods are
 quarters.
 
@@ -237,14 +248,7 @@ mapping.json
 packets/<date>.md
 ```
 
-The first run asks for:
-
-- the Principal level document,
-- the career start year,
-- every email address the user has committed under,
-- the directories holding the user's repositories.
-
-It sets `quarterly_from` to the current year. Copy anything useful from
+Copy anything useful from
 `career-context.md` into `recorded.md` by hand. Nothing in the store is committed,
 and tests use synthetic people and criteria.
 
