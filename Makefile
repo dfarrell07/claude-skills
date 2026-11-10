@@ -1,4 +1,4 @@
-.PHONY: help lint test unit-test triage-test shellcheck markdownlint yamllint gitlint work-summary work-summary-test
+.PHONY: help lint test unit-test triage-test interview-test shellcheck markdownlint yamllint gitlint work-summary work-summary-test
 
 help:
 	@echo "Available targets:"
@@ -20,10 +20,13 @@ test: lint unit-test
 unit-test:
 	@echo "Running cve-agent unit tests..."
 	@bash skills/cve-agent/scripts/test.sh --level 1
-	@$(MAKE) triage-test work-summary-test
+	@$(MAKE) triage-test work-summary-test interview-test
 
 triage-test:
 	@python3 skills/personal-jira-triage/tests/test_triage.py
+
+interview-test:
+	@python3 skills/career-advocate/tests/test_interview.py
 
 shellcheck:
 	@echo "Running shellcheck..."
