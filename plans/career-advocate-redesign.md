@@ -56,9 +56,14 @@ switch the digest to it, and expose it as `--credited`.
 collector's deliberately wider crawl, not credit.
 
 It returns one record per unit of work, holding facts only: member links, context
-links, title, the user's actions, and their dates. A unit is one credited item plus
-its own commits and the backports it links. Tickets and other people's PRs are
-context; they never join units. Credited work is:
+links, title, the user's actions, and their dates. Units are built only from the
+user's own credited work and only from what the capture holds. Within one
+repository, credited items sharing the digest's `family()` title key form one unit,
+so a fix and its per-branch backports count once. A local commit joins a PR unit
+when its subject matches. In a repository whose GitHub remote was captured, an
+unmatched commit is context, never a unit of its own, because squash and rebase
+merges leave no other link. Tickets and other people's PRs are context and never
+join units. Credited work is:
 
 - **GitHub or GitLab:** an item with a substantive event by the user in the window
   (`candidates.SUBSTANTIVE`, so not mentions, subscriptions or labels), or an
@@ -83,11 +88,14 @@ quarter is neither stored nor mapped.
   `periods/<period>/data.json`, with coverage gaps as the period's stated limits.
   A closed period is never collected again unless the user asks. Each run lists
   the periods with gaps so the user can decide.
-- **`credited(period)`** runs `--credited` on that period's capture. A later fix to
-  the credit rule then applies to every period without recollecting.
-- **`resolve(ref)`** takes a link or a recorded slug. It returns every credited
-  record, in any period, that contains the link, or the recorded entry's text,
-  each with its dates.
+- **`index()`** runs `--credited` once per closed period, a few seconds each,
+  and builds a single index from member link or slug to records. A later fix to
+  the credit rule then applies to every period without recollecting. The index
+  also returns a hash of each period's credited output and of `recorded.md`.
+- **`resolve(ref)`** looks a member link or slug up in the index. It returns every
+  matching record across periods, or the recorded entry with its source kind,
+  each with its dates. Context links never resolve, so others' work cannot be
+  cited.
 
 **`recorded.md`** holds what no collector sees: mentoring, feedback quotes, talks,
 design documents, adoption by other teams, decisions influenced, and older work on
@@ -95,7 +103,7 @@ Gerrit, mailing lists or other Jira sites.
 
 - Each entry is `## YYYY-MM-DD {#slug} title`. The slug is its reference, unique
   and never edited.
-- Each entry names its source: a link, a named person, or "own account".
+- Its first line is `Source:` followed by a link, a named person, or "own account".
 - Ask the user for entries era by era. Never infer them from commits. Check that a
   link opens before citing it.
 
@@ -124,21 +132,25 @@ periods to show it has been sustained. One unit may support several clauses.
 
 1. **Close.** In the background, newest first, `close()` every ended period that
    is not yet closed.
-2. **Fold.** One newly closed period at a time, newest first: read
-   `credited(period)`, add references to clause arguments, and save
-   `mapping.json`. Then do the same for `recorded.md` if it has changed. Then
-   rewrite arguments and ratings.
+2. **Fold.** `mapping.json` keeps the hash of each evidence source it last folded:
+   each period's credited output, and `recorded.md`. One source at a time, newest
+   first, fold every source whose hash is missing or changed. Read its records, add
+   references to clause arguments, and save. A newly closed period, an edited
+   `recorded.md` and a credit-rule fix are all handled this way. Then rewrite
+   arguments and ratings.
 3. **Review.** A reviewer subagent acts as a skeptical committee member. For each
    clause it sees only the clause text, the argument and `resolve()` of its
    references. It downgrades anything that breaks the rating rules above. The main
    agent may answer a challenge only by editing the argument, for example adding
    evidence, and every edit is reviewed again. When nothing is challenged, the
-   reviewer stamps `mapping.json` with a hash of each clause and of the inputs: the
-   closed periods and `recorded.md`.
+   reviewer stamps each clause with a hash of exactly what it saw: text, rating,
+   argument and resolved evidence.
 4. **Render.** `scripts/packet.py render(mapping)` refuses unless:
-   - the stamp matches the current clauses and inputs,
+   - every clause's stamp matches a fresh hash of the same things, which covers
+     edits, new evidence and credit-rule changes,
    - every reference resolves,
-   - every "meets" or "exceeds" cites at least one reference.
+   - every "meets" or "exceeds" cites at least one reference,
+   - no "exceeds" rests only on "own account" entries.
 
    It then builds the packet from `mapping.json` and `resolve()` alone, listing
    each unit once per clause:
