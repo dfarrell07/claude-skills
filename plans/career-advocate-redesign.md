@@ -73,17 +73,13 @@ collecting.
 `references.active_items` and `active_tickets` stay as they are: they set the
 collector's deliberately wider crawl, not credit.
 
-**5. `--require <sources>`.** `problem()` (`github_sources.py`) and Jira's `gap()`
-(`jira_sources.py`) record a kind:
-
-- `transient`: only failed reads and rate-limit errors, which a later run can fix,
-- `limit`: everything else, including the request budget, the 10,000-row cap and
-  count mismatches, which recur on every run.
-
-When Jira is required, an unconfirmed Jira identity is `transient`, because
-without it no field-change credit is found. `work-summary.sh` exits non-zero and
-writes nothing when a required source is unavailable or has a `transient`
-problem. A `limit` is recorded as a coverage limit.
+**5. `--require <sources>`.** Only the known permanent problems are tagged `limit`:
+the request budget, the 10,000-row cap, count mismatches and private tickets. Every
+other problem of a required source counts as a failure. That includes exceptions
+caught by `phase()` and read failures reported only through `warn()`, such as Jira
+change history. `work-summary.sh` exits non-zero and writes nothing on a failure.
+A `limit` is recorded as a coverage limit. When Jira is required, an unconfirmed
+Jira identity is a failure, because without it no field-change credit is found.
 
 **Credited work:**
 
@@ -147,11 +143,12 @@ opens a capture itself.
   rebased, merged or pushed in that time are included. It writes
   `periods/<period>/data.json` through `--output --require`, so a period is either
   complete or absent.
-  - When collection fails, the period stays open and the backfill stops until the
-    next run, so rate limits never freeze a year half-collected.
-  - If the same period fails again on a later run, it is closed anyway, with the
-    problem recorded as a `limit`. A failure that always recurs then never blocks
-    older periods.
+  - When collection fails, the period stays open and is retried next run, so no
+    year is frozen half-collected. The backfill moves on to older periods, but
+    stops for the run after a rate limit.
+  - Each run reports the periods that failed and the failing source, which is
+    usually a setup problem such as an unconfirmed Jira identity. The user can fix
+    it, or explicitly close a period with that source's gap stated.
   - Routine warnings, such as local Git's, stay as stated limits.
   - A closed period is never collected again unless the user asks.
 - **`snapshot()`** runs once per run, after closing.
