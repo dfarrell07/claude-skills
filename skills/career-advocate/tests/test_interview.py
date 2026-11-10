@@ -48,14 +48,14 @@ class InterviewTest(unittest.TestCase):
                          ('Mentoring', 'Across teams, coaches and mentors senior engineers.'))
 
     def test_ratings_default_to_gap(self):
-        rated, leads = interview.ratings(draft(r1='**meets**'))
+        rated, leads, steps = interview.ratings(draft(r1='**meets**'))
         self.assertEqual(rated, {'Responsibilities/1': 'meets'})
-        self.assertEqual(leads, {})
+        self.assertEqual((leads, steps), ({}, {}))
 
     def test_leads_become_confirmation_questions(self):
         text = draft(r2='not yet shown').replace(
             '- Rating', '- *(lead)* Built the widget pipeline.\n- Rating')
-        rated, leads = interview.ratings(text)
+        rated, leads, _ = interview.ratings(text)
         self.assertEqual(leads, {'Responsibilities/2': ['Built the widget pipeline.']})
         desired = interview.wanted(interview.criteria(LEVEL), rated, leads)
         self.assertTrue(any('Built the widget pipeline.' in question
@@ -85,6 +85,26 @@ class InterviewTest(unittest.TestCase):
         mentoring = [keys for _, keys in desired.values() if 'Skills/1' in keys]
         self.assertTrue(mentoring)
         self.assertTrue(all('Responsibilities/1' in keys for keys in mentoring))
+
+    def test_inline_leads_and_next_steps(self):
+        text = draft(r2='meets').replace(
+            '- Rating', 'Not shown. *(lead)* Ran the widget guild. Next step: name the '
+            'teams that use it.\n- Rating')
+        rated, leads, steps = interview.ratings(text)
+        self.assertEqual(leads, {'Responsibilities/2': ['Ran the widget guild.']})
+        self.assertEqual(steps, {'Responsibilities/2': 'name the teams that use it.'})
+        desired = interview.wanted(interview.criteria(LEVEL), rated, leads, steps)
+        stretch = [text for text, (priority, _) in desired.items() if priority == 'stretch']
+        self.assertTrue(any('name the teams that use it.' in text for text in stretch))
+        self.assertFalse(any(interview.STRETCH in text for text in stretch))
+
+    def test_wrapped_text_and_collect_steps(self):
+        text = draft(r2='meets').replace(
+            '- Rating', '- *(lead)* Ran the widget guild\n  for two years.\n'
+            'Next step (collect): earlier periods.\n- Rating')
+        rated, leads, steps = interview.ratings(text)
+        self.assertEqual(leads, {'Responsibilities/2': ['Ran the widget guild for two years.']})
+        self.assertEqual(steps, {})
 
     def test_overlapping_criteria_share_one_question(self):
         self.assertIs(interview.BANK['technical impact'][0],

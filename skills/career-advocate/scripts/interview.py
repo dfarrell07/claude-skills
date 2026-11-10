@@ -19,7 +19,22 @@ import sys
 ITEM = re.compile(r'^(\d+)\.\s+([^:]+):\s*(.*)$')
 DRAFT_ITEM = re.compile(r'^###\s+(\d+)\.\s+(.+?)\s*$')
 RATING = re.compile(r'rating:\s*\**\s*(exceeds|meets|not yet shown)', re.I)
-LEAD = re.compile(r'^\s*-\s*\*\(lead\)\*\s*(.+?)\s*$')
+LEAD = re.compile(r'\*\(lead\)\*\s*(.+?)\s*(?:Next step.*)?$')
+NEXT = re.compile(r'Next step:\s*(.+?)\s*$')  # "Next step (collect):" is skipped
+
+
+def logical_lines(text):
+    """Join wrapped Markdown lines so a bullet or paragraph is one line."""
+    joined = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        starts = (not stripped or stripped.startswith(('#', '- ', '* ', '|'))
+                  or ITEM.match(stripped) or not joined or not joined[-1].strip())
+        if starts:
+            joined.append(line)
+        else:
+            joined[-1] += ' ' + stripped
+    return joined
 SOURCE = ('For every answer, give a link or a person who can confirm it: an '
           '"exceeds" needs evidence someone else can check.')
 
@@ -104,32 +119,38 @@ def criteria(level_text):
 
 
 def ratings(draft_text):
-    """Ratings and unverified leads from the draft packet, keyed like criteria().
+    """Ratings, unverified leads and next steps from the draft, keyed like criteria().
 
     A missing rating means a gap.
     """
-    found, leads, section, key = {}, {}, None, None
-    for line in draft_text.splitlines():
+    found, leads, steps, section, key = {}, {}, {}, None, None
+    for line in logical_lines(draft_text):
         if line.startswith('## '):
             section, key = line[3:].strip(), None
         elif (match := DRAFT_ITEM.match(line)) and section:
             key = f'{section}/{match.group(1)}'
-        elif key and (match := LEAD.match(line)):
-            leads.setdefault(key, []).append(match.group(1))
-        elif key and (match := RATING.search(line)):
-            found.setdefault(key, match.group(1).lower())
-    return found, leads
+        elif key:
+            if match := LEAD.search(line):
+                leads.setdefault(key, []).append(match.group(1))
+            if match := NEXT.search(line):
+                steps.setdefault(key, match.group(1))
+            if match := RATING.search(line):
+                found.setdefault(key, match.group(1).lower())
+    return found, leads, steps
 
 
-def wanted(level, rated, leads=None):
+def wanted(level, rated, leads=None, steps=None):
     """Desired questions as {text: (priority, item keys)}."""
-    questions, leads = {}, leads or {}
+    questions, leads, steps = {}, leads or {}, steps or {}
     for key, (name, text) in level.items():
         rating = rated.get(key, 'not yet shown')
         if rating == 'exceeds':
             continue
         if rating == 'meets':
-            texts, priority = [f'{name}: {STRETCH}'], 'stretch'
+            step = steps.get(key, '')
+            texts = [f'{name} meets the bar. To show it exceeds: {step} What can '
+                     'you point to?' if step else f'{name}: {STRETCH}']
+            priority = 'stretch'
         else:
             texts = BANK.get(name.lower()) or [
                 f'The Principal criterion says: "{text}" Describe one or two times '
@@ -216,8 +237,8 @@ def main(argv=None):
     if not level:
         sys.exit(f'No numbered criteria found in {args.level}')
     state = json.loads(args.state.read_text()) if args.state.exists() else {}
-    rated, leads = ratings(args.draft.read_text())
-    added, retired = update(state, wanted(level, rated, leads))
+    rated, leads, steps = ratings(args.draft.read_text())
+    added, retired = update(state, wanted(level, rated, leads, steps))
     args.state.write_text(json.dumps(state, indent=2) + '\n')
     args.out.write_text(render(state, level))
     open_count = sum(1 for q in state['questions'] if q['status'] == 'open')
