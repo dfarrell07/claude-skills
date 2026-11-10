@@ -60,7 +60,7 @@ so an interrupted backfill resumes where it stopped.
 ### 2. Evidence (career-advocate)
 
 The evidence is the closed periods' captures (`periods/<period>/data.json`) and
-`recorded.md`. One small module, `scripts/evidence.py`, is the layer's only
+`recorded.md`. One small module, `scripts/store.py`, is the layer's only
 interface:
 
 - `references(period)`: `credited()` for that capture,
@@ -151,7 +151,7 @@ quarterly, weekly and discovery modes cover them.
    `credited()` with the digest switched over to it. Then time one real
    calendar-year collection and read its coverage. If it is unusable, fix
    work-summary further; never add a second collector here.
-2. **career-advocate.** Build the store, periods, backfill, `evidence.py`,
+2. **career-advocate.** Build the store, periods, backfill, `store.py`,
    `check.py`, setup, fold, review and render, with unit tests for the two
    scripts.
 3. **Removal.** Delete `scripts/collect-*.sh`, `scripts/scan-repos.sh`, `lenses/`,
