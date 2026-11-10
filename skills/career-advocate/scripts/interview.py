@@ -157,8 +157,16 @@ def wanted(level, rated, leads=None, steps=None):
                 'you did this: what you did, which teams or components it spanned, '
                 'and what changed.']
             priority = 'gap'
-        texts = texts + [f'Your notes say: "{lead}" Who or what confirms it, and what '
-                         'exactly was your part?' for lead in leads.get(key, [])]
+        step = steps.get(key, '')
+        if step.lower().startswith('interview'):
+            step = ''
+        for lead in leads.get(key, []):
+            if 'http' not in lead:
+                texts = texts + [f'Your notes say: "{lead}" Who or what confirms it, '
+                                 'and what exactly was your part?']
+            elif step:
+                # The link already shows the work; ask for what it cannot show.
+                texts = texts + [f'About "{lead}": {step} What can you point to?']
         for question in texts:
             old_priority, keys = questions.get(question, (priority, []))
             best = 'gap' if 'gap' in (old_priority, priority) else 'stretch'
