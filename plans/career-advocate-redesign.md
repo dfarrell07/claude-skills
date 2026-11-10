@@ -45,9 +45,10 @@ Five work-summary changes come first.
   `created`, which never changes, so paging stays stable while old items are still
   being updated.
 - **Jira `recent` query:** add `created <= until`.
-- **Local commits:** the git call (`local_sources.py`) selects by commit time from
-  the window start, with no end bound, so commits amended or rebased later are
-  found. The post-filter (`work_summary.py` after local collection) keeps commits
+- **Local commits:** the git call (`local_sources.py`) selects non-merge commits by
+  commit time from the window start, with no end bound, so commits amended or
+  rebased later are found. `--no-merges` keeps out merge-button commits, which
+  carry the user's email but record someone else's work. The post-filter (`work_summary.py` after local collection) keeps commits
   *authored* in the window, so each commit lands in exactly one period's capture.
 
 Today a 2016 window sweeps every item from then to now, exhausting caps and rate
@@ -74,8 +75,9 @@ collector's deliberately wider crawl, not credit.
 
 **5. `--require <sources>`.** `problem()` (`github_sources.py`) records a kind:
 
-- `transient` for failed reads and the exhausted request budget,
-- `limit` for permanent caps such as the 10,000-row cap.
+- `transient`: only failed reads and rate-limit errors, which a later run can fix,
+- `limit`: everything else, including the request budget, the 10,000-row cap and
+  count mismatches, which recur on every run.
 
 `work-summary.sh` exits non-zero and writes nothing when a required source is
 unavailable or has a `transient` problem. A `limit` is recorded as a coverage
@@ -89,12 +91,8 @@ limit.
   - Neither does a comment that `note()` empties out, such as `/retest`.
 - **Jira:** a ticket with the user's own comment or field change
   (`public_field_events`) inside the window. `updatedBy()` only finds candidates.
-- **Local commits:** a non-merge commit by one of the user's emails, *authored*
-  in the window. A merge-button commit carries the user's email but records
-  someone else's work.
-  - Copies in one capture with the same author, author time and subject, such as
-    cherry-picks and backports, count as one commit.
-  - Deduplication prefers a copy with a web URL.
+- **Local commits:** a commit by one of the user's emails, *authored* in the
+  window.
 
 **Units** are connected components over the credited work of all given captures.
 Two items join when:
@@ -103,12 +101,11 @@ Two items join when:
 - they are the user's authored PRs in one repository, with the same `family()`
   title key, created within 90 days of the group's earliest PR. That covers a fix
   and its backports, never a chain of monthly releases.
-- one is a local commit whose remote is the other's repository and whose subject
-  matches the other (a PR), authored no more than 90 days before that PR's merge
-  or close. Commits usually predate their PR, and rebases keep the author time.
 
-A repository's remaining commits in one period form one unit that never joins
-anything. That way a multi-commit branch counts once, not once per commit.
+A repository's local commits in one period form one unit that never joins
+anything. It is the evidence for work that has no PR, such as direct pushes or
+Gerrit-era changes. Where the same work also has a PR, arguments cite the PR.
+The packet has no counts, so overlap inflates nothing.
 
 A credited ticket, and a credited review or comment on someone else's PR, are each
 their own unit. They never join authored work. Review and coordination are cited
@@ -147,8 +144,9 @@ opens a capture itself.
   - Routine warnings, such as local Git's, stay as stated limits.
   - A closed period is never collected again unless the user asks.
 - **`snapshot()`** runs once per run, after closing:
-  - It collects the current window, from the last closed period's end to today,
-    into `periods/current/data.json`, overwritten each run. Its units are marked
+  - It collects the current window into `periods/current/data.json`, overwritten
+    each run. The window runs from the end of the newest period old enough to
+    close, whether or not it has closed, to today. Its units are marked
     provisional, which keeps the "operating now" evidence current.
   - It runs the JSON digest once over every capture and adds the `recorded.md`
     entries.
@@ -221,7 +219,8 @@ has been sustained. One unit may support several clauses.
      challenge only by editing the argument, for example by adding evidence.
    - Once the reviewer accepts a clause, it runs `packet.py stamp <key>`. That
      command runs the checkable rules and refuses if any fails. Otherwise it stores
-     a hash of the clause's text, rating, argument and the cited units' hashes.
+     a hash of the clause's text, rating, argument and everything `resolve()`
+     returns for its references, recorded entries included.
 4. **Render.** `packet.py render` refuses unless every stamp matches a fresh hash,
    so no edit and no evidence change reaches the packet unreviewed. It builds the
    packet from `mapping.json` and `resolve()` alone, and lists each unit once per
