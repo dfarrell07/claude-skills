@@ -12,8 +12,9 @@ Senior assessment.
 Today's skill has its own weaker collector. In July 2026 it credited a Kubernetes
 rebase as authored work, and it cannot see its private data once installed. Its
 replacement is a thin layer over `work-summary`: work-summary finds what the user
-did and decides what counts as the user's own work; career-advocate keeps that
-evidence for every period and argues it against the criteria.
+did, decides what counts as the user's own work and groups it into units;
+career-advocate keeps that evidence for every period and argues it against the
+criteria.
 
 ## Layers
 
@@ -26,7 +27,8 @@ modules:
 
 - `work-summary.sh --since … --until … --author-email … --output data.json`
   collects a window.
-- `render-report.sh --credited data.json` prints the credited work as JSON.
+- `render-report.sh --credited p1.json p2.json …` prints, as JSON, the credited
+  work across all the given captures, grouped into units.
 
 Scripts resolve at `$SKILL_DIR/../work-summary/scripts/`, because both skills ship
 in one plugin. Find `SKILL_DIR` the way work-summary does, not with `BASH_SOURCE`.
@@ -35,47 +37,30 @@ Three work-summary changes come first.
 
 **1. Bound searches by when the work happened.** In explicit-window mode:
 
-- Cap creation time at the window end. For GitHub `recent_*` searches, this means
-  the creation-time partitioning (`github_sources.py` `search`) spans epoch to
-  `until` instead of epoch to now, with no second `created:` qualifier in the
-  query. For the Jira `recent` query, add `created <= until`. Today a 2016 window
-  sweeps every item from then to now, exhausting caps and rate limits. An item
-  created after a window cannot hold activity in it.
-- Select local commits by commit time from the window start, with no end bound,
-  in both the git call (`local_sources.py`) and the post-filter
+- **GitHub `recent_*` searches.** Put `created:<=until` in the root query. If that
+  query overflows, partition the base query by `created:a..b` over epoch to
+  `until` (`github_sources.py` `search`), so the partition totals match the root.
+- **Jira `recent` query.** Add `created <= until`.
+- **Local commits.** Select by commit time from the window start with no end
+  bound. Do this in both the git call (`local_sources.py`) and the post-filter
   (`work_summary.py` after local collection). This keeps commits written in the
   window but amended or rebased later.
 
+Today a 2016 window sweeps every item from then to now and exhausts caps and rate
+limits. An item created after a window cannot hold activity in it.
+
 **2. `--author-email` (repeatable).** Sets the existing but unwired `author_emails`
 in `collect_local`. Today only each repository's current `user.email` and the
-GitHub profile count, so commits under the user's earlier addresses are mere name
-matches and most career-long local evidence is lost.
+GitHub profile count. Commits under the user's earlier addresses become mere name
+matches, and most career-long local evidence is lost.
 
-**3. One credit rule, `credited(data)`.** Extract it from the digest's filters
-(`Digest` events and merged PRs, `jira()` and `commits()` in `candidates.py`),
-switch the digest to it, and expose it as `--credited`.
-`references.active_items` and `active_tickets` stay as they are: they set the
-collector's deliberately wider crawl, not credit.
+**3. One credit rule, `credited()`.** Extract it from the digest's filters
+(`Digest` events and merged PRs, `jira()` and `commits()` in `candidates.py`).
+Switch the digest to it, and expose it as `--credited`. `references.active_items`
+and `active_tickets` stay as they are: they set the collector's deliberately
+wider crawl, not credit.
 
-It returns one record per unit of work, holding facts only:
-
-- member links, and context links (related links that are not credited),
-- title,
-- the user's actions and their dates,
-- Jira's `sensitive` flag.
-
-Units are built only from credited work, using only what the capture holds:
-
-- The user's authored PRs in one repository that share the digest's `family()`
-  title key form one unit, so a fix and its per-branch backports count once.
-- A local commit joins a PR unit when its subject matches. Otherwise it is its own
-  unit. Its link is a commit URL built from its remote, or, with no web remote, a
-  local reference marked "not publicly verifiable".
-- A credited ticket, and a credited review or comment on someone else's PR, are
-  each their own unit, because that is how leadership through review and
-  coordination is cited.
-
-Credited work is:
+**Credited work:**
 
 - **GitHub or GitLab:** an item with a substantive event by the user in the window
   (`candidates.SUBSTANTIVE`, so not mentions, subscriptions or labels), or an
@@ -86,6 +71,30 @@ Credited work is:
   window. Copies with the same author, author time and subject are one commit, so
   an amended, cherry-picked or rebased copy is credited once, in the period it was
   written.
+
+**Units.** Grouping uses only the user's credited work and what the captures hold:
+
+- Within one capture, the user's authored PRs in one repository that share the
+  digest's `family()` title key form one unit, so a fix and its per-branch
+  backports count once.
+- A local commit joins a PR unit when its subject matches. Otherwise it is its own
+  unit. Its link is a commit URL built from its remote. With no web remote, it is a
+  local reference marked "not publicly verifiable".
+- A credited ticket, and a credited review or comment on someone else's PR, are
+  each their own unit and never join authored work. Leadership through review and
+  coordination is cited this way.
+- Across captures, units merge only when they share a member link, so one PR
+  worked on in two periods is one unit with all its dated actions.
+
+**Unit contents.** Each unit holds facts only:
+
+- member links,
+- title,
+- for authored PRs, the description line the digest already extracts
+  (`summary_line`),
+- the user's actions and their dates.
+
+Sensitive Jira tickets carry no title, so it can never reach an argument.
 
 ### 2. Evidence (career-advocate)
 
@@ -100,16 +109,10 @@ quarter is neither stored nor mapped.
   `periods/<period>/data.json`, with coverage gaps as the period's stated limits.
   A closed period is never collected again unless the user asks. Each run lists
   the periods with gaps so the user can decide.
-- **`index()`** runs `--credited` once per closed period, a few seconds each. It
-  merges records into career units: records from any period that share a member
-  link, or a repository and `family()` key, are one unit with all their dated
-  actions. A later fix to the credit rule then applies to every period without
-  recollecting.
-- **`records(source)`** returns the units a period contributes, or the entries in
-  `recorded.md`, with a hash of exactly that output for the fold step.
-- **`resolve(ref)`** looks up a member link or slug and returns its one career unit,
-  or the recorded entry with its source kind. Context links never resolve, so
-  others' work cannot be cited.
+- **`units()`** runs `--credited` once over every closed period's capture, and
+  adds the `recorded.md` entries with their source kind. A later fix to the credit
+  rule then applies to every period without recollecting.
+- **`resolve(ref)`** returns the unit or entry that a member link or slug names.
 
 **`recorded.md`** holds what no collector sees: mentoring, feedback quotes, talks,
 design documents, adoption by other teams, decisions influenced, and older work on
@@ -123,9 +126,9 @@ Gerrit, mailing lists or other Jira sites.
 
 ### 3. Mapping (career-advocate)
 
-**Criteria.** At setup, read the Principal level document and split each numbered
-item in each of its sections (responsibilities, skills, and any metrics or goals)
-into clauses. Review the split with the user. Write it to `mapping.json`, which is
+**Criteria.** At setup, read the Principal level document. Split each numbered item
+in each of its sections (responsibilities, skills, and any metrics or goals) into
+clauses, and review the split with the user. Write it to `mapping.json`, which is
 then the only copy of the criteria, as `{key: {text, rating, argument}}`. A key
 names the section, item and clause, such as `Skills/10.d`. Keys and text never
 change. A clause's references are the links and slugs written in its argument.
@@ -136,41 +139,36 @@ change. A clause's references are the links and slugs written in its argument.
 - **meets**: the evidence shows the clause as written,
 - **not yet shown**: also names the specific evidence or action that would show it.
 
-A claim about scope, reach, adoption or impact cites a source that shows it, usually
-a recorded entry with a named source, because credited records show only what the
+Claims about scope, reach, adoption or impact must cite a source that shows them,
+usually a recorded entry with a named source. Credited units show only what the
 user did. Arguments answer the clause in its own words. They lead with the most
 recent work, which shows the user operates at Principal now, and use earlier
 periods to show it has been sustained. One unit may support several clauses.
 
 **Each run:**
 
-1. **Close.** In the background, newest first, `close()` every ended period that
-   is not yet closed.
-2. **Fold.** `mapping.json` keeps the last folded `records()` hash of each source:
-   each period, and `recorded.md`. One source at a time, newest first, fold every
-   source whose hash is missing or changed. Read `records(source)`, add references
-   to clause arguments, and save. A newly closed period, an edited
-   `recorded.md` and a credit-rule fix are all handled this way. Then rewrite
-   arguments and ratings.
+1. **Close.** In the background, newest first, `close()` every ended period that is
+   not yet closed.
+2. **Fold.** `mapping.json` keeps the set of units and entries already folded.
+   Read the rest of `units()`, newest first, in batches that fit in context. Add
+   references to clause arguments, save after each batch, then rewrite arguments
+   and ratings.
 3. **Review.** A reviewer subagent acts as a skeptical committee member. For each
    clause it sees only the clause text, the argument and `resolve()` of its
    references. It downgrades anything that breaks the rating rules above. The main
-   agent may answer a challenge only by editing the argument, for example adding
+   agent may answer a challenge only by editing the argument, for example by adding
    evidence, and every edit is reviewed again. When nothing is challenged, the
    reviewer stamps each clause with a hash of exactly what it saw: text, rating,
    argument and resolved evidence.
 4. **Render.** `scripts/packet.py render(mapping)` refuses unless:
    - every clause's stamp matches a fresh hash of the same things, which covers
-     edits, new evidence and credit-rule changes,
-   - every reference resolves,
+     edits, new evidence, credit-rule changes and broken references,
    - every "meets" or "exceeds" cites at least one reference,
    - no "exceeds" rests only on "own account" entries or work that is "not
      publicly verifiable".
 
-   It then builds the packet from `mapping.json` and `resolve()` alone. Each
-   reference resolves to one career unit, so each unit is listed once per clause.
-   For tickets flagged `sensitive`, it prints only the key, never the title. The
-   packet holds:
+   It then builds the packet from `mapping.json` and `resolve()` alone, listing
+   each unit once per clause:
    - a case summary assembled from the reviewed ratings and arguments,
    - one section per section of the level document, in its order, with each item
      as a subsection holding its clause arguments, links and any next steps,
@@ -199,19 +197,25 @@ hand. Nothing in the store is committed; tests use synthetic people and criteria
 
 ## Steps
 
-1. **work-summary.** Make the three changes, each with tests: window bounds,
-   `--author-email`, and `credited()` with `--credited` and the digest switched to
-   it. Captures record a format version. A saved synthetic capture for each version
-   is tested against `credited()`, so stored periods keep working as the collector
-   changes. Then time one real calendar-year collection and read its coverage. If it is
-   unusable, fix work-summary further; never add a second collector here.
+1. **work-summary.**
+   - Make the three changes, each with tests: window bounds, `--author-email`, and
+     `credited()` with multi-capture `--credited`. Switch the digest to
+     `credited()`.
+   - Have captures record a format version. Test each version's saved synthetic
+     capture against `credited()`, so stored periods keep working as the
+     collector changes.
+   - Time one real calendar-year collection and read its coverage. If it is
+     unusable, fix work-summary further; never add a second collector here.
 2. **career-advocate.** Build `store.py` and `packet.py` with unit tests on
    synthetic captures, then setup, fold and review.
-3. **Removal.** Delete `scripts/collect-*.sh`, `scripts/scan-repos.sh`, `lenses/`,
-   `reference/analysis-guide.md`, `tests/TEST-PLAN.md` and the `private/` gitignore
-   entry. Drop the `assess`, `meeting` and `scan` modes; work-summary's quarterly,
-   weekly and discovery modes cover them. Rewrite SKILL.md's description and
-   argument hint, and update `.claude/SKILLS.md` and the README.
+3. **Removal.**
+   - Delete `scripts/collect-*.sh`, `scripts/scan-repos.sh`, `lenses/`,
+     `reference/analysis-guide.md` and `tests/TEST-PLAN.md`.
+   - Remove the `private/` gitignore entry.
+   - Drop the `assess`, `meeting` and `scan` modes; work-summary's quarterly,
+     weekly and discovery modes cover them.
+   - Rewrite SKILL.md's description and argument hint, and update
+     `.claude/SKILLS.md` and the README.
 4. **Qualification.** Build the real career packet privately and compare it with
    the July draft. It passes when every claim is traceable, nothing is inflated by
    rebases or volume, and every clause is argued or its gap is named with a next
