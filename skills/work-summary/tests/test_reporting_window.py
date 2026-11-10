@@ -136,13 +136,20 @@ elif 'search/issues' in args:
     query = next(arg[2:] for arg in args if arg.startswith('q='))
     authored = 'is:pr author:' in query and 'updated:>=' in query
     rows = json.loads(os.environ.get('GH_ROWS', '[]')) if authored else []
-    if 'created:' in query:
-        if os.environ.get('GH_RECOVERY_FAIL'):
-            sys.exit(1)
-        lower, upper = [datetime.fromisoformat(at.replace('Z', '+00:00'))
-                        for at in query.split('created:')[1].split(' ')[0].split('..')]
-        rows = [row for row in rows if lower <= datetime.fromisoformat(row['created_at'].replace('Z', '+00:00')) <= upper]
-    value = {'total_count': len(rows), 'incomplete_results': bool(os.environ.get('GH_RECOVERY')) and 'created:' not in query and bool(rows),
+    def created(row):
+        return datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+    partition = False
+    for qualifier in [part[8:] for part in query.split() if part.startswith('created:')]:
+        if qualifier.startswith('<='):
+            bound = datetime.fromisoformat(qualifier[2:].replace('Z', '+00:00'))
+            rows = [row for row in rows if created(row) <= bound]
+        else:
+            partition = True
+            if os.environ.get('GH_RECOVERY_FAIL'):
+                sys.exit(1)
+            lower, upper = [datetime.fromisoformat(at.replace('Z', '+00:00')) for at in qualifier.split('..')]
+            rows = [row for row in rows if lower <= created(row) <= upper]
+    value = {'total_count': len(rows), 'incomplete_results': bool(os.environ.get('GH_RECOVERY')) and not partition and bool(rows),
              'items': rows}
 elif 'search/commits' in args:
     value = {'total_count': 0, 'incomplete_results': False, 'items': []}
@@ -253,6 +260,23 @@ print(json.dumps(value))
         calls = [json.loads(line) for line in (self.root / 'gh.log').read_text().splitlines()]
         queries = [arg for call in calls for arg in call if arg.startswith('q=') and 'updated:' in arg]
         self.assertTrue(any('updated:>=2026-01-01T00:00:00Z' in q for q in queries))
+
+    def test_explicit_window_skips_items_created_after_it(self):
+        def row(number, created):
+            return {'html_url': f'https://github.com/org/repo/pull/{number}', 'number': number,
+                    'title': f'Event {number}', 'state': 'open', 'created_at': created,
+                    'updated_at': '2026-05-01T00:00:00Z', 'closed_at': None,
+                    'pull_request': {'merged_at': None}, 'user': {'login': 'test-user'}}
+        self.env['GH_ROWS'] = json.dumps([row(1, '2026-02-01T00:00:00Z'), row(2, '2026-04-02T00:00:00Z')])
+        result = self.run_collect('--since', '2026-01-01T00:00:00Z', '--until', '2026-04-01T00:00:00Z',
+                                  '--root', str(self.home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        numbers = {row['number'] for row in data['github']['prs'] + data['github']['context_prs']}
+        self.assertEqual(numbers, {1})
+        calls = [json.loads(line) for line in (self.root / 'gh.log').read_text().splitlines()]
+        queries = [arg for call in calls for arg in call if arg.startswith('q=') and 'updated:' in arg]
+        self.assertTrue(all('created:<=' in q for q in queries))
 
     def test_capped_inventory_recovers_through_creation_partitions(self):
         self.env['GH_ROWS'] = json.dumps([

@@ -82,7 +82,8 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         warn("GitHub CLI is missing; GitHub activity is unavailable.")
     if github_user:
         progress("GitHub: searching your PRs, reviews, comments and open work")
-        ledger = Github(api, host, github_user, start, end, warn)
+        ledger = Github(api, host, github_user, start, end, warn,
+                        bound_creation=window.get('window_kind') == 'explicit')
         phase("GitHub discovery", lambda: ledger.discover(github), lambda: None)
 
     progress("scanning local repositories")
