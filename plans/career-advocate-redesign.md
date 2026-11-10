@@ -73,11 +73,15 @@ checkout may be gone years later, so this can only be decided while collecting.
 `references.active_items` and `active_tickets` stay as they are: they set the
 collector's deliberately wider crawl, not credit.
 
-**5. `--require <sources>`.** `problem()` (`github_sources.py`) records a kind:
+**5. `--require <sources>`.** `problem()` (`github_sources.py`) and Jira's `gap()`
+(`jira_sources.py`) record a kind:
 
 - `transient`: only failed reads and rate-limit errors, which a later run can fix,
 - `limit`: everything else, including the request budget, the 10,000-row cap and
   count mismatches, which recur on every run.
+
+When Jira is required, an unconfirmed Jira identity is `transient`, because
+without it no field-change credit is found.
 
 `work-summary.sh` exits non-zero and writes nothing when a required source is
 unavailable or has a `transient` problem. A `limit` is recorded as a coverage
@@ -141,15 +145,22 @@ opens a capture itself.
   complete or absent.
   - When collection fails, the period stays open and the backfill stops until the
     next run, so rate limits never freeze a year half-collected.
+  - If the same period fails again on a later run, it is closed anyway with the
+    problem recorded as a `limit`, so a failure that always recurs never blocks
+    older periods.
   - Routine warnings, such as local Git's, stay as stated limits.
   - A closed period is never collected again unless the user asks.
 - **`snapshot()`** runs once per run, after closing:
   - It collects the current window into `periods/current/data.json`, overwritten
-    each run. The window runs from the end of the newest period old enough to
-    close, whether or not it has closed, to today. Its units are marked
+    each run. The window runs from the end of the newest closed period to today,
+    or, before any period has closed, from the newest period old enough to close.
+    Evidence from a period whose close failed therefore stays in the window. Its units are marked
     provisional, which keeps the "operating now" evidence current.
-  - It runs the JSON digest once over every capture and adds the `recorded.md`
-    entries.
+  - It runs the JSON digest once over every capture, and adds each `recorded.md`
+    entry as an ordinary unit: its slug as the member, plus date, title, source
+    and body. Every unit gets a content hash and a `verifiable` field: true for a
+    web link or a named source. Fold, `resolve()`, stamp and the rules then handle
+    one kind of evidence, and new or edited entries are folded automatically.
   - It writes `units.json`: the units with a content hash each, each period's
     limits, and the ended periods since `start_year` with no capture yet.
 
