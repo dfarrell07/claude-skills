@@ -262,24 +262,18 @@ the store is committed, and tests use synthetic people and criteria.
 
 ## Steps
 
-1. **work-summary.**
-   - Make the five changes, each with tests. Test a saved older capture through the
-     JSON digest, so stored periods keep working as the collector changes.
-   - Then time one real calendar-year collection and read its coverage. If it is
-     unusable, fix work-summary further; never add a second collector here.
-2. **career-advocate.** Build `store.py` and `packet.py`, with unit tests on
-   synthetic captures. Then build setup, fold and review.
-3. **Removal.**
-   - Delete `scripts/collect-*.sh`, `scripts/scan-repos.sh`, `lenses/`,
-     `reference/analysis-guide.md` and `tests/TEST-PLAN.md`, and remove the
-     `private/` gitignore entry.
-   - Drop the `assess`, `meeting` and `scan` modes; work-summary's quarterly,
-     weekly and discovery modes cover them.
-   - Rewrite SKILL.md's description and argument hint, and update
-     `.claude/SKILLS.md` and the README.
-4. **Qualification.** Build the real career packet privately and compare it with
-   the July 2026 draft, which credited a Kubernetes rebase as authored work. It
-   passes when:
-   - every claim is traceable,
-   - nothing is inflated by rebases or volume,
-   - every clause is argued, or its gap is named with a next step.
+1. **Collect and draft now, with today's work-summary.** Collect real quarterly and
+   yearly windows into the store with the existing explicit-window collector.
+   Validate each one against known work: PRs, reviews, Jira and commits that should
+   appear. Write a manual draft packet from the digests, organized by the level
+   document's sections, and keep improving it as periods arrive.
+2. **Fix collection where real runs fail.** Make only the work-summary changes
+   above that the real runs show are needed, each with tests. The window bound and
+   `--author-email` are expected first. Never add a second collector here.
+3. **Automate.** Build `store.py` and `packet.py` once the manual draft shows which
+   parts are worth automating, then remove the old collector, lenses and modes, and
+   update the docs.
+4. **Qualification.** Compare the packet with the July 2026 draft, which credited a
+   Kubernetes rebase as authored work. It passes when every claim is traceable,
+   nothing is inflated by rebases or volume, and every clause is argued or its gap
+   is named with a next step.
