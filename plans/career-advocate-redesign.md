@@ -35,7 +35,7 @@ modules:
 Scripts resolve at `$SKILL_DIR/../work-summary/scripts/`, because both skills ship
 in one plugin. Find `SKILL_DIR` the way work-summary does, not with `BASH_SOURCE`.
 
-Four work-summary changes come first.
+Five work-summary changes come first.
 
 **1. Bound searches by when the work happened.** In explicit-window mode:
 
@@ -58,6 +58,8 @@ matches, and most career-long local evidence is lost.
 **3. Commit web URLs at collection time.** For each remote, run
 `git rev-list --remotes=<name>` once. Store a commit's web URL only when a remote
 whose set contains the commit is on GitHub or GitLab, whose URL format is known.
+Any other commit is referenced as `repo@hash`, which resolves but is not
+verifiable.
 Captures drop refs today (`work_summary.py` after local collection), and the
 checkout may be gone years later, so this can only be decided while collecting.
 
@@ -67,6 +69,11 @@ checkout may be gone years later, so this can only be decided while collecting.
 `references.active_items` and `active_tickets` stay as they are: they set the
 collector's deliberately wider crawl, not credit.
 
+**5. `--require <sources>`.** `work-summary.sh` exits non-zero and writes nothing
+when a required source is unavailable or failed transiently, for example a failed
+page or a rate limit. A permanent search cap is recorded as a coverage limit
+instead.
+
 **Credited work:**
 
 - **GitHub or GitLab:** an item with a substantive event by the user in the window
@@ -75,8 +82,9 @@ collector's deliberately wider crawl, not credit.
   - Neither does a comment that `note()` empties out, such as `/retest`.
 - **Jira:** a ticket with the user's own comment or field change
   (`public_field_events`) inside the window. `updatedBy()` only finds candidates.
-- **Local commits:** a commit by one of the user's emails, *authored* in the
-  window.
+- **Local commits:** a non-merge commit by one of the user's emails, *authored*
+  in the window. A merge-button commit carries the user's email but records
+  someone else's work.
   - Copies with the same author, author time and subject are one commit.
   - It is credited once, in the period it was written.
   - Deduplication prefers a copy with a web URL.
@@ -100,7 +108,8 @@ this way.
 
 - member links,
 - title,
-- for authored PRs, the description line (`summary_line`),
+- for authored PRs, the description line (`summary_line`) and the outcome at
+  collection: merged with its date, closed unmerged, or open,
 - the user's actions, each with its date and either its `note()` excerpt or the Jira
   field names it changed.
 
@@ -109,8 +118,9 @@ title or an excerpt.
 
 ### 2. Evidence (career-advocate)
 
-**Periods.** `config.json` holds `start_year`, `quarterly_from`, the user's `emails`
-and repository `roots`. Each year before `quarterly_from` is one period: a coarser
+**Periods.** `config.json` holds `start_year`, `quarterly_from`, the user's `emails`,
+repository `roots`, and the sources to `require`: by default GitHub and local Git,
+plus Jira once it is set up. Each year before `quarterly_from` is one period: a coarser
 pass with the same collector over a longer window. From then on, periods are
 quarters.
 
@@ -119,12 +129,11 @@ opens a capture itself.
 
 - **`close(period)`** collects a period one full quarter after it ends, so commits
   rebased, merged or pushed in that time are included. It writes
-  `periods/<period>/data.json` through `--output`, so a period is either complete
-  or absent.
-  - If GitHub or local Git reports `unavailable`, the capture is discarded and the
-    period stays open for the next run.
-  - A `partial` source, which local Git reports for routine warnings, is kept as a
-    stated limit.
+  `periods/<period>/data.json` through `--output --require`, so a period is either
+  complete or absent.
+  - When collection fails, the period stays open and the backfill stops until the
+    next run, so rate limits never freeze a year half-collected.
+  - Routine warnings, such as local Git's, stay as stated limits.
   - A closed period is never collected again unless the user asks.
 - **`snapshot()`** runs once per run, after closing:
   - It collects the current window, from the last closed period's end to today,
@@ -188,11 +197,10 @@ has been sustained. One unit may support several clauses.
 
 1. **Close and snapshot.** Close every eligible period, newest first, then run
    `snapshot()`.
-2. **Fold.** `mapping.json` keeps `{member link or slug: unit hash}` for everything
-   folded.
-   - Read units that are new or whose hash changed, newest first, in batches that
-     fit in context. This includes a PR that gained actions or a unit that merged
-     with another.
+2. **Fold.** `mapping.json` keeps the set of unit hashes already folded.
+   - Read every unit whose hash is not in the set, newest first, in batches that
+     fit in context. That covers new units, units that gained actions and units
+     that merged.
    - Add references to clause arguments, and save after each batch.
    - Then rewrite arguments and ratings.
 3. **Review.** A reviewer subagent acts as a skeptical committee member.
@@ -243,7 +251,7 @@ and tests use synthetic people and criteria.
 ## Steps
 
 1. **work-summary.**
-   - Make the four changes, each with tests.
+   - Make the five changes, each with tests.
    - Captures record a format version. A saved older-format capture is tested
      through the JSON digest, so stored periods keep working as the collector
      changes.
