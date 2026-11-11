@@ -266,10 +266,14 @@ the store is committed, and tests use synthetic people and criteria.
    yearly windows into the store with the existing explicit-window collector.
    Validate each one against known work: PRs, reviews, Jira and commits that should
    appear. Write a manual draft packet from the digests, organized by the level
-   document's sections, and keep improving it as periods arrive.
+   document's sections, and keep improving it as periods arrive. `interview.py`
+   turns the draft's gaps, "meets" items and unconfirmed leads into a standing list
+   of questions; answers go into `recorded.md`.
 2. **Fix collection where real runs fail.** Make only the work-summary changes
    above that the real runs show are needed, each with tests. The window bound and
    `--author-email` are expected first. Never add a second collector here.
+   Done so far: the window bound (GitHub only), and a digest fix that counts a
+   commit once across clones and amended copies.
 3. **Automate.** Build `store.py` and `packet.py` once the manual draft shows which
    parts are worth automating, then remove the old collector, lenses and modes, and
    update the docs.
