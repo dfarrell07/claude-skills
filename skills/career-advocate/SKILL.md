@@ -53,8 +53,9 @@ the bar, say so; where it doesn't, name the gap and the next step.
    `reference/evidence-sources.md`. Save raw findings with their source URLs under
    `research/`. Record the person's own statements in `recorded.md`, labelled as
    their account until a link or a named person confirms them.
-3. **Draft.** Write `packets/draft.md` with one subsection per criterion, in the
-   level document's order. Each subsection gets:
+3. **Draft.** Write `packets/draft.md` with a `## <section>` per level section and
+   a `### N. Name` subsection per criterion, numbered as in the level document.
+   Each subsection gets:
    - the argument;
    - the evidence, as links or `file:line`;
    - one rating line, `- Rating: exceeds`, `- Rating: meets` or

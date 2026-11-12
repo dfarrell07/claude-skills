@@ -14,8 +14,8 @@ reviewer plays four seats:
    unsupported, and criteria never argued.
 2. **The person's manager arguing the case:** impact that is undersold, and work
    in the evidence that never reached the draft.
-3. **An engineer one or two levels above the target:** whether the claimed scope
-   and ratings meet what the criteria actually say.
+3. **A senior expert in the person's field:** whether the claimed scope and ratings
+   meet what the criteria actually say.
 4. **A stakeholder from a partner function:** for example security, release, docs,
    QE or another team. Their cross-team impact is often invisible.
 

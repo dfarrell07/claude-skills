@@ -126,6 +126,12 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(len(about), 2)
         self.assertTrue(all('name the teams that use it.' in text for text in about))
 
+    def test_duplicate_criteria_and_conflicting_ratings_are_errors(self):
+        with self.assertRaises(ValueError):
+            interview.criteria(LEVEL + '1. Again: Duplicate number.\n')
+        with self.assertRaises(ValueError):
+            interview.ratings(draft(r1='exceeds') + '- Rating: not yet shown.\n')
+
     def test_linked_lead_without_a_step_still_needs_confirmation(self):
         text = draft(r2='meets').replace(
             '- Rating', '- *(lead)* Ran it: https://example.test/1\n- Rating')

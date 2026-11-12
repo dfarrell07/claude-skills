@@ -1,15 +1,16 @@
 #!/bin/bash
-# Who first authored, and who changes, the GitHub Actions workflows in a set of
+# Who authored, and who changes, the GitHub Actions workflows in a set of
 # repositories: sourced, reproducible evidence of CI ownership.
 #
 # Usage: workflow-authorship.sh <github-login> <owner/repo>...
 #
-# For each .yml/.yaml workflow on the default branch it reads the file's whole
-# history. "first" is the oldest recorded author of the current path (a rename
-# credits the renamer, so confirm creation before claiming it). "changes" are
-# file changes, so a commit that touches two workflows counts twice. Bots (logins
-# ending in [bot], plus BOTS, a space-separated list) and commits with no linked
-# GitHub account are left out of the human totals; the unlinked ones are reported.
+# Reads the whole history of each .yml/.yaml workflow on the default branch.
+# oldest_path_author counts workflows whose oldest recorded author on the current
+# path is the person; a rename credits the renamer, so confirm creation before
+# claiming it. *_file_changes count file changes, so a commit that touches two
+# workflows counts twice. Bots (logins ending in [bot], plus BOTS, a
+# space-separated list) and commits with no linked GitHub account are left out of
+# the human totals; the unlinked ones are reported.
 set -euo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 <github-login> <owner/repo>..." >&2; exit 2; }
 user=$(tr '[:upper:]' '[:lower:]' <<<"$1"); shift
@@ -33,7 +34,7 @@ for repo in "$@"; do
         mine=$((mine + $(jq --arg u "$user" '[.[] | select(ascii_downcase == $u)] | length' <<<"$authors")))
         unlinked=$((unlinked + $(jq '[.[] | select(. == "?")] | length' <<<"$authors")))
     done <<<"$paths"
-    echo "$repo workflows=$files first_authored=$first human_file_changes=$human user_file_changes=$mine unlinked=$unlinked"
+    echo "$repo workflows=$files oldest_path_author=$first human_file_changes=$human user_file_changes=$mine unlinked=$unlinked"
     totals=($((totals[0] + files)) $((totals[1] + first)) $((totals[2] + human)) $((totals[3] + mine)) $((totals[4] + unlinked)))
 done
-echo "total workflows=${totals[0]} first_authored=${totals[1]} human_file_changes=${totals[2]} user_file_changes=${totals[3]} unlinked=${totals[4]}"
+echo "total workflows=${totals[0]} oldest_path_author=${totals[1]} human_file_changes=${totals[2]} user_file_changes=${totals[3]} unlinked=${totals[4]}"

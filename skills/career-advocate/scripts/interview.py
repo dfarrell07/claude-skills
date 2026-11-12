@@ -53,6 +53,8 @@ def criteria(level_text):
         match = ITEM.match(line.strip())
         if section and match and not line.startswith(' '):
             key = f'{section}/{match.group(1)}'
+            if key in items:
+                raise ValueError(f'criterion {key} appears twice; number items uniquely')
             items[key] = [match.group(2).strip(), match.group(3).strip()]
         elif key and line.startswith(' ') and line.strip():
             items[key][1] += ' ' + line.strip()
@@ -78,7 +80,9 @@ def ratings(draft_text):
             if match := NEXT.search(line):
                 steps.setdefault(key, match.group(1))
             if match := RATING.search(line):
-                found.setdefault(key, match.group(1).lower())
+                rating = match.group(1).lower()
+                if found.setdefault(key, rating) != rating:
+                    raise ValueError(f'{key} has conflicting rating lines')
     return found, leads, steps
 
 
@@ -181,11 +185,14 @@ def main(argv=None):
     parser.add_argument('--state', required=True, type=Path)
     parser.add_argument('--out', required=True, type=Path)
     args = parser.parse_args(argv)
-    level = criteria(args.level.read_text())
+    try:
+        level = criteria(args.level.read_text())
+        rated, leads, steps = ratings(args.draft.read_text())
+    except ValueError as error:
+        sys.exit(str(error))
     if not level:
         sys.exit(f'No numbered criteria found in {args.level}')
     state = json.loads(args.state.read_text()) if args.state.exists() else {}
-    rated, leads, steps = ratings(args.draft.read_text())
     added, retired = update(state, wanted(level, rated, leads, steps))
     args.state.write_text(json.dumps(state, indent=2) + '\n')
     args.out.write_text(render(state, level))
