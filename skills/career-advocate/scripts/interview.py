@@ -153,7 +153,7 @@ def wanted(level, rated, leads=None, steps=None):
             priority = 'stretch'
         else:
             texts = BANK.get(name.lower()) or [
-                f'The Principal criterion says: "{text}" Describe one or two times '
+                f'The target level says: "{text}" Describe one or two times '
                 'you did this: what you did, which teams or components it spanned, '
                 'and what changed.']
             priority = 'gap'

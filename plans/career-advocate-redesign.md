@@ -276,7 +276,11 @@ the store is committed, and tests use synthetic people and criteria.
    commit once across clones and amended copies.
 3. **Automate.** Build `store.py` and `packet.py` once the manual draft shows which
    parts are worth automating, then remove the old collector, lenses and modes, and
-   update the docs.
+   update the docs. Done so far: the old collector, lenses and modes are gone, and
+   `SKILL.md` describes the manual workflow. The real packet needed only small
+   tools: `interview.py`, `workflow-authorship.sh`, and the review-panel and
+   evidence-source guides. `store.py` and `packet.py` wait until a second packet
+   shows a need for them.
 4. **Qualification.** Compare the packet with the July 2026 draft, which credited a
    Kubernetes rebase as authored work. It passes when every claim is traceable,
    nothing is inflated by rebases or volume, and every clause is argued or its gap

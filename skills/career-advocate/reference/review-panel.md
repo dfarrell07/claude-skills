@@ -13,7 +13,7 @@ read whole). Ask each reviewer to play four seats:
    old, single-team or unsupported, and clauses never argued.
 2. **The manager arguing the case:** impact that is undersold, and work in the
    digests that never reached the packet.
-3. **A senior Principal or Distinguished engineer:** whether the scope is really
+3. **An engineer one or two levels above the target:** whether the scope is really
    multi-component and multi-team, and where "exceeds" is earned.
 4. **A cross-org stakeholder** (product security, release engineering, docs, QE,
    partner teams): cross-team impact that is invisible.

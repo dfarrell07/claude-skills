@@ -21,8 +21,8 @@ sources found evidence the captures alone did not surface.
 
 ## Advisories
 
-Red Hat errata pages (access.redhat.com/errata/RHSA-...) list fixed Jira keys and
-CVEs. A Jira key of the user's in the fix list ties their work to a customer
+Vendor security advisories list fixed issue keys and CVEs (for example, Red Hat
+errata pages at access.redhat.com/errata/RHSA-...). A Jira key of the user's in the fix list ties their work to a customer
 delivery. For CVEs, require an exact fixed-version match to the user's PR, and
 label anything weaker as probable.
 
