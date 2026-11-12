@@ -79,12 +79,21 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(len(widgets), 1)
         self.assertIn('Builds widgets for several teams.', widgets[0])
 
-    def test_shared_questions_merge_items(self):
-        level = interview.criteria(LEVEL)
-        desired = interview.wanted(level, {})
-        mentoring = [keys for _, keys in desired.values() if 'Skills/1' in keys]
-        self.assertTrue(mentoring)
-        self.assertTrue(all('Responsibilities/1' in keys for keys in mentoring))
+    def test_gap_questions_quote_the_criterion_and_use_the_next_step(self):
+        text = draft(r2='not yet shown').replace(
+            '- Rating', 'Next step: name the teams that use it.\n- Rating')
+        rated, leads, steps = interview.ratings(text)
+        desired = interview.wanted(interview.criteria(LEVEL), rated, leads, steps)
+        widgets = [q for q, (_, keys) in desired.items() if keys == ['Responsibilities/2']]
+        self.assertEqual(len(widgets), 1)
+        self.assertIn('Builds widgets for several teams.', widgets[0])
+        self.assertIn('name the teams that use it.', widgets[0])
+
+    def test_only_the_rating_line_counts(self):
+        text = draft(r1='not yet shown').replace(
+            '- Rating', "Last year's rating: exceeds.\n- Rating")
+        rated, _, _ = interview.ratings(text)
+        self.assertEqual(rated, {'Responsibilities/1': 'not yet shown'})
 
     def test_inline_leads_and_next_steps(self):
         text = draft(r2='meets').replace(
@@ -116,12 +125,23 @@ class InterviewTest(unittest.TestCase):
         about = [text for text in desired if text.startswith('About')]
         self.assertEqual(len(about), 2)
         self.assertTrue(all('name the teams that use it.' in text for text in about))
-        self.assertFalse(any('Who or what confirms' in text and 'example.test' in text
-                             for text in desired))
 
-    def test_overlapping_criteria_share_one_question(self):
-        self.assertIs(interview.BANK['technical impact'][0],
-                      interview.BANK['system design'][0])
+    def test_linked_lead_without_a_step_still_needs_confirmation(self):
+        text = draft(r2='meets').replace(
+            '- Rating', '- *(lead)* Ran it: https://example.test/1\n- Rating')
+        rated, leads, steps = interview.ratings(text)
+        desired = interview.wanted(interview.criteria(LEVEL), rated, leads, steps)
+        self.assertTrue(any('Who or what confirms' in q and 'example.test' in q
+                            for q in desired))
+
+    def test_answered_questions_are_not_asked_again(self):
+        level = interview.criteria(LEVEL)
+        state = {}
+        interview.update(state, interview.wanted(level, {}))
+        question = state['questions'][0]
+        question['answer'] = 'synthetic answer'
+        interview.update(state, interview.wanted(level, {}))
+        self.assertNotIn(question['id'], interview.render(state, level))
 
     def test_runs_add_retire_reopen_and_keep_answers(self):
         level = interview.criteria(LEVEL)

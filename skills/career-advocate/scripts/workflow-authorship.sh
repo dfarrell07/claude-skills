@@ -1,31 +1,39 @@
 #!/bin/bash
-# Who created, and who changes, the GitHub Actions workflows in a set of repositories.
+# Who first authored, and who changes, the GitHub Actions workflows in a set of
+# repositories: sourced, reproducible evidence of CI ownership.
 #
 # Usage: workflow-authorship.sh <github-login> <owner/repo>...
 #
-# For each workflow file on the default branch, the creator is the author of its
-# oldest commit, reading every page of its history. Human changes exclude bot
-# logins (names ending in [bot], plus BOTS, a space-separated list of extra bot
-# logins). Prints one line per repository and a
-# total, as sourced, reproducible evidence of CI ownership.
+# For each .yml/.yaml workflow on the default branch it reads the file's whole
+# history. "first" is the oldest recorded author of the current path (a rename
+# credits the renamer, so confirm creation before claiming it). "changes" are
+# file changes, so a commit that touches two workflows counts twice. Bots (logins
+# ending in [bot], plus BOTS, a space-separated list) and commits with no linked
+# GitHub account are left out of the human totals; the unlinked ones are reported.
 set -euo pipefail
 [[ $# -ge 2 ]] || { echo "usage: $0 <github-login> <owner/repo>..." >&2; exit 2; }
-user=$1; shift
-bots=${BOTS:-}
-files_total=0 created_total=0 human_total=0 user_total=0
+user=$(tr '[:upper:]' '[:lower:]' <<<"$1"); shift
+bots=$(tr '[:upper:]' '[:lower:]' <<<"${BOTS:-}")
+# shellcheck disable=SC2016  # jq variables, not shell
+human_filter='[.[] | ascii_downcase | select(. != "?" and (endswith("[bot]") | not)
+                and (. as $a | ($bots | split(" ") | index($a)) | not))]'
+totals=(0 0 0 0 0)
 for repo in "$@"; do
-    files=0 created=0 human=0 mine=0
+    paths=$(gh api "repos/$repo/contents/.github/workflows" \
+        --jq '.[] | select(.type == "file" and (.name | test("\\.ya?ml$"))) | .path') \
+        || { echo "error: cannot list workflows in $repo" >&2; exit 1; }
+    files=0 first=0 human=0 mine=0 unlinked=0
     while IFS= read -r path; do
         [[ -n $path ]] || continue
-        authors=$(gh api --paginate "repos/$repo/commits?path=$path&per_page=100" \
+        authors=$(gh api --paginate -X GET "repos/$repo/commits" -f path="$path" -f per_page=100 \
             --jq '[.[] | .author.login // "?"]' | jq -s 'add // []')
-        [[ $(jq -r 'last' <<<"$authors") == "$user" ]] && created=$((created + 1))
         files=$((files + 1))
-        human=$((human + $(jq --arg bots "$bots" '[.[] | select((endswith("[bot]") | not) and (. as $a | ($bots | split(" ") | index($a)) | not))] | length' <<<"$authors")))
-        mine=$((mine + $(jq --arg u "$user" '[.[] | select(. == $u)] | length' <<<"$authors")))
-    done < <(gh api "repos/$repo/contents/.github/workflows" --jq '.[].path' 2>/dev/null || true)
-    echo "$repo files=$files created_by_$user=$created human_commits=$human ${user}_commits=$mine"
-    files_total=$((files_total + files)) created_total=$((created_total + created))
-    human_total=$((human_total + human)) user_total=$((user_total + mine))
+        [[ $(jq -r 'last | ascii_downcase' <<<"$authors") == "$user" ]] && first=$((first + 1))
+        human=$((human + $(jq --arg bots "$bots" "$human_filter | length" <<<"$authors")))
+        mine=$((mine + $(jq --arg u "$user" '[.[] | select(ascii_downcase == $u)] | length' <<<"$authors")))
+        unlinked=$((unlinked + $(jq '[.[] | select(. == "?")] | length' <<<"$authors")))
+    done <<<"$paths"
+    echo "$repo workflows=$files first_authored=$first human_file_changes=$human user_file_changes=$mine unlinked=$unlinked"
+    totals=($((totals[0] + files)) $((totals[1] + first)) $((totals[2] + human)) $((totals[3] + mine)) $((totals[4] + unlinked)))
 done
-echo "total files=$files_total created_by_$user=$created_total human_commits=$human_total ${user}_commits=$user_total"
+echo "total workflows=${totals[0]} first_authored=${totals[1]} human_file_changes=${totals[2]} user_file_changes=${totals[3]} unlinked=${totals[4]}"

@@ -18,7 +18,7 @@ import sys
 
 ITEM = re.compile(r'^(\d+)\.\s+([^:]+):\s*(.*)$')
 DRAFT_ITEM = re.compile(r'^###\s+(\d+)\.\s+(.+?)\s*$')
-RATING = re.compile(r'rating:\s*\**\s*(exceeds|meets|not yet shown)', re.I)
+RATING = re.compile(r'^\s*-\s*Rating:\s*\**\s*(exceeds|meets|not yet shown)', re.I)
 LEAD = re.compile(r'\*\(lead\)\*\s*(.+?)\s*(?:Next step.*)?$')
 NEXT = re.compile(r'Next step:\s*(.+?)\s*$')  # "Next step (collect):" is skipped
 
@@ -38,63 +38,6 @@ def logical_lines(text):
 SOURCE = ('For every answer, give a link or a person who can confirm it: an '
           '"exceeds" needs evidence someone else can check.')
 
-# Questions per criterion name. Each asks for something the collector cannot see
-# and for a source, because an "exceeds" needs verifiable evidence.
-DESIGN = ('Which designs that crossed several components or teams did you lead? '
-          'For each: the problem, the choice you made and why, and the design doc '
-          'if one exists. (Your PRs are collected automatically.)')
-QUALITY = ('Which testing practices, frameworks or quality standards you set up are '
-           'used by other teams or across several components? Name the teams.')
-ADOPTION = ('Which tools, practices or technologies did you get other teams to '
-            'adopt? Name the teams, and how you know they use it.')
-BANK = {
-    'technical impact': [DESIGN],
-    'system design': [DESIGN],
-    'technical acumen': [
-        'Which areas of the stack are you the go-to expert in, beyond your own team? '
-        'Who comes to you, and for what?'],
-    'quality & reliability': [QUALITY],
-    'quality management': [QUALITY],
-    'collaboration': [
-        'Which upstream communities or cross-team groups do you represent or lead? '
-        'Your role (maintainer, approver, lead), since when, and a link showing it.',
-        'Describe a feature you drove that spanned several components or teams. '
-        'Who did you coordinate with, and how did you align them?'],
-    'mentoring': [
-        'Name 3-5 engineers you have coached or mentored, especially senior '
-        'engineers or people on other teams. For each: what you worked on together, '
-        'for how long, and what changed for them.',
-        'Which practices did you teach (reviews, release process, tooling) that '
-        'others now carry out without you? Who, and where is it written down?'],
-    'business impact': [
-        'Which of your initiatives had business impact visible outside engineering, '
-        'such as a customer, release, compliance or cost result? What was the result?'],
-    'technical practices': [ADOPTION],
-    'ai tools': [
-        'Which AI-driven methods did you evaluate and introduce? For each: the '
-        'problem, who uses it now, and any measured efficiency gain with its source.'],
-    'sdlc': [
-        'Which parts of the development lifecycle for a multi-component system did '
-        'you define? What process, which teams follow it, and where is it documented?'],
-    'communication': [
-        'When did you present a complex plan or system to leadership or '
-        'stakeholders? The audience, the date, the slides or doc, and the decision '
-        'that followed.'],
-    'leadership': [
-        'Where did you set technical direction for a multi-component system? What '
-        'was the direction, how was it adopted, and where is it written down?'],
-    'continuous learning': [ADOPTION],
-    'influence': [
-        'Which roadmap or technical decisions beyond your own team changed because '
-        'of you? What was decided, and where is it recorded?'],
-    'knowledge sharing': [
-        'List design documents you wrote that others used to make decisions: title, '
-        'link, and who reviewed them.',
-        'List talks you gave (conferences, meetups, internal tech talks) and blog '
-        'posts you wrote: title, venue or URL, and date.',
-        'Have you mentored others on documentation or technical writing? Who, and '
-        'what changed?'],
-}
 STRETCH = ('This is rated "meets". What evidence would show you go beyond it in '
            'scope, reach or duration: more teams, a wider community, or years of '
            'sustained work?')
@@ -144,29 +87,26 @@ def wanted(level, rated, leads=None, steps=None):
     questions, leads, steps = {}, leads or {}, steps or {}
     for key, (name, text) in level.items():
         rating = rated.get(key, 'not yet shown')
-        if rating == 'exceeds':
-            continue
-        if rating == 'meets':
-            step = steps.get(key, '')
-            texts = [f'{name} meets the bar. To show it exceeds: {step} What can '
-                     'you point to?' if step else f'{name}: {STRETCH}']
-            priority = 'stretch'
-        else:
-            texts = BANK.get(name.lower()) or [
-                f'The target level says: "{text}" Describe one or two times '
-                'you did this: what you did, which teams or components it spanned, '
-                'and what changed.']
-            priority = 'gap'
         step = steps.get(key, '')
         if step.lower().startswith('interview'):
             step = ''
+        texts = []
+        if rating == 'meets':
+            priority = 'stretch'
+            texts.append(f'{name} meets the bar. To show it exceeds: {step} What can '
+                         'you point to?' if step else f'{name}: {STRETCH}')
+        elif rating != 'exceeds':
+            priority = 'gap'
+            texts.append(f'The target level says: "{text}" ' + (
+                f'{step} What can you point to?' if step else
+                'Describe one or two times you did this: what you did, which teams '
+                'or components it spanned, and what changed.'))
+        else:
+            priority = 'gap'
         for lead in leads.get(key, []):
-            if 'http' not in lead:
-                texts = texts + [f'Your notes say: "{lead}" Who or what confirms it, '
-                                 'and what exactly was your part?']
-            elif step:
-                # The link already shows the work; ask for what it cannot show.
-                texts = texts + [f'About "{lead}": {step} What can you point to?']
+            texts.append(f'About "{lead}": {step} What can you point to?' if step else
+                         f'Your notes say: "{lead}" Who or what confirms it, and what '
+                         'exactly was your part?')
         for question in texts:
             old_priority, keys = questions.get(question, (priority, []))
             best = 'gap' if 'gap' in (old_priority, priority) else 'stretch'
@@ -217,8 +157,8 @@ def render(state, level):
              f'Run {state["runs"]}. Answers become recorded evidence. {SOURCE}', '']
     for priority, title in (('gap', 'Gaps (criterion not yet shown)'),
                             ('stretch', 'Stretch (meets, could exceed)')):
-        open_questions = [q for q in state['questions']
-                          if q['status'] == 'open' and q['priority'] == priority]
+        open_questions = [q for q in state['questions'] if q['status'] == 'open'
+                          and not q.get('answer') and q['priority'] == priority]
         if not open_questions:
             continue
         lines += [f'## {title}', '']
@@ -249,7 +189,8 @@ def main(argv=None):
     added, retired = update(state, wanted(level, rated, leads, steps))
     args.state.write_text(json.dumps(state, indent=2) + '\n')
     args.out.write_text(render(state, level))
-    open_count = sum(1 for q in state['questions'] if q['status'] == 'open')
+    open_count = sum(1 for q in state['questions']
+                     if q['status'] == 'open' and not q.get('answer'))
     replaced = sum(1 for q in added if q.get('replaces'))
     print(f'run {state["runs"]}: {open_count} open, {len(added)} added '
           f'({replaced} rewording earlier questions), {len(retired)} retired')
