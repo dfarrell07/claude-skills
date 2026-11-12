@@ -166,3 +166,17 @@ Saved to private/history/YYYY-MM-DD-<mode>.md (N words, SINCE to UNTIL)
 ```
 
 Clean up is handled by the trap in Step 0.
+
+## Step 3: Strengthen a promote packet
+
+For `promote`, before treating the packet as done:
+
+1. **Find more evidence.** Look beyond the collector, using
+   `$SCRIPT_DIR/reference/evidence-sources.md`. Most of the missed evidence has
+   been in Jira comments, in others' issues and PRs that name the user's tools,
+   and in advisory fix lists.
+2. **Run the review panel** in `$SCRIPT_DIR/reference/review-panel.md`. Verify
+   each finding before it changes the packet, and stop when a round's only
+   findings are the user's decisions.
+3. **Keep the interview current.** Run `$SCRIPT_DIR/scripts/interview.py`
+   against the packet, so remaining gaps become questions for the user.
