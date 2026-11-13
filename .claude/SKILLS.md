@@ -58,7 +58,7 @@ Start background Claude sessions one way: in the user's tmux, Remote Control on,
 profile (`work`, `personal`, `personal2`) and directory. In a git repository each session gets its own worktree and
 branch, so several agents can share a project; `start <name>` reopens the same worktree and conversation after a stop
 or reboot, and `clean` removes finished worktrees without losing work. Run with no arguments, the session is this
-machine's orchestrator, started at boot. Design: `plans/session-orchestrator.md`.
+machine's orchestrator, meant to start at boot (laptop-setup). Design: `plans/session-orchestrator.md`.
 
 ```bash
 /sessions [start <profile> <dir> ... | start <session> | ls | stop <session> | clean [<session>]]
