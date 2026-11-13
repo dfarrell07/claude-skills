@@ -24,12 +24,18 @@ Control on".
 
 ## Requests
 
-`session.sh start <profile> <dir> [--worktree W] [--name N] [--trust] [--prompt TEXT] [--tools RULES]`.
+```text
+session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] [--prompt T] [--tools R]
+session.sh start <name> [--trust] [--prompt T]      # again, from its definition
+session.sh ls | stop <name> | clean [<name>]
+```
+
 The launcher never guesses:
 
 - **Profile** is required: `work`, `personal`, `personal2`. Accounts are a data boundary; the orchestrator takes the
   one the user named, or asks.
-- **Dir** is a path. The orchestrator resolves a bare name (`~/repos/<name>`, `~/<name>`; one match or ask).
+- **Dir** is the session's starting directory, usually a repository. The orchestrator resolves a bare name
+  (`~/repos/<name>`, `~/<name>`; one match or ask).
 
 ## Profiles (mirror zshrc.j2)
 
@@ -52,10 +58,62 @@ or the tmux server's environment gets through.
 
 ## Naming
 
-`<profile>-<N>`, N = `--name`, else the worktree name, else the directory's basename, reduced to `[A-Za-z0-9_-]`. It is
-the tmux session name, the Remote Control name and `--name` (what `SendMessage` reaches; Remote Control's own name does
-not set it). The profile prefix is the only state: `ls` and `stop` see only `work-*`, `personal-*`, `personal2-*`,
-which also covers sessions `cw` and `ccp` started.
+`<profile>-<N>`, N reduced to `[A-Za-z0-9_-]`. It is the tmux session name, the Remote Control name and `--name` (what
+`SendMessage` reaches; Remote Control's own name does not set it), and in a repository also the worktree's name. N is:
+
+- `--name`, when given (the orchestrator derives a short slug from the task, e.g. `fix-flaky-e2e`);
+- else `--branch` with `/` turned into `-`;
+- else, for a worktree, `<repo>-<k>` with the smallest k not already defined or running; for `--here` or a
+  non-repository, the directory's basename.
+
+`ls` and `stop` see only `work-*`, `personal-*`, `personal2-*`, which also covers sessions `cw` and `ccp` started.
+
+## Worktrees
+
+Starting in a git repository gives the session its own worktree and branch unless `--here` is passed, so several
+agents can work in one project without stepping on each other, and nobody has to ask for it.
+
+- **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude Code's own location, which `cwt`/`claude --worktree` also
+  use. Being under the repository, it inherits the repository's trust (checked live: no prompt). The launcher adds
+  `**/.claude/worktrees/` to `.git/info/exclude` when it is not already ignored, as this user does by hand today.
+- **Who makes it**: the launcher, with `git worktree add`, not `claude --worktree`. Claude's flag cannot take an
+  existing branch or a chosen base (`worktree.baseRef` is only `fresh` or `head`), and how a re-entered worktree finds
+  its conversation is undocumented. Cost: Claude's `.worktreeinclude`, `worktree.symlinkDirectories`/`sparsePaths`
+  and WorktreeCreate hooks don't apply; none is configured here.
+- **Branch**: `--branch B` if given; an existing local branch (or one remote branch git can guess) is checked out, a new
+  one is created. Default `worktree-<N>`, Claude's naming, so a `cwt <N>` worktree and a launcher one are the same thing.
+  New branches get `--no-track`, so a bare `git push` can never land on the base.
+- **Base** (new branches only): `--base REF`, else `upstream`'s default branch if that remote exists (fork
+  checkouts), else `origin`'s, else the repository's `HEAD`. The remote is fetched first (best effort, 30 s), so
+  agents don't start on stale code; a failed fetch warns and uses the ref as it is.
+
+## Restarts and reboots
+
+Each session has a definition, one small file in `${XDG_STATE_HOME:-~/.local/state}/claude-sessions/<name>`: profile,
+repository, directory (the worktree), branch, base and a session id. The first start passes `--session-id <id>`; later
+starts pass `--resume <id>` when a transcript with that id exists (`<config dir>/projects/*/<id>.jsonl`), and
+`--session-id <id>` otherwise (resume fails with exit 1 until the first message is saved; checked live).
+
+So after `stop`, a crash or a reboot, `start <name>` (or the original `start` command) reopens the same worktree and
+the same conversation. A recreated definition must agree with the existing one (same profile and repository) or the
+start is refused. If the worktree was removed but the branch survives, it is recreated from the branch. Nothing
+restarts sessions on its own at boot: the orchestrator can ("restart my sessions": `ls`, then `start <name>` for each
+stopped one), and laptop-setup could add that to the boot unit later.
+
+## Cleanup
+
+`clean [<name>]` looks at defined worktree sessions that are not running, after `git fetch --prune` (best effort), and
+removes the worktree, the branch and the definition only when nothing can be lost:
+
+- the worktree has no uncommitted or untracked changes, and
+- every commit on the branch is on some remote (`git rev-list B --not --remotes` is empty), and
+- the branch is finished: an ancestor of its base (merged, or never used), or no remote has a branch of that name
+  any more (merged by squash and deleted, or abandoned).
+
+Otherwise it says why it kept it (`dirty`, `unpushed`, `open`). A pushed branch with an open PR is kept. `clean <name>`
+on a `--here` session only forgets its definition. Worktrees the launcher didn't define (`cwt`, by hand) are never
+touched. Removal is `git worktree remove` (refuses a dirty tree) and `git branch -D` (squash merges defeat `-d`, and
+the checks above already proved the commits are on a remote).
 
 ## tmux and Remote Control
 
@@ -72,13 +130,15 @@ for the input box. At the trust prompt it accepts only with `--trust` (Down, Ent
 ## Idempotency
 
 The name is the key. `start` on a live session prints `exists` (and still answers a pending trust prompt with
-`--trust`); on a name live in another directory it refuses and asks for `--name`; on a failed one it starts afresh.
-Two concurrent starts of one name: tmux refuses the second.
+`--trust`); on a name defined or live for another directory it refuses and asks for `--name`; on a failed one it starts
+again. Without `--name`, each start in a repository is a new agent by design. Two concurrent starts that pick the same
+name: `git worktree add` or tmux refuses the second.
 
 ## List and stop
 
-- `ls`: `name state dir` for profile-prefixed sessions.
-- `stop <name>`: profile-prefixed sessions only, never the session the caller runs in.
+- `ls`: `name state dir` for defined and profile-prefixed sessions (state `running`, `stopped`, `failed`).
+- `stop <name>`: profile-prefixed sessions only, never the session the caller runs in. The definition and worktree
+  stay; `clean` removes them.
 
 ## Orchestrator permissions
 
@@ -132,5 +192,5 @@ claude.ai login; this host has no work-env to try it).
 
 ## Not doing
 
-Queues, a daemon, a socket API, restart-on-crash, per-session config files, profile auto-detection, worktree
-creation (claude's `--worktree` does it).
+Queues, a daemon, a socket API, restart-on-crash, profile auto-detection, auto-restart at boot, `.worktreeinclude`
+support, deleting remote branches.
