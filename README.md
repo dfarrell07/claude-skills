@@ -13,6 +13,7 @@ Claude Code marketplace for work tracking and session notes.
 
 - `/work-summary` - Rank recent work as concise bullets and optional subtopics with selected core Jira/PR links, using available tools/connectors
 - `/delegate` - Run tasks on other agent CLIs (agy, codex; not claude) across accounts and get results token-efficiently
+- `/sessions` - Start, list and stop background Claude sessions (tmux, Remote Control, profile); the per-machine orchestrator
 - `/notes` - Take persistent markdown notes organized by topic
 
 See [.claude/SKILLS.md](.claude/SKILLS.md) for details.

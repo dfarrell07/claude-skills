@@ -52,6 +52,19 @@ skills/delegate/scripts/quota.sh <tool:account>...   # each target's own usage n
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/delegate.sh ...
 ```
 
+## /sessions
+
+Start background Claude sessions one way: in the user's tmux, Remote Control on, a fresh environment, a named
+profile (`work`, `personal`, `personal2`) and directory. Starting one twice does nothing; `stop` touches only
+sessions it started. Run with no arguments, the session is this machine's orchestrator, started at boot. Design:
+`plans/session-orchestrator.md`.
+
+```bash
+/sessions [start <profile> <dir> ... | ls | stop <name>]
+skills/sessions/scripts/session.sh start <profile> <dir> [--worktree W] [--name N] [--trust] [--prompt TEXT]
+skills/sessions/scripts/session.sh ls|stop <name>
+```
+
 ## /notes
 
 Take and manage persistent markdown notes organized by topic.

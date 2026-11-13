@@ -20,6 +20,7 @@ test: lint unit-test
 unit-test:
 	@echo "Running cve-agent unit tests..."
 	@bash skills/cve-agent/scripts/test.sh --level 1
+	@bash skills/sessions/tests/test.sh
 	@$(MAKE) triage-test work-summary-test
 
 triage-test:
