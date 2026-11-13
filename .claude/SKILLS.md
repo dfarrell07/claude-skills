@@ -61,7 +61,7 @@ sessions it started. Run with no arguments, the session is this machine's orches
 
 ```bash
 /sessions [start <profile> <dir> ... | ls | stop <name>]
-skills/sessions/scripts/session.sh start <profile> <dir> [--worktree W] [--name N] [--trust] [--prompt TEXT]
+skills/sessions/scripts/session.sh start <profile> <dir> [--worktree W] [--name N] [--trust] [--prompt TEXT] [--tools RULES]
 skills/sessions/scripts/session.sh ls|stop <name>
 ```
 

@@ -6,6 +6,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 sc=$here/../scripts/session.sh
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/sessions-test.XXXXXX")
 export SESSIONS_TMUX_SOCKET=sessions-test-$$ SESSIONS_CLAUDE=$tmp/claude SESSIONS_WAIT=5 LEAK=1 CLAUDECODE=1
+export HOME=$tmp/home SHELL=/bin/bash SESSIONS_WORK_ENV=$tmp/work-env
 trap 'tmux -L "$SESSIONS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf -- "$tmp"' EXIT
 fails=0
 
@@ -17,7 +18,10 @@ if [[ ! -e .trusted ]]; then printf ' ❯ No, exit\n   Yes, I trust this folder\
 echo "❯ Try"; exec sleep 600
 EOF
 chmod +x "$tmp/claude"
-mkdir -p "$tmp/a/repo" "$tmp/b/repo"
+mkdir -p "$tmp/a/repo" "$tmp/b/repo" "$tmp/c/repo" "$tmp/home"
+# The shell rc a new terminal gets; personal profiles must drop its Vertex variables.
+echo 'export RCVAR=1 ANTHROPIC_VERTEX_PROJECT_ID=rc-project' >"$tmp/home/.bashrc"
+echo 'WORKVAR=1' >"$tmp/work-env"
 
 check() { # check <name> <expected exit> <expected output substring> <command...>
 	local what=$1 code=$2 want=$3 out rc
@@ -37,16 +41,27 @@ check "same name, other dir refused" 1 "already runs in" bash "$sc" start person
 check "--name disambiguates" 0 "ready personal2-b" bash "$sc" start personal2 "$tmp/b/repo" --name b --trust
 check "caller env does not leak" 1 "" grep -E '^(LEAK|CLAUDECODE)=' "$tmp/a/repo/.env.out"
 check "profile env set" 0 "CLAUDE_CONFIG_DIR=$HOME/.claude-per2" cat "$tmp/a/repo/.env.out"
+check "shell rc applied" 0 "RCVAR=1" cat "$tmp/a/repo/.env.out"
+check "personal drops Vertex" 1 "" grep -E '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$tmp/a/repo/.env.out"
 check "remote control named" 0 "--remote-control
 personal2-repo
 --name
 personal2-repo" cat "$tmp/a/repo/.args.out"
 check "worktree and prompt" 0 "--worktree
 fix-1
+--
 do it" bash -c "bash '$sc' start personal '$tmp/a/repo' --worktree fix-1 --prompt 'do it' >/dev/null; cat '$tmp/a/repo/.args.out'"
 check "unknown profile" 2 "unknown profile" bash "$sc" start bogus "$tmp/a/repo"
-check "missing work env" 1 "missing" env SESSIONS_WORK_ENV="$tmp/none" bash "$sc" start work "$tmp/a/repo"
-check "ls shows ours" 0 "personal2-repo $tmp/a/repo" bash "$sc" ls
+check "work profile" 0 "ready work-repo" bash "$sc" start work "$tmp/c/repo" --trust
+check "work env sourced, Vertex kept" 0 "ANTHROPIC_VERTEX_PROJECT_ID=rc-project
+CLAUDE_CODE_USE_VERTEX=1" bash -c "grep -E '^(ANTHROPIC_VERTEX|CLAUDE_CODE_USE_VERTEX|WORKVAR)' '$tmp/c/repo/.env.out'"
+check "work env file" 0 "WORKVAR=1" cat "$tmp/c/repo/.env.out"
+check "--tools replaces skip-permissions" 0 "dontAsk
+--allowedTools
+Read" bash -c "bash '$sc' start personal '$tmp/c/repo' --name t --tools Read >/dev/null; cat '$tmp/c/repo/.args.out'"
+check "failing claude shows why" 1 "failed before it was ready" env SESSIONS_CLAUDE=/bin/false bash "$sc" start personal "$tmp/b/repo" --name f
+check "failed session cleaned up" 1 "" bash -c "bash '$sc' ls | grep -q '^personal-f '"
+check "ls shows ours" 0 "personal2-repo running $tmp/a/repo" bash "$sc" ls
 tmux -L "$SESSIONS_TMUX_SOCKET" new-session -d -s mine sleep 600
 check "ls hides others" 1 "" bash -c "bash '$sc' ls | grep -q mine"
 check "stop refuses others" 2 "one session name" bash "$sc" stop mine
