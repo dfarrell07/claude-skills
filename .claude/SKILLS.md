@@ -61,11 +61,11 @@ or reboot, and `clean` removes finished worktrees without losing work. Run with 
 machine's orchestrator, started at boot. Design: `plans/session-orchestrator.md`.
 
 ```bash
-/sessions [start <profile> <dir> ... | start <name> | ls | stop <name> | clean [<name>]]
+/sessions [start <profile> <dir> ... | start <session> | ls | stop <session> | clean [<session>]]
 skills/sessions/scripts/session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] \
-  [--prompt T] [--tools R]
-skills/sessions/scripts/session.sh start <name>   # again: same worktree, same conversation
-skills/sessions/scripts/session.sh ls | stop <name> | clean [<name>]
+  [--prompt T] [--allow R]
+skills/sessions/scripts/session.sh start <session>   # again: same worktree, latest conversation
+skills/sessions/scripts/session.sh ls | stop <session> | clean [<session>]
 ```
 
 ## /notes
