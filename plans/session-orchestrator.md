@@ -13,7 +13,7 @@ repository share a checkout unless someone sets up worktrees by hand.
 ## Shape
 
 - **One launcher**, `session.sh start|ls|stop|clean`, the only code. A shell, a unit, the orchestrator or any session
-  can run it, with the same result, because nothing of the caller's environment reaches the new session.
+  can run it, with the same result: only a short allowlist of the caller's environment reaches the new session.
 - **One orchestrator per machine**: a Claude session, itself started by the launcher, reached over Remote Control or
   `tmux attach`. The skill (its operating prompt, and the reference for request handling, output and cleanup) turns
   requests into launcher calls; it does no repo work, so its context stays small.
@@ -42,19 +42,21 @@ path outside its state.
 | `personal` | unset Vertex/Bedrock/API-key variables; `CLAUDE_CONFIG_DIR=~/.claude`, `CLAUDE_CODE_USE_VERTEX=0` | `cper` |
 | `personal2` | same, with `CLAUDE_CONFIG_DIR=~/.claude-per2` | `cper2` |
 
-All set `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
-`--dangerously-skip-permissions`, as the shell launchers do. Differences from them: `work` gets no Remote Control
-(the docs say it needs the Anthropic API, which Vertex is not), and `--plugin-dir` is passed only for a directory with a
-plugin manifest (`--plugin-dir .` everywhere would load any repository's hooks and MCP servers as a plugin, past
-their trust prompts). work-env is optional because hosts on the older zshrc keep the Vertex variables in the rc.
+All get `--remote-control`, `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
+`--dangerously-skip-permissions`, as the shell launchers do; Remote Control on Vertex (`work`) is unverified, as for
+`cwork` (the docs say it needs the Anthropic API). Unlike them, `--plugin-dir` is passed only for a directory with a
+plugin manifest: a plugin under development, loaded with the same trust as that repository's own hooks, rather than
+every repository loaded as a plugin. work-env is optional because hosts on the older zshrc keep the Vertex variables
+in the rc.
 
 **Environment**: `env -i` with a short allowlist (HOME, USER, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH agent,
 TMUX_TMPDIR, display, Kerberos, and the pane's own TMUX and TMUX_PANE), then the user's interactive shell (`$SHELL -i
 -c`, zsh or bash), so the rc's exports (GOTMPDIR, GOPRIVATE, KUBECONFIG, ...) and its `claude()` guard apply as in a
 new terminal, then the profile.
 
-**tmux**: the user's default server, whatever server the caller is in. `remain-on-exit failed` keeps a claude that
-fails at once long enough for `start` to show its last lines.
+**tmux**: the user's default server, whatever server the caller is in. `remain-on-exit failed`: a claude that exits
+with an error leaves its pane, so `start` can show its last lines, `ls` shows it as `failed`, and the next `start`
+replaces it. A directory with `#` is refused (tmux reads it as a format).
 
 **Trust**: claude asks even with `--dangerously-skip-permissions`, defaulting to "No, exit". `start` waits up to 30 s
 for the input box; at the trust prompt it answers yes only with `--trust`, else reports `needs-trust` (exit 3) and
@@ -67,19 +69,20 @@ checkout and nobody has to ask for one.
 
 - **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it). The
   main checkout comes from `--git-common-dir`, so `<dir>` may be a linked worktree or a subdirectory (the session
-  starts in the same subdirectory); a bare repository is refused. Under the repository, the worktree inherits its
+  starts in the same subdirectory, or at the top if the base lacks it); a bare repository is refused. Under the repository, the worktree inherits its
   trust. `**/.claude/worktrees/` goes into `info/exclude` unless already ignored. A new session whose worktree path
   already exists is refused: nothing is adopted (a `cwt` worktree on another branch, or a stray directory in which the
   session would run on the main checkout).
 - **Made by the launcher** with `git worktree add`, not `claude --worktree`, which can't take an existing branch or a
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
-- **Branch**: `--branch B` or `worktree-<N>`. An existing local branch is checked out as it is (and never deleted). A
-  new one is created from `origin/B` or `upstream/B` if one exists (which is then its base), else from the base,
-  always with `--no-track`, so a bare `git push` fails rather than landing on the base or in the canonical repository.
+- **Branch**: `--branch B` (`origin/B` means B) or `worktree-<N>`. An existing local branch is checked out as it is
+  (and never deleted). A new one is created from `origin/B` or `upstream/B`, fetched first, if one exists (which is
+  then its base), else from the base, always with `--no-track`, so a bare `git push` fails rather than landing on the base or in the canonical repository.
 - **Base**: `--base REF`, else the default branch of `upstream` if that remote exists (forks), else of `origin`: asked
   of the remote with `ls-remote --symref`, else its local `<remote>/HEAD`; with neither, the start is refused (never a
-  fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first.
+  fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first, and must be a
+  plain revision, never a refspec.
 - **Submodules**: initialized in the new worktree when the main checkout has them initialized.
 
 ## Definitions and restarts
@@ -107,6 +110,7 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
   tree. That holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
   unused branch, and can't lose content. Checks use the worktree's own HEAD, so commits on a detached HEAD, which no
   branch keeps, are seen.
+- Every check fails closed: a git command that errors keeps the worktree.
 - `git status` is asked with `--ignore-submodules=none`, so a `submodule.<name>.ignore` setting can't hide changes.
 - Ignored files are build output: a new worktree has none, so they don't keep a finished worktree.
 - Removal uses `git worktree remove --force`, which submodules need; the checks cover what it overrides, and it still
@@ -125,8 +129,8 @@ model load another skill whose `allowed-tools` grants all of Bash.
 
 This limits what the orchestrator's own mistakes can do; it is not a security boundary. Its job is to start sessions
 with `--dangerously-skip-permissions` and a prompt, and any other session can run the launcher or type into it. So the
-skill's rules apply to the tasks it passes on too, and the launcher validates names, branches and bases, so its
-arguments can't reach beyond it.
+skill's rules apply to the tasks it passes on too, and the launcher validates names, directories, branches and bases
+so those can't reach beyond it; `--prompt` and `--allow` are passed on as given, by design.
 
 ## Boot (for laptop-setup)
 
@@ -145,16 +149,15 @@ ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start perso
   --allow "Bash(bash %h/<checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)"
 ```
 
-- `<checkout>` must be the physical path (no symlink), as `${CLAUDE_SKILL_DIR}` resolves to, or the allow rule won't
-  match the skill's commands.
+- `<checkout>` must be the physical path (no symlink): the launcher passes `--plugin-dir <checkout>` (it has a plugin
+  manifest), so the skill loads from there and `${CLAUDE_SKILL_DIR}` is that path, which the allow rule must match.
 - `--here`: the orchestrator works in the checkout, not a worktree.
 - The `clean` first forgets its definition, so each boot starts a fresh conversation (it holds nothing worth keeping)
   rather than a resumed one, which after a long break may ask whether to resume.
 - `KillMode=process`: tmux outlives the unit. Rerunning the unit is harmless. A tmux server the unit starts lives in
   the unit's cgroup, with every session in it; `systemd-run --user --scope` would give it its own, if memory pressure
   handling (systemd-oomd) ever treats them as one.
-- `TMUX_TMPDIR` must match the shells' (`zshrc.j2` sets `$XDG_RUNTIME_DIR/tmux`; this host still uses
-  `/tmp/tmux-$UID`).
+- `TMUX_TMPDIR` must match the shells' (`zshrc.j2` sets `$XDG_RUNTIME_DIR/tmux`).
 
 Also for laptop-setup:
 
@@ -168,7 +171,7 @@ Also for laptop-setup:
 
 Documented by Claude Code: transcripts at `<config>/projects/<encoded cwd>/<id>.jsonl` (found with `find`, never
 encoded here); `--continue` takes the newest conversation in the directory; `--allowedTools` rule syntax; skills'
-`${CLAUDE_SKILL_DIR}`; no Remote Control on Vertex. Undocumented but visible when they break, and covered by tests with
+`${CLAUDE_SKILL_DIR}`. Undocumented but visible when they break, and covered by tests with
 a fake claude: the input box starts with `❯`, the trust menu's text; with Remote Control on, the transcript is written
 at startup. Linux only (`flock`, `/proc`).
 

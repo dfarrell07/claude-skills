@@ -26,7 +26,7 @@ bash ${CLAUDE_SKILL_DIR}/scripts/session.sh clean [<session>]
 ```
 
 A session is named `<profile>-<name>` (e.g. `personal-fix-flaky-e2e`): its tmux session (`tmux attach -t <session>`)
-and, except for `work` (Vertex has no Remote Control), its name in claude.ai/code and the mobile app. In a git
+and its Remote Control name in claude.ai/code and the mobile app. In a git
 repository it gets its own worktree, `<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` (or the
 `--branch` given), fresh from the remote's default branch (upstream's, for a fork), so several agents can share a
 project. Started from a subdirectory, it starts in the same subdirectory of its worktree.
@@ -38,10 +38,10 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
 - **Directory**: a path as given. For a bare name, check `ls -d ~/repos/<name> ~/<name>`; use a single match, or list
   the matches and ask.
 - **Name**: whenever the user gives a task, pass `--name` with a short slug of it (`--name fix-flaky-e2e`), so the
-  session, worktree and branch say what they are for. With no task, omit it: each start is then a new agent,
-  `<repo>-1`, `<repo>-2`, ... ("three agents in claude-skills" is three starts).
-- **Branch**: `--branch B` when the user names a branch to work on (it is checked out, or created); the name defaults
-  to it. `--base REF` only when they name what a new branch starts from (`--base upstream/release-0.20`).
+  session, worktree and branch say what they are for. With no task, omit it: in a repository each start is then a
+  new agent, `<repo>-1`, `<repo>-2`, ... ("three agents in claude-skills" is three starts).
+- **Branch**: `--branch B` when the user names a branch to work on (its latest from the remote, or a new one); the
+  name defaults to it. `--base REF` only when they name what a new branch starts from (`--base upstream/release-0.20`).
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
   uncommitted changes"). A directory that is not a repository is always in place.
 - **Trust**: claude asks once per directory tree; worktrees inherit their repository's answer. Pass `--trust` only when
@@ -49,23 +49,24 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
   they confirm, run `start <session> --trust`.
 - **Prompt**: `--prompt "<text>"` when the user gave the session a task: their words, not your restatement. It is sent
   only when the session starts, not to one that already runs.
-- **Again**: `start <session>` reopens a stopped session in the same worktree and its latest conversation (in place: the
-  conversation it started with), also after a reboot. "Restart my sessions": `ls`, then `start <session>` for each
-  `stopped` one the user wants.
+- **Again**: `start <session>` (with no other flags than `--trust` and `--prompt`) reopens a stopped or failed session
+  in the same worktree and its latest conversation (in place: the conversation it started with), also after a reboot.
+  "Restart my sessions": `ls`, then `start <session>` for each `stopped` or `failed` one the user wants. To start an
+  in-place session afresh, `clean <session>` first.
 
 Output of `start`: `worktree ...` when a new branch was made; `started <session> in <dir>`, or `exists <session>`
 (already running: nothing started, no prompt sent); then `ready`, `needs-trust` (exit 3), or `waiting` (exit 0, not
-ready in 30 s, after its last screen lines). `... before it was ready` (exit 1) follows claude's last lines. `ls`
-prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
+ready in 30 s, after its last screen lines). `<session> failed before it was ready` (after claude's last lines) or
+`exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
 
 ## Cleanup
 
 `stop` keeps the worktree, so `start` can resume it. `clean` goes through the stopped sessions: it removes each one
 whose work is finished (merged, also by squash, or never used), with its build output, and prints `removed ...`,
 `forgot ...` (a session whose directory is gone) or `kept <session>: <why>`; running and in-place sessions are
-skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them); run it only for a session
-the user named. Uncommitted changes, unpushed submodule commits, commits on a detached HEAD and worktrees in use are
-never removed.
+skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them), and forgets an in-place
+one (its next start is a new conversation); run it only for a session the user named. Uncommitted changes,
+unpushed submodule commits, commits on a detached HEAD and worktrees in use are never removed.
 
 ## Rules
 
