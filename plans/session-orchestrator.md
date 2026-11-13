@@ -43,11 +43,11 @@ shape, so no argument can name a path outside its state.
 | `personal2` | same, with `CLAUDE_CONFIG_DIR=~/.claude-per2` | `cper2` |
 
 All get `--remote-control`, `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
-`--dangerously-skip-permissions`, as the shell launchers do; Remote Control on Vertex (`work`) is unverified, as for
-`cwork` (the docs say it needs the Anthropic API). Unlike them, `--plugin-dir` is passed only for a directory with a
-plugin manifest: a plugin under development, loaded with the same trust as that repository's own hooks, rather than
-every repository loaded as a plugin. work-env is optional because hosts on the older zshrc keep the Vertex variables
-in the rc.
+`--dangerously-skip-permissions`, as `cper`, `cper2` and `cwork` do; Remote Control on Vertex (`work`) is unverified,
+as for `cwork` (the docs say it needs the Anthropic API). Unlike them, `--plugin-dir` is passed only for a directory
+with a plugin manifest: a plugin under development, loaded with the same trust as that repository's own hooks, rather
+than every repository loaded as a plugin. work-env is optional because hosts on the older zshrc keep the Vertex
+variables in the rc.
 
 **Environment**: `env -i` with a short allowlist (HOME, USER, LOGNAME, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH
 agent, TMUX_TMPDIR, display, Kerberos, the pane's own TMUX and TMUX_PANE, and `TERM=tmux-256color`), then the user's
@@ -78,11 +78,11 @@ checkout and nobody has to ask for one.
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
 - **Branch**: `--branch B` or `worktree-<N>`; `--branch` and `--base` need a worktree. With `--branch`, an existing
-  local branch is checked out as it is (and never deleted), else a new one is made from the remote's B, fetched first,
-  if there is one (`upstream/B` names the remote; else `origin`, then `upstream`), which is then its base. Without it,
-  an existing `worktree-<N>` (an earlier session's, kept by `clean`) is refused rather than given to new work.
-  Otherwise the branch is new, from the base. New branches get `--no-track`, so a bare `git push` fails rather than
-  landing on the base or in the canonical repository.
+  local branch is checked out as it is (and never deleted), else a new one is made from the remote's B, fetched first
+  (as last fetched, when offline), if there is one (`upstream/B` names the remote; else `origin`, then `upstream`),
+  which is then its base. Without it, an existing `worktree-<N>` (an earlier session's, kept by `clean`) is refused
+  rather than given to new work. Otherwise the branch is new, from the base. New branches get `--no-track`, so a bare
+  `git push` fails rather than landing on the base or in the canonical repository.
 - **Base**: `--base REF`, else the default branch of `upstream` if that remote exists (forks), else of `origin`: asked
   of the remote with `ls-remote --symref`, else its local `<remote>/HEAD`; with neither, the start is refused (never a
   fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first, and must be a
@@ -94,7 +94,8 @@ checkout and nobody has to ask for one.
 Each session has a definition in `${XDG_STATE_HOME:-~/.local/state}/claude-sessions/<session>` (fields: the comment
 above `FIELDS` in `session.sh`), so after a stop, a crash or a reboot `start <session>` finds its worktree and
 conversation again. A worktree removed by hand is re-added from its branch; if the branch is gone too (renamed), the
-start is refused rather than resuming in a fresh tree.
+start is refused rather than resuming in a fresh tree. A restart whose starting subdirectory is gone from the branch
+starts at the worktree's top, in a new conversation (`--continue` looks only in the starting directory).
 
 **Conversation**: the first start passes `--session-id <id>`. Once a transcript with that id exists, a worktree session
 starts with `--continue`, the newest conversation in its own directory, which only it uses, so a `/clear` inside it
@@ -125,19 +126,18 @@ Worktrees without a definition are not touched; Claude's own subagent worktrees 
 
 ## Orchestrator permissions
 
-`--allow RULES` replaces `--dangerously-skip-permissions` with `--permission-mode dontAsk --allowedTools RULES`. For the
-orchestrator: `Bash(bash <checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)`, plus the
-allow rules from the user's and the checkout's settings, and any mod that approves calls, which dontAsk still
-honours. Checked live: other Bash (`touch`, `systemctl`) is
-denied; Claude Code's built-in read-only commands (`ls`) still run. The skill itself has no `allowed-tools`: it would
-let any session that loads it run the launcher without asking. A bare `Skill` rule would let the model load another
-skill whose `allowed-tools` grants all of Bash.
+`--allow RULES` replaces `--dangerously-skip-permissions` with `--permission-mode dontAsk --allowedTools RULES`. For
+the orchestrator: `Bash(bash <checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)`, plus
+allow rules from the user's and the checkout's settings and any hook that approves a call, which dontAsk still
+honours. Checked live: other Bash (`touch`, `systemctl`) is denied; Claude Code's built-in read-only commands (`ls`)
+still run. The skill itself has no `allowed-tools`: it would let any session that loads it run the launcher without
+asking. A bare `Skill` rule would let the model load another skill whose `allowed-tools` grants all of Bash.
 
-This limits what the orchestrator's own mistakes can do; it is not a security boundary. Its job is to start sessions
-with `--dangerously-skip-permissions` and a prompt, any other session can run the launcher or type into it, and a
-subagent whose definition sets `permissionMode` would leave dontAsk (none is defined here). So the
-skill's rules apply to the tasks it passes on too, and the launcher validates names, directories, branches and bases
-so those can't reach beyond it; `--prompt` and `--allow` are passed on as given, by design.
+This limits what the orchestrator's own mistakes can do; it is not a security boundary: any other session can run the
+launcher or type into it, and a subagent whose definition sets `permissionMode` would leave dontAsk (none is defined
+here). The sessions it starts skip permissions, so the skill's rules (SKILL.md, Rules) cover the tasks it passes on;
+the launcher validates names, directories, branches and bases so those can't reach beyond it; `--prompt` and `--allow`
+are passed on as given, by design.
 
 ## Boot (for laptop-setup)
 

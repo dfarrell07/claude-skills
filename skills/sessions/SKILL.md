@@ -41,24 +41,25 @@ can share a project. Started from a subdirectory, it starts in the same subdirec
   reopens that session; for a second agent on the same task, or new work under an old name, add a suffix
   (`--name fix-flaky-e2e-2`).
 - **Branch**: `--branch B` when the user names a branch to work on: a local branch as it is, else the remote's latest
-  (`upstream/B` for upstream's), else a new one; the name defaults to it. Without `--branch`, the branch is new,
-  from the remote's default branch (upstream's, for a fork). If B is checked out in the main checkout,
-  the start fails: ask whether to use `--here`. `--base REF` only when they name what a new branch starts from
-  (`--base upstream/release-0.20`).
+  (`upstream/B` for upstream's), else a new one; the name defaults to it. Without `--branch`, the branch is new, from
+  the remote's default branch (upstream's, for a fork). If B is checked out in the main checkout, the start fails: ask
+  whether to work in the checkout itself (`--here`, without `--branch`). `--base REF` only when they name what a new
+  branch starts from (`--base upstream/release-0.20`).
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
   uncommitted changes"). A directory that is not a repository is always in place.
 - **Trust**: claude asks once per directory tree; worktrees inherit their repository's answer. Pass `--trust` only when
   the user named that directory in this request (a bare name you resolved counts). On `needs-trust`, ask the user; if
   they confirm, run `start <session> --trust`.
-- **Prompt**: `--prompt "<text>"` when the user gave the session a task: their words, not your restatement. It is sent
-  only when the session starts, not to one that already runs.
+- **Prompt**: `--prompt '<text>'` when the user gave the session a task: their words, not your restatement,
+  single-quoted (a `'` in them written `'\''`), so backticks and `$` stay text. It is sent only when the session
+  starts, not to one that already runs.
 - **Again**: `start <session>` (with no other flags than `--trust` and `--prompt`) reopens a stopped or failed session
   in the same worktree and its latest conversation (in place: the conversation it started with), also after a reboot.
   "Restart my sessions": `ls`, then `start <session>` for each `stopped` or `failed` one the user wants. To start an
-  in-place session afresh, `clean <session>` first.
+  in-place session afresh: `clean <session>`, then `start <profile> <dir> --here --name <N>` as for a new one.
 
 Output of `start`: `worktree ...` when a new branch was made; `started <session> in <dir>`, or `exists <session>`
-(already running: nothing started; a `--prompt` given now is not sent); then `ready`, `needs-trust` (exit 3), or
+(already running: nothing started); then `ready`, `needs-trust` (exit 3), or
 `waiting` (exit 0, not ready in 30 s, after its last screen lines). `<session> failed before it was ready` (after
 claude's last lines) or `exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`.
 Relay results with the attach command.
@@ -68,9 +69,9 @@ Relay results with the attach command.
 `stop` keeps the worktree, so `start` can resume it. `clean` goes through the stopped sessions: it removes each one
 whose work is finished (merged, also by squash, or never used), with its build output, and prints `removed ...`,
 `forgot ...` (its directory or repository is gone) or `kept <session>: <why>`; running and in-place sessions are
-skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them), and forgets an in-place
-one (its next start is a new conversation); run it only for a session the user named. Uncommitted changes,
-unpushed submodule commits, commits on a detached HEAD and worktrees in use are never removed.
+skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them), and forgets an in-place one
+(a new `start <profile> <dir> --here` then begins a new conversation); run it only for a session the user named.
+Uncommitted changes, unpushed submodule commits, commits on a detached HEAD and worktrees in use are never removed.
 
 ## Rules
 

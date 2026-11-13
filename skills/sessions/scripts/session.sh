@@ -2,8 +2,8 @@
 # Background Claude Code sessions: tmux, Remote Control on, a clean environment, a named profile, and in a git
 # repository a worktree and branch of their own. Design: plans/session-orchestrator.md. Linux (flock, /proc).
 #   session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] [--prompt T] [--allow R]
-#   session.sh start <name> [--trust] [--prompt T]
-#   session.sh ls | stop <name> | clean [<name>]
+#   session.sh start <session> [--trust] [--prompt T]
+#   session.sh ls | stop <session> | clean [<session>]
 # Exit: 0 ok, 1 failed, 2 usage, 3 needs trust. Never runs systemctl, loginctl, reboot or tmux kill-server.
 set -euo pipefail
 
@@ -27,18 +27,19 @@ lock() { mkdir -p "$STATE"; exec 9>"$STATE/.lock"; flock 9; }
 
 # A definition: one file of key=value lines in $STATE, named after the session. repo and worktree are empty for a
 # session that works in place; dir is where it starts; base is what "finished" is measured against (the remote branch
-# a --branch came from, else the base it was made from); created=1 when the launcher made the branch, the only kind
+# a new --branch was made from, else --base or the default base); created=1 when the launcher made the branch, the only kind
 # clean deletes; id is the conversation's; allow, the orchestrator's tool allowlist.
 FIELDS=(profile repo worktree dir branch base created id allow)
 load() { # load <name>: sets D_<field>; fails when undefined
 	named "$1"
 	[[ -f $STATE/$1 ]] || return 1
-	local f k v
+	local f l
 	for f in "${FIELDS[@]}"; do printf -v "D_$f" ''; done
-	while IFS='=' read -r k v; do
-		[[ " ${FIELDS[*]} " != *" $k "* ]] || printf -v "D_$k" '%s' "$v"
+	while IFS= read -r l; do # key=value; the value may hold or end in =
+		[[ " ${FIELDS[*]} " != *" ${l%%=*} "* ]] || printf -v "D_${l%%=*}" '%s' "${l#*=}"
 	done <"$STATE/$1"
 }
+defined() { local n; for n in "$STATE"/*; do [[ ! -f $n || ! ${n##*/} =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || echo "${n##*/}"; done; }
 save() {
 	local f v tmp
 	tmp=$(mktemp "$STATE/.$1.XXXXXX")
@@ -103,7 +104,7 @@ add_worktree() {
 	if ! g check-ignore -q .claude/worktrees/x; then
 		local info
 		info=$(g rev-parse --path-format=absolute --git-common-dir)/info
-		mkdir -p "$info" && echo '**/.claude/worktrees/' >>"$info/exclude"
+		mkdir -p "$info" && printf '\n**/.claude/worktrees/\n' >>"$info/exclude"
 	fi
 	mkdir -p "${D_worktree%/*}"
 	if g show-ref --verify --quiet "refs/heads/$D_branch"; then
@@ -116,8 +117,12 @@ add_worktree() {
 	else
 		D_created=1
 		if [[ -n $branch ]]; then # a --branch a remote has, as it has it now: a local copy that pushes nowhere
-			for r in ${remote:-origin upstream}; do
-				g remote get-url "$r" >/dev/null 2>&1 && fetch "$r" "$D_branch" && { from=$r/$D_branch; D_base=$from; break; }
+			for r in ${remote:-origin upstream}; do # offline: the remote branch as last fetched beats none
+				g remote get-url "$r" >/dev/null 2>&1 || continue
+				fetch "$r" "$D_branch" || { g show-ref -q --verify "refs/remotes/$r/$D_branch" &&
+					echo "warning: could not fetch $r/$D_branch; using it as it is" >&2; } || continue
+				from=$r/$D_branch D_base=$r/$D_branch
+				break
 			done
 		fi
 		[[ -n $from ]] || { from=$D_base; fetch_base; }
@@ -228,8 +233,8 @@ start() {
 	fi
 	if [[ -n $D_worktree ]] && ! is_worktree "$D_worktree"; then add_worktree "$NEW"; fi
 	if [[ ! -d $D_dir && -n $D_worktree ]]; then # the subdirectory isn't on the branch (any more)
-		echo "warning: ${D_dir#"$D_worktree"/} is not on $D_branch; starting at the worktree's top" >&2
-		D_dir=$D_worktree
+		echo "warning: ${D_dir#"$D_worktree"/} is not on $D_branch; starting at the worktree's top, in a new conversation" >&2
+		D_dir=$D_worktree D_id=$(cat /proc/sys/kernel/random/uuid) # --continue looks only in the starting directory
 	fi
 	[[ -d $D_dir ]] || die "$D_dir is gone"
 	save "$NAME"
@@ -304,9 +309,7 @@ list() {
 	{
 		tm list-sessions -F '#{session_name} #{?pane_dead,failed,running} #{session_path}' 2>/dev/null |
 			grep -E "$PROFILES" || true
-		for n in "$STATE"/*; do
-			[[ -f $n ]] || continue
-			n=${n##*/}
+		for n in $(defined); do
 			alive "$n" || { load "$n" && echo "$n stopped $D_dir"; }
 		done
 	} | sort
@@ -351,9 +354,9 @@ keep() {
 
 clean() {
 	[[ $# -le 1 ]] || usage
-	local names=("$@") all='' why r
+	local names=("$@") all='' why
 	lock
-	[[ $# == 1 ]] || { all=1; for r in "$STATE"/*; do [[ -f $r ]] && names+=("${r##*/}"); done; }
+	[[ $# == 1 ]] || { all=1; mapfile -t names < <(defined); }
 	for NAME in "${names[@]}"; do
 		load "$NAME" || die "no definition for $NAME"
 		if alive "$NAME"; then

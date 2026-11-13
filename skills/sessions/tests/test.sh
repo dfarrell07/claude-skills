@@ -177,6 +177,11 @@ check "  " 0 "$WT/nd" log personal-nd pwd
 git clone -q --template= "$tmp/origin.git" "$tmp/notemplate" && echo "$tmp/notemplate" >>"$HOME/trusted"
 check "a clone without .git/info" 0 "ready personal-nt" s start personal "$tmp/notemplate" --name nt
 git clone -q --single-branch "$tmp/origin.git" "$tmp/single" && echo "$tmp/single" >>"$HOME/trusted"
+git -C "$tmp/seed" commit -q --allow-empty -m off && git -C "$tmp/seed" push -q origin HEAD:off &&
+	git -C "$tmp/seed" reset -q --hard origin/main && git -C "$R" fetch -q && mv "$tmp/origin.git" "$tmp/origin.away"
+check "offline, --branch takes the remote branch as last fetched" 0 "from origin/off" s start personal "$R" --branch off
+check "  not the base" 0 "off" git -C "$WT/off" log -1 --format=%s
+mv "$tmp/origin.away" "$tmp/origin.git"
 check "a --single-branch clone fetches another base" 0 "from origin/remote-only" s start personal "$tmp/single" --base origin/remote-only
 git -C "$R" worktree add -q "$tmp/usb" -b usb && mv "$tmp/usb" "$tmp/usb.away"
 check "another worktree's missing directory (unmounted)" 0 "ready personal-um" s start personal "$R" --name um
@@ -215,8 +220,15 @@ check "  but not with its branch gone" 1 "branch worktree-repo-2 is gone" s star
 git -C "$R" branch -qm renamed worktree-repo-2 && s start personal-repo-2 >/dev/null
 check "start <unknown>" 1 "no definition" s start personal-nope
 s stop personal-fix-1 >/dev/null && git -C "$WT/fix-1" rm -rq sub && git -C "$WT/fix-1" commit -qm "no sub"
+touch "$HOME/.claude/projects/p/$(id personal-fix-1).jsonl" # its conversation is in the old directory
 check "a restart whose subdirectory is gone starts at the top" 0 "ready personal-fix-1" s start personal-fix-1
 check "  " 0 "$WT/fix-1" log personal-fix-1 pwd
+check "  in a new conversation (--continue would find none there)" 0 "--session-id" log personal-fix-1 args
+check "a definition value ending in =" 0 "ready personal-eq" s start personal "$tmp/plain" --name eq --allow 'Bash(x=)'
+s stop personal-eq >/dev/null && s start personal-eq >/dev/null
+check "  survives a restart" 0 "Bash(x=)" log personal-eq args
+touch "$HOME/.local/state/claude-sessions/personal-x~"
+check "a stray file in the state directory" 0 "personal-eq" s ls
 
 echo "-- clean"
 for n in repo repo-1 repo-2 fix-1 remote-only topic pr fresh nd nt; do s stop "personal-$n" >/dev/null; done
