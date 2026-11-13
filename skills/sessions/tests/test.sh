@@ -27,6 +27,9 @@ if [[ -z $t ]]; then
 	printf ' ❯ No, exit\n   Yes, I trust this folder\n'; IFS= read -r l; [[ $l == *$'\e'*B* ]] || exit 1
 	echo "$PWD" >>"$HOME/trusted"
 fi
+if [[ -e $HOME/menu-$n ]]; then # another dialog, with the trust sentence elsewhere on screen
+	printf 'quoting: "   Yes, I trust this folder"\n ❯ 1. Keep\n   2. Remove\n'; IFS= read -r l; echo "$l" >"$HOME/log/$n.keys"
+fi
 if [[ -e $HOME/stopself-$n ]]; then
 	SESSIONS_TMUX_SOCKET=$(basename "${TMUX%%,*}") bash "$(cat "$HOME/sc")" stop "$n" >"$HOME/log/$n.stop" 2>&1
 fi
@@ -73,6 +76,7 @@ s() { bash "$sc" "$@"; }
 log() { cat "$HOME/log/$1.$2"; }
 id() { sed -n 's/^id=//p' "$HOME/.local/state/claude-sessions/$1"; }
 lacks() { ! grep -qE -- "$1" "$2"; } # lacks <regex> <file>
+hasnt() { [[ $1 != *"$2"* ]]; } # hasnt <text> <substring>
 ls_lacks() { local out; out=$(s ls) && ! grep -qE -- "$1" <<<"$out"; }
 
 echo "-- in place"
@@ -82,6 +86,7 @@ check "rerun is a no-op" 0 "exists personal2-plain" s start personal2 "$tmp/plai
 check "caller env does not leak" 0 "" lacks '^(LEAK|CLAUDECODE)=' "$HOME/log/personal2-plain.env"
 check "profile env set" 0 "CLAUDE_CONFIG_DIR=$HOME/.claude-per2" log personal2-plain env
 check "shell rc applied" 0 "RCVAR=1" log personal2-plain env
+rm -f "$HOME/guard" && s start personal "$tmp/plain" --name g >/dev/null
 check "  through its claude() guard" 0 "" test -e "$HOME/guard"
 check "personal drops Vertex" 0 "" lacks '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$HOME/log/personal2-plain.env"
 check "new conversation, named, Remote Control" 0 "--session-id
@@ -128,6 +133,10 @@ if command -v zsh >/dev/null; then
 	check "zsh as the user's shell" 0 "ready personal-z" env SHELL="$(command -v zsh)" bash "$sc" start personal "$tmp/plain" --name z
 	check "  its rc applied" 0 "RCVAR=zsh" log personal-z env
 fi
+touch "$HOME/menu-personal-menu"
+check "a session in another dialog" 0 "waiting personal-menu" s start personal "$tmp/plain" --name menu
+check "  gets no keys from --trust" 0 "waiting personal-menu" s start personal "$tmp/plain" --name menu --trust
+check "  " 1 "" test -s "$HOME/log/personal-menu.keys"
 touch "$HOME/stopself-personal-me"
 check "a session that stops itself" 0 "ready personal-me" s start personal "$tmp/plain" --name me
 check "  is refused" 0 "refusing to stop my own session" log personal-me stop
@@ -167,6 +176,12 @@ check "a subdirectory not on the base starts at the top" 0 "ready personal-nd" s
 check "  " 0 "$WT/nd" log personal-nd pwd
 git clone -q --template= "$tmp/origin.git" "$tmp/notemplate" && echo "$tmp/notemplate" >>"$HOME/trusted"
 check "a clone without .git/info" 0 "ready personal-nt" s start personal "$tmp/notemplate" --name nt
+git clone -q --single-branch "$tmp/origin.git" "$tmp/single" && echo "$tmp/single" >>"$HOME/trusted"
+check "a --single-branch clone fetches another base" 0 "from origin/remote-only" s start personal "$tmp/single" --base origin/remote-only
+git -C "$R" worktree add -q "$tmp/usb" -b usb && mv "$tmp/usb" "$tmp/usb.away"
+check "another worktree's missing directory (unmounted)" 0 "ready personal-um" s start personal "$R" --name um
+check "  keeps its registration" 0 "$tmp/usb" git -C "$R" worktree list
+mv "$tmp/usb.away" "$tmp/usb"
 git clone -q "$tmp/origin.git" "$tmp/my.repo" && echo "$tmp/my.repo" >>"$HOME/trusted"
 check "a repository name with a dot" 0 "ready personal-my_repo-1" s start personal "$tmp/my.repo"
 git init -q --bare -b devel "$tmp/upstream.git" && git -C "$tmp/seed" push -q "$tmp/upstream.git" main:devel
@@ -199,6 +214,9 @@ s stop personal-repo-2 >/dev/null && git -C "$R" worktree remove --force "$WT/re
 check "  but not with its branch gone" 1 "branch worktree-repo-2 is gone" s start personal-repo-2
 git -C "$R" branch -qm renamed worktree-repo-2 && s start personal-repo-2 >/dev/null
 check "start <unknown>" 1 "no definition" s start personal-nope
+s stop personal-fix-1 >/dev/null && git -C "$WT/fix-1" rm -rq sub && git -C "$WT/fix-1" commit -qm "no sub"
+check "a restart whose subdirectory is gone starts at the top" 0 "ready personal-fix-1" s start personal-fix-1
+check "  " 0 "$WT/fix-1" log personal-fix-1 pwd
 
 echo "-- clean"
 for n in repo repo-1 repo-2 fix-1 remote-only topic pr fresh nd nt; do s stop "personal-$n" >/dev/null; done
@@ -216,6 +234,14 @@ check "  kept: unmerged" 0 "kept personal-repo-2: unmerged work" echo "$out"
 check "  in-place sessions stay" 0 "personal-repo stopped" s ls
 check "clean <name> with unmerged work keeps the branch" 0 "removed personal-repo-2 (branch worktree-repo-2 kept)" s clean personal-repo-2
 check "  its commit is safe" 0 "wip" git -C "$R" log -1 --format=%s worktree-repo-2
+check "  and a new session never picks it up by name" 1 "worktree-repo-2 exists" s start personal "$R" --name repo-2
+git -C "$tmp/seed" push -q origin main:gone
+check "a branch whose remote branch is deleted" 0 "ready personal-gone" s start personal "$R" --branch gone
+echo g >"$WT/gone/g" && git -C "$WT/gone" add g && git -C "$WT/gone" commit -qm g && s stop personal-gone >/dev/null
+git -C "$tmp/seed" push -q origin :gone && git -C "$R" fetch -q --prune
+out=$(s clean 2>&1)
+check "  is kept (its base is unknown)" 0 "kept personal-gone: unmerged work" echo "$out"
+check "  quietly" 0 "" hasnt "$out" fatal
 check "uncommitted work is never removed" 0 "kept personal-fix-1: uncommitted" s clean personal-fix-1
 check "squash-merged work counts as finished" 0 "ready personal-sq" s start personal "$R" --name sq
 echo z >"$WT/sq/z" && git -C "$WT/sq" add z && git -C "$WT/sq" commit -qm z
@@ -253,5 +279,7 @@ tmux -L "$SESSIONS_TMUX_SOCKET" new-session -d -s mine sleep 600
 check "ls hides others" 0 "" ls_lacks '^mine '
 check "stop refuses others" 2 "not a session name" s stop mine
 check "stop missing" 1 "no session" s stop personal-nope
+tmux -L "$SESSIONS_TMUX_SOCKET" new-session -d -s personal-cwlike sleep 600
+check "stop a session without a definition (cw), promising no restart" 0 "" test "$(s stop personal-cwlike)" = "stopped personal-cwlike"
 
 if [[ $fails == 0 ]]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

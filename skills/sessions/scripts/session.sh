@@ -88,18 +88,18 @@ default_base() {
 	g symbolic-ref --quiet --short HEAD || g rev-parse HEAD
 }
 
-fetch() { # fetch <remote>/<branch>, best effort: a stale base beats no session
-	local r=${1%%/*}
-	[[ $1 == */* ]] && g remote get-url "$r" >/dev/null 2>&1 || return 0
-	timeout 30 git -C "$D_repo" fetch --quiet "$r" -- "${1#*/}" 2>/dev/null 9>&- ||
-		echo "warning: could not fetch $1; using it as it is" >&2
+# fetch <remote> <branch> into <remote>/<branch>, whatever the remote's fetch refspec (a --single-branch clone).
+fetch() { timeout 30 git -C "$D_repo" fetch -q "$1" -- "+refs/heads/$2:refs/remotes/$1/$2" 2>/dev/null 9>&-; }
+fetch_base() { # best effort: a stale base beats no session
+	[[ $D_base == */* ]] && g remote get-url "${D_base%%/*}" >/dev/null 2>&1 || return 0
+	fetch "${D_base%%/*}" "${D_base#*/}" || echo "warning: could not fetch $D_base; using it as it is" >&2
 }
 
 # Add the worktree of the loaded definition. new=1: its branch may be created; otherwise it must still exist.
 add_worktree() {
 	local new=$1 r from=''
 	[[ ! -e $D_worktree ]] || die "$D_worktree exists but is not a git worktree; move it away"
-	g worktree prune
+	g worktree remove --force "$D_worktree" 2>/dev/null || true # only our own stale registration, if any
 	if ! g check-ignore -q .claude/worktrees/x; then
 		local info
 		info=$(g rev-parse --path-format=absolute --git-common-dir)/info
@@ -107,25 +107,26 @@ add_worktree() {
 	fi
 	mkdir -p "${D_worktree%/*}"
 	if g show-ref --verify --quiet "refs/heads/$D_branch"; then
+		[[ -z $new || -n $branch ]] || # an earlier session's branch, kept by clean: not for new work
+			die "branch $D_branch exists (an earlier session's); --branch $D_branch continues it, or choose another --name"
 		[[ -z $new ]] || D_created=0
 		g worktree add --quiet "$D_worktree" "$D_branch" || die "could not check out $D_branch"
 	elif [[ -z $new ]]; then
 		die "branch $D_branch is gone (renamed?): restore it, or clean $NAME and start again"
 	else
 		D_created=1
-		for r in ${remote:-origin upstream}; do # a --branch a remote has, as it has it now: a local copy that pushes
-			g remote get-url "$r" >/dev/null 2>&1 || continue # nowhere until told to
-			[[ -z $branch ]] ||
-				timeout 30 git -C "$D_repo" fetch -q "$r" -- "+refs/heads/$D_branch:refs/remotes/$r/$D_branch" 2>/dev/null 9>&- || true
-			! g show-ref --verify --quiet "refs/remotes/$r/$D_branch" || { from=$r/$D_branch; D_base=$from; break; }
-		done
-		[[ -n $from ]] || { from=$D_base; fetch "$D_base"; }
+		if [[ -n $branch ]]; then # a --branch a remote has, as it has it now: a local copy that pushes nowhere
+			for r in ${remote:-origin upstream}; do
+				g remote get-url "$r" >/dev/null 2>&1 && fetch "$r" "$D_branch" && { from=$r/$D_branch; D_base=$from; break; }
+			done
+		fi
+		[[ -n $from ]] || { from=$D_base; fetch_base; }
 		g rev-parse --verify --quiet "$from^{commit}" >/dev/null || die "no such base: $from"
 		g worktree add --quiet --no-track -b "$D_branch" "$D_worktree" "$from" || die "could not create $D_branch"
 		echo "worktree $D_worktree on new branch $D_branch from $from"
 	fi
-	if g submodule status --recursive 2>/dev/null | grep '^[^-]' >/dev/null; then # as in the main checkout (not grep -q:
-		# it would exit early, and git's SIGPIPE fail the pipe)
+	# shellcheck disable=SC2143 # grep -q exits early, and git's SIGPIPE would fail the pipe
+	if [[ -n $(g submodule status --recursive 2>/dev/null | grep -v '^-') ]]; then # as in the main checkout
 		git -C "$D_worktree" submodule update --init --recursive --quiet 9>&- || echo "warning: submodules not initialized" >&2
 	fi
 }
@@ -226,7 +227,7 @@ start() {
 		return
 	fi
 	if [[ -n $D_worktree ]] && ! is_worktree "$D_worktree"; then add_worktree "$NEW"; fi
-	if [[ ! -d $D_dir && -n $NEW ]]; then # the subdirectory isn't on the base branch
+	if [[ ! -d $D_dir && -n $D_worktree ]]; then # the subdirectory isn't on the branch (any more)
 		echo "warning: ${D_dir#"$D_worktree"/} is not on $D_branch; starting at the worktree's top" >&2
 		D_dir=$D_worktree
 	fi
@@ -255,7 +256,7 @@ start() {
 		elif [ -n "$wt" ]; then "$c" --continue "$@"
 		else "$c" --resume "$id" "$@"; fi' session "$ENV_FILE" "$D_id" "$D_worktree" "${SETS[@]}" --)
 	local cmd=(claude --remote-control "$NAME" --name "$NAME") root=${D_worktree:-$D_dir}
-	if [[ -n $D_allow ]]; then # these tools (and the profile's settings allow rules); everything else is denied
+	if [[ -n $D_allow ]]; then # these rules (plus the user's and checkout's settings allow rules); the rest is denied
 		cmd+=(--permission-mode dontAsk --allowedTools "$D_allow")
 	else
 		cmd+=(--dangerously-skip-permissions)
@@ -286,8 +287,9 @@ ready() {
 		elif grep -q '^❯' <<<"$s"; then # the input box; the trust menu's cursor is indented
 			echo "ready $name"
 			return 0
-		elif [[ -z $sent && $s == *"Yes, I trust this folder"* ]]; then
-			[[ -n $trust ]] || { echo "needs-trust $name (tmux attach -t $name, or rerun with --trust)"; exit 3; }
+		elif [[ -z $sent ]] && grep -qE '^ *❯ *([0-9]+\. *)?No, exit *$' <<<"$s" &&
+			grep -qE '^ +([0-9]+\. *)?Yes, I trust this folder *$' <<<"$s"; then # the dialog, cursor on No: Down, Enter
+			[[ -n $trust ]] || { echo "needs-trust $name (tmux attach -t $name, or: start $name --trust)"; exit 3; }
 			tm send-keys -t "=$name:" Down Enter
 			sent=1
 		fi
@@ -320,11 +322,14 @@ stop() {
 		[[ $me != "$(tm display-message -pt "=$1:" '#{socket_path} #S')" ]] || die "refusing to stop my own session"
 	fi
 	tm kill-session -t "=$1"
-	echo "stopped $1 (start $1 resumes it; clean $1 removes it)"
+	if [[ -f $STATE/$1 ]]; then echo "stopped $1 (start $1 resumes it; clean $1 removes it)"; else echo "stopped $1"; fi
 }
 
 # Adds nothing to the base: merged (also by squash), or never used.
-finished() { [[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) == "$(g rev-parse "$D_base^{tree}")" ]]; }
+finished() { # an unknown base is never finished
+	local t
+	t=$(g rev-parse --verify -q "$D_base^{tree}") && [[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) == "$t" ]]
+}
 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
 # clean <name> removes that (a branch keeps the commits). Ignored files are build output: the worktree started with none.
@@ -339,10 +344,9 @@ keep() {
 		{ echo "git submodule failed"; return; }
 	[[ -z $out ]] || { echo "unpushed submodule commits"; return; }
 	tip=$(git -C "$wt" rev-parse HEAD) || { echo "no HEAD"; return; } # the worktree's own, not the main checkout's
-	if ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null; then
-		finished "$tip" || { echo "commits on a detached HEAD"; return; }
-	fi
-	[[ -z $all ]] || finished "$tip" || echo "unmerged work"
+	! finished "$tip" || return 0
+	git -C "$wt" symbolic-ref --quiet HEAD >/dev/null || { echo "commits on a detached HEAD"; return; }
+	[[ -z $all ]] || echo "unmerged work"
 }
 
 clean() {
@@ -363,7 +367,7 @@ clean() {
 			continue
 		fi
 		if is_worktree "$D_worktree"; then
-			fetch "$D_base"
+			fetch_base
 			why=$(keep "$all")
 			[[ -z $why ]] || { echo "kept $NAME: $why"; continue; }
 			# --force: keep() checked what it overrides (submodules); a single one still refuses a locked worktree.

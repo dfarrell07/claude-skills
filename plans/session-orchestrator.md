@@ -29,10 +29,10 @@ name is resolved by the orchestrator, which asks when unsure.
 
 **Name**: `<profile>-<N>`, the tmux session, `--name` and the Remote Control name. N is `--name`, else `--branch`,
 else `<repo>-<k>` for a new agent in a repository (the first k with no definition, session, worktree or
-`worktree-<repo>-k` branch, so it never picks up old work), else the directory's name; reduced to `[A-Za-z0-9_-]`.
-The name is the key: a running session is never started twice (`exists`); a name defined for another repository, or
-with another `--branch`, is refused. Every name the launcher is given must have that shape, so no argument can name a
-path outside its state.
+`worktree-<repo>-k` branch, so it never picks up old work), else the directory's name; reduced to `[A-Za-z0-9_-]`. The
+name is the key: a running session is never started twice (`exists`); a name defined for another repository or
+directory, or given another `--branch` or a `--base`, is refused. Every name the launcher is given must have that
+shape, so no argument can name a path outside its state.
 
 **Profiles**, mirroring `zshrc.j2`:
 
@@ -49,10 +49,10 @@ plugin manifest: a plugin under development, loaded with the same trust as that 
 every repository loaded as a plugin. work-env is optional because hosts on the older zshrc keep the Vertex variables
 in the rc.
 
-**Environment**: `env -i` with a short allowlist (HOME, USER, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH agent,
-TMUX_TMPDIR, display, Kerberos, and the pane's own TMUX and TMUX_PANE), then the user's interactive shell (`$SHELL -i
--c`, zsh or bash), so the rc's exports (GOTMPDIR, GOPRIVATE, KUBECONFIG, ...) and its `claude()` guard apply as in a
-new terminal, then the profile.
+**Environment**: `env -i` with a short allowlist (HOME, USER, LOGNAME, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH
+agent, TMUX_TMPDIR, display, Kerberos, the pane's own TMUX and TMUX_PANE, and `TERM=tmux-256color`), then the user's
+interactive shell (`$SHELL -i -c`, zsh or bash), so the rc's exports (GOTMPDIR, GOPRIVATE, KUBECONFIG, ...) and its
+`claude()` guard apply as in a new terminal, then the profile.
 
 **tmux**: the user's default server, whatever server the caller is in. `remain-on-exit failed`: a claude that exits
 with an error leaves its pane, so `start` can show its last lines, `ls` shows it as `failed`, and the next `start`
@@ -69,18 +69,20 @@ checkout and nobody has to ask for one.
 
 - **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it).
   The main checkout comes from `--git-common-dir` (or is `<dir>`'s own when its `.git` is a file), so `<dir>` may be a
-  linked worktree or a subdirectory (the session starts in the same subdirectory, or at the top if the base lacks
-  it); a bare repository is refused. Under the
-  repository, the worktree inherits its trust. `**/.claude/worktrees/` goes into `info/exclude` unless already
-  ignored. A new session whose worktree path already exists is refused: nothing is adopted (a `cwt` worktree on
-  another branch, or a stray directory in which the session would run on the main checkout).
+  linked worktree or a subdirectory (the session starts in the same subdirectory, or at the top when the branch lacks
+  it); a bare repository is refused. Under the repository, the worktree inherits its trust. `**/.claude/worktrees/`
+  goes into `info/exclude` unless already ignored. A new session whose worktree path already exists is refused:
+  nothing is adopted (a `cwt` worktree on another branch, or a stray directory in which the session would run on the
+  main checkout).
 - **Made by the launcher** with `git worktree add`, not `claude --worktree`, which can't take an existing branch or a
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
-- **Branch**: `--branch B` or `worktree-<N>`; `--branch` and `--base` need a worktree. An existing local branch is
-  checked out as it is (and never deleted). A new one is created from the remote's B, fetched first, if one exists
-  (`upstream/B` names the remote; else `origin`, then `upstream`), which is then its base, else from the base, always
-  with `--no-track`, so a bare `git push` fails rather than landing on the base or in the canonical repository.
+- **Branch**: `--branch B` or `worktree-<N>`; `--branch` and `--base` need a worktree. With `--branch`, an existing
+  local branch is checked out as it is (and never deleted), else a new one is made from the remote's B, fetched first,
+  if there is one (`upstream/B` names the remote; else `origin`, then `upstream`), which is then its base. Without it,
+  an existing `worktree-<N>` (an earlier session's, kept by `clean`) is refused rather than given to new work.
+  Otherwise the branch is new, from the base. New branches get `--no-track`, so a bare `git push` fails rather than
+  landing on the base or in the canonical repository.
 - **Base**: `--base REF`, else the default branch of `upstream` if that remote exists (forks), else of `origin`: asked
   of the remote with `ls-remote --symref`, else its local `<remote>/HEAD`; with neither, the start is refused (never a
   fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first, and must be a
@@ -112,7 +114,8 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
   tree. That holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
   unused branch, and can't lose content. Checks use the worktree's own HEAD, so commits on a detached HEAD, which no
   branch keeps, are seen.
-- Every check fails closed: a git command that errors keeps the worktree.
+- Every check fails closed: a git command that errors keeps the worktree, and an unknown base (its remote branch
+  deleted) is never finished.
 - `git status` is asked with `--ignore-submodules=none`, so a `submodule.<name>.ignore` setting can't hide changes.
 - Ignored files are build output: a new worktree has none, so they don't keep a finished worktree.
 - Removal uses `git worktree remove --force`, which submodules need; the checks cover what it overrides, and it still
@@ -124,13 +127,15 @@ Worktrees without a definition are not touched; Claude's own subagent worktrees 
 
 `--allow RULES` replaces `--dangerously-skip-permissions` with `--permission-mode dontAsk --allowedTools RULES`. For the
 orchestrator: `Bash(bash <checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)`, plus the
-profile's own settings allow rules, which dontAsk still honours. Checked live: other Bash (`touch`, `systemctl`) is
+allow rules from the user's and the checkout's settings, and any mod that approves calls, which dontAsk still
+honours. Checked live: other Bash (`touch`, `systemctl`) is
 denied; Claude Code's built-in read-only commands (`ls`) still run. The skill itself has no `allowed-tools`: it would
 let any session that loads it run the launcher without asking. A bare `Skill` rule would let the model load another
 skill whose `allowed-tools` grants all of Bash.
 
 This limits what the orchestrator's own mistakes can do; it is not a security boundary. Its job is to start sessions
-with `--dangerously-skip-permissions` and a prompt, and any other session can run the launcher or type into it. So the
+with `--dangerously-skip-permissions` and a prompt, any other session can run the launcher or type into it, and a
+subagent whose definition sets `permissionMode` would leave dontAsk (none is defined here). So the
 skill's rules apply to the tasks it passes on too, and the launcher validates names, directories, branches and bases
 so those can't reach beyond it; `--prompt` and `--allow` are passed on as given, by design.
 
@@ -173,9 +178,9 @@ Also for laptop-setup:
 
 Documented by Claude Code: transcripts at `<config>/projects/<encoded cwd>/<id>.jsonl` (found with `find`, never
 encoded here); `--continue` takes the newest conversation in the directory; `--allowedTools` rule syntax; skills'
-`${CLAUDE_SKILL_DIR}`. Undocumented but visible when they break, and covered by tests with
-a fake claude: the input box starts with `❯`, the trust menu's text; with Remote Control on, the transcript is written
-at startup. Linux only (`flock`, `/proc`).
+`${CLAUDE_SKILL_DIR}`. Undocumented but visible when they break, and covered by tests with a fake claude: the input
+box starts with `❯`, the trust dialog's two lines, cursor on "No, exit"; with Remote Control on, the transcript is
+written at startup. Linux only (`flock`, `/proc`).
 
 ## Rejected
 

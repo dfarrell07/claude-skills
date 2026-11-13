@@ -26,9 +26,8 @@ bash ${CLAUDE_SKILL_DIR}/scripts/session.sh clean [<session>]
 
 A session is named `<profile>-<name>` (e.g. `personal-fix-flaky-e2e`): its tmux session (`tmux attach -t <session>`)
 and its Remote Control name in claude.ai/code and the mobile app. In a git repository it gets its own worktree,
-`<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` or the `--branch` given (an existing local
-branch as it is, else new from the remote's default branch, upstream's for a fork), so several agents can share a
-project. Started from a subdirectory, it starts in the same subdirectory of its worktree.
+`<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` or the `--branch` given, so several agents
+can share a project. Started from a subdirectory, it starts in the same subdirectory of its worktree.
 
 ## Turning a request into a call
 
@@ -42,7 +41,8 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
   reopens that session; for a second agent on the same task, or new work under an old name, add a suffix
   (`--name fix-flaky-e2e-2`).
 - **Branch**: `--branch B` when the user names a branch to work on: a local branch as it is, else the remote's latest
-  (`upstream/B` for upstream's), else a new one; the name defaults to it. If B is checked out in the main checkout,
+  (`upstream/B` for upstream's), else a new one; the name defaults to it. Without `--branch`, the branch is new,
+  from the remote's default branch (upstream's, for a fork). If B is checked out in the main checkout,
   the start fails: ask whether to use `--here`. `--base REF` only when they name what a new branch starts from
   (`--base upstream/release-0.20`).
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
@@ -67,7 +67,7 @@ Relay results with the attach command.
 
 `stop` keeps the worktree, so `start` can resume it. `clean` goes through the stopped sessions: it removes each one
 whose work is finished (merged, also by squash, or never used), with its build output, and prints `removed ...`,
-`forgot ...` (a session whose directory is gone) or `kept <session>: <why>`; running and in-place sessions are
+`forgot ...` (its directory or repository is gone) or `kept <session>: <why>`; running and in-place sessions are
 skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them), and forgets an in-place
 one (its next start is a new conversation); run it only for a session the user named. Uncommitted changes,
 unpushed submodule commits, commits on a detached HEAD and worktrees in use are never removed.
