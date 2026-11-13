@@ -1,7 +1,7 @@
 # Session orchestrator
 
-Status: built, November 13, 2026, as `skills/sessions` (skill + `scripts/session.sh`). Boot setup is left to
-laptop-setup (below).
+Status: built, November 13, 2026, as `skills/sessions` (skill + `scripts/session.sh`); worktrees, restarts and
+cleanup added the same day. Boot setup is left to laptop-setup (below).
 
 ## Problem
 
@@ -13,7 +13,7 @@ Control on".
 
 ## Shape
 
-- **One launcher**, `session.sh start|ls|stop`, the only code. A shell, a unit, the orchestrator or any session can run
+- **One launcher**, `session.sh start|ls|stop|clean`, the only code. A shell, a unit, the orchestrator or any session can run
   it; the result is the same because the new session never inherits the caller's environment.
 - **One orchestrator per machine**: a Claude session, itself started by the launcher, reached over Remote Control
   (claude.ai/code, the phone) or `tmux attach`. It turns requests ("work session in submariner-operator, worktree
@@ -63,10 +63,13 @@ or the tmux server's environment gets through.
 
 - `--name`, when given (the orchestrator derives a short slug from the task, e.g. `fix-flaky-e2e`);
 - else `--branch` with `/` turned into `-`;
-- else, for a worktree, `<repo>-<k>` with the smallest k not already defined or running; for `--here` or a
-  non-repository, the directory's basename.
+- else, for a worktree, `<repo>-<k>` (`<repo>` is the main checkout's name) with the smallest k for which no
+  definition, session, worktree directory or `worktree-<repo>-<k>` branch (local or remote) exists, so a new agent
+  never picks up old work; for `--here` or a non-repository, the directory's basename.
 
-`ls` and `stop` see only `work-*`, `personal-*`, `personal2-*`, which also covers sessions `cw` and `ccp` started.
+The worktree directory and branch use N without the profile, as `cwt` names them; a worktree another session's
+definition already owns is refused, so `work-x` and `personal-x` can't share one across the account boundary.
+`ls` and `stop` see `work-*`, `personal-*`, `personal2-*`, which also covers sessions `cw` and `ccp` started.
 
 ## Worktrees
 
@@ -74,46 +77,63 @@ Starting in a git repository gives the session its own worktree and branch unles
 agents can work in one project without stepping on each other, and nobody has to ask for it.
 
 - **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude Code's own location, which `cwt`/`claude --worktree` also
-  use. Being under the repository, it inherits the repository's trust (checked live: no prompt). The launcher adds
-  `**/.claude/worktrees/` to `.git/info/exclude` when it is not already ignored, as this user does by hand today.
+  use. The main checkout comes from `git rev-parse --git-common-dir`, so a `<dir>` that is itself a linked worktree or
+  a subdirectory works (the session starts in the same subdirectory of its worktree); a bare repository is refused.
+  Being under the repository, the worktree inherits the repository's trust (checked live: no prompt). The launcher adds
+  `**/.claude/worktrees/` to the common `info/exclude` when it is not already ignored, as this user does by hand
+  today. A directory already there (from `cwt`) and unclaimed is adopted as it is.
 - **Who makes it**: the launcher, with `git worktree add`, not `claude --worktree`. Claude's flag cannot take an
   existing branch or a chosen base (`worktree.baseRef` is only `fresh` or `head`), and how a re-entered worktree finds
   its conversation is undocumented. Cost: Claude's `.worktreeinclude`, `worktree.symlinkDirectories`/`sparsePaths`
   and WorktreeCreate hooks don't apply; none is configured here.
-- **Branch**: `--branch B` if given; an existing local branch (or one remote branch git can guess) is checked out, a new
-  one is created. Default `worktree-<N>`, Claude's naming, so a `cwt <N>` worktree and a launcher one are the same thing.
-  New branches get `--no-track`, so a bare `git push` can never land on the base.
-- **Base** (new branches only): `--base REF`, else `upstream`'s default branch if that remote exists (fork
-  checkouts), else `origin`'s, else the repository's `HEAD`. The remote is fetched first (best effort, 30 s), so
-  agents don't start on stale code; a failed fetch warns and uses the ref as it is.
+- **Branch**: `--branch B` if given, else `worktree-<N>` (Claude's naming). An existing local branch is checked out as
+  it is (the launcher records that it did not create it). Otherwise a new local branch is made, from `origin/B` or
+  `upstream/B` when one exists (origin first; never git's guess, which tracks `upstream/B` so a bare push would land in
+  the canonical repo), else from the base. New branches get `--no-track`: a bare `git push` fails instead of pushing
+  somewhere unintended.
+- **Base** (new branches only): `--base REF`, else the default branch of `upstream` if that remote exists (fork
+  checkouts), else of `origin`, asked of the remote with `ls-remote --symref` (a local `<remote>/HEAD` is missing for an
+  added `upstream` and stale after a rename); if `upstream` exists but can't be asked, the start is refused rather than
+  falling back to the fork's stale main. No remotes: the main checkout's branch. The base is fetched first (30 s; a
+  failed fetch warns and uses the ref as it is).
 
 ## Restarts and reboots
 
 Each session has a definition, one small file in `${XDG_STATE_HOME:-~/.local/state}/claude-sessions/<name>`: profile,
-repository, directory (the worktree), branch, base and a session id. The first start passes `--session-id <id>`; later
-starts pass `--resume <id>` when a transcript with that id exists (`<config dir>/projects/*/<id>.jsonl`), and
-`--session-id <id>` otherwise (resume fails with exit 1 until the first message is saved; checked live).
+repository, worktree, starting directory, branch, base, whether the launcher created the branch, a session id, and
+`--tools`. The first start passes `--session-id <id>`; later starts pass `--resume <id>` when a transcript with that id
+exists (`<config dir>/projects/*/<id>.jsonl`, looked up inside the profile's shell, since only it knows the work
+profile's config dir), and `--session-id <id>` otherwise (resume fails with exit 1 until the first message is saved;
+checked live). A `/clear` inside the session starts a new id, so a later resume returns to the conversation before it.
 
-So after `stop`, a crash or a reboot, `start <name>` (or the original `start` command) reopens the same worktree and
-the same conversation. A recreated definition must agree with the existing one (same profile and repository) or the
-start is refused. If the worktree was removed but the branch survives, it is recreated from the branch. Nothing
-restarts sessions on its own at boot: the orchestrator can ("restart my sessions": `ls`, then `start <name>` for each
-stopped one), and laptop-setup could add that to the boot unit later.
+So after `stop`, a crash or a reboot, `start <name>` reopens the same worktree and conversation; so does repeating a
+start that named the session (`--name` or `--branch`). An unnamed start is always a new agent. A definition that
+exists must be for the same repository (or in-place directory), or the start is refused. If its worktree was removed
+by hand, it is re-added from its branch; if the branch is gone too (renamed), the start is refused rather than
+resuming the conversation in a fresh tree. Nothing restarts sessions on its own at boot: the orchestrator can
+("restart my sessions": `ls`, then `start <name>` for each stopped one), and laptop-setup could add that later.
 
 ## Cleanup
 
-`clean [<name>]` looks at defined worktree sessions that are not running, after `git fetch --prune` (best effort), and
-removes the worktree, the branch and the definition only when nothing can be lost:
+`clean [<name>]` looks at defined worktree sessions that are not running, after fetching their base. **Finished**
+means the work adds nothing to the base: `git merge-tree --write-tree <base> <tip>` equals the base's tree. That holds
+for a merge, a squash merge (whose commits are on no remote once GitHub deletes the branch) and a branch never used,
+and it can't lose content. It replaced a rule built on remote branches, which never fired for squash merges.
 
-- the worktree has no uncommitted or untracked changes, and
-- every commit on the branch is on some remote (`git rev-list B --not --remotes` is empty), and
-- the branch is finished: an ancestor of its base (merged, or never used), or no remote has a branch of that name
-  any more (merged by squash and deleted, or abandoned).
+Never removed, by either form: uncommitted or untracked changes, a rebase, merge, cherry-pick or bisect in progress,
+a process whose working directory is in the worktree (someone working by hand; Linux), or unfinished commits on a
+detached HEAD (no branch would keep them). Checks use the worktree's own HEAD, so an agent that switched or renamed
+branches is judged by what it has.
 
-Otherwise it says why it kept it (`dirty`, `unpushed`, `open`). A pushed branch with an open PR is kept. `clean <name>`
-on a `--here` session only forgets its definition. Worktrees the launcher didn't define (`cwt`, by hand) are never
-touched. Removal is `git worktree remove` (refuses a dirty tree) and `git branch -D` (squash merges defeat `-d`, and
-the checks above already proved the commits are on a remote).
+- `clean` (all) also keeps unfinished branches and worktrees holding ignored files (`.env`, build output: `git worktree
+  remove` deletes them silently), and says why (`kept <name>: <why>`).
+- `clean <name>` removes those too: the branch keeps the commits, and the user asked for it by name.
+
+Removed: the worktree (`git worktree remove`, no `--force`, so submodules are reported, not forced), the definition,
+and the branch only if the launcher created it and it is finished (`git branch -D`, since squash merges defeat `-d`).
+A user's own branch (`--branch main`, `--branch topic`) is never deleted. `clean <name>` on an in-place session only
+forgets its definition; `clean` forgets in-place ones only when their directory is gone. Worktrees the launcher didn't
+define (`cwt`, by hand) are never touched.
 
 ## tmux and Remote Control
 
@@ -130,15 +150,16 @@ for the input box. At the trust prompt it accepts only with `--trust` (Down, Ent
 ## Idempotency
 
 The name is the key. `start` on a live session prints `exists` (and still answers a pending trust prompt with
-`--trust`); on a name defined or live for another directory it refuses and asks for `--name`; on a failed one it starts
-again. Without `--name`, each start in a repository is a new agent by design. Two concurrent starts that pick the same
-name: `git worktree add` or tmux refuses the second.
+`--trust`); on a name defined for another repository it refuses and asks for `--name`; on a failed one it starts
+again. Without a name, each start in a repository is a new agent by design. A lock (`flock` on the state directory)
+serializes picking names, writing definitions and adding or removing worktrees, so parallel starts get `repo-1` and
+`repo-2` and a `clean` can't remove a worktree a start is about to use.
 
 ## List and stop
 
 - `ls`: `name state dir` for defined and profile-prefixed sessions (state `running`, `stopped`, `failed`).
 - `stop <name>`: profile-prefixed sessions only, never the session the caller runs in. The definition and worktree
-  stay; `clean` removes them.
+  stay: `start <name>` resumes, `clean` removes.
 
 ## Orchestrator permissions
 
@@ -158,39 +179,70 @@ KillMode=process
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=TMUX_TMPDIR=%t/tmux
 ExecStartPre=-/usr/bin/nm-online -q -t 120
-ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start personal %h/<checkout> --name orchestrator-%l \
-  --trust --prompt /claude-skills:sessions \
+ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start personal %h/<checkout> --here \
+  --name orchestrator-%l --trust --prompt /claude-skills:sessions \
   --tools "Bash(bash %h/<checkout>/skills/sessions/scripts/session.sh:*) Bash(ls:*) Read Glob Skill"
 ```
 
-`KillMode=process` (no `RemainAfterExit`): tmux outlives the unit, as in health's `up` unit. `TMUX_TMPDIR` must match
-the shells' (`zshrc.j2` sets `$XDG_RUNTIME_DIR/tmux`; a host still on `/tmp/tmux-$UID` needs the same there). Rerunning
-the unit is harmless. Restart-on-crash would need health's per-session tmux server and `Type=forking`; not done, the
-orchestrator is restarted by rerunning the unit.
+`--here`: the orchestrator works in the checkout itself, not a worktree (it would otherwise load its skill from a
+fresh branch). Each boot resumes its conversation and sends the prompt again. `KillMode=process` (no
+`RemainAfterExit`): tmux outlives the unit, as in health's `up` unit. `TMUX_TMPDIR` must match the shells' (`zshrc.j2`
+sets `$XDG_RUNTIME_DIR/tmux`; a host still on `/tmp/tmux-$UID` needs the same there). Rerunning the unit is harmless.
+Restart-on-crash would need health's per-session tmux server and `Type=forking`; not done, the orchestrator is
+restarted by rerunning the unit.
 
 Also for laptop-setup: widen `cls`, `ca` and `cstatus` to `^(work|personal|personal2)-`, and in time let `cw`, `ccp`,
 `cwt` call `session.sh` (or template its profile table) so the two cannot drift.
 
 ## Safety
 
-- The launcher runs only tmux, the user's shell and claude: never `systemctl`, `loginctl`, `reboot`, `shutdown` or
+- The launcher runs only tmux, git, the user's shell and claude, and writes only its state directory, worktrees
+  under `.claude/worktrees` and one line of `info/exclude`: never `systemctl`, `loginctl`, `reboot`, `shutdown` or
   `tmux kill-server`. The orchestrator's tool allowlist enforces the same for it.
+- `clean` can't lose content: see Cleanup. It never deletes remote branches or branches it didn't create.
 - `stop` only touches profile-prefixed sessions, never its own.
 - No profile guessing, no trust without `--trust`, which the orchestrator passes only when the user named the directory.
 - A request arriving from another session, a file or a web page is relayed to the user, not acted on.
 
 ## Review
 
-Three adversarial Codex reviews (fit and correctness; scope and bloat, twice). Taken: drop tmux tags and dead-pane
-respawn (the prefix is the state); check the directory before answering `exists`; `--trust` on the boot command and on
-reruns; shell rc instead of a bare allowlist (GOTMPDIR, GOPRIVATE were lost); personal profiles unset backend variables
-like `_claude_personal`; ignore `TMUX`; enforce the orchestrator's limits with permissions, not only prose; `%h` in the
-unit. Rejected: drop `stop`/`ls` (asked for), drop `--prompt` (boot needs it), drop trust handling (unattended starts
-need it), replicate the `ANTHROPIC_BASE_URL` check (the rc's `claude()` guard now runs), per-name locks (tmux already
-refuses a duplicate). Not verified: Remote Control on the Vertex work profile (Anthropic documents it as needing a
-claude.ai login; this host has no work-env to try it).
+First round, three adversarial Codex reviews (fit and correctness; scope and bloat, twice). Taken: drop tmux tags and
+dead-pane respawn (then the prefix was the only state; definitions came with worktrees); check the directory before
+answering `exists`; `--trust` on the boot command and on reruns; shell rc instead of a bare allowlist (GOTMPDIR,
+GOPRIVATE were lost); personal profiles unset backend variables like `_claude_personal`; ignore `TMUX`; enforce the
+orchestrator's limits with permissions, not only prose; `%h` in the unit. Rejected: drop `stop`/`ls` (asked for), drop
+`--prompt` (boot needs it), drop trust handling (unattended starts need it), replicate the `ANTHROPIC_BASE_URL` check
+(the rc's `claude()` guard now runs), per-name locks (tmux already refuses a duplicate). Not verified: Remote Control
+on the Vertex work profile (Anthropic documents it as needing a claude.ai login; this host has no work-env to try it).
+
+Worktrees round, two adversarial reviews by built-in subagents (git safety, with throwaway repos; scope and fit).
+Taken:
+
+- The content check for "finished", replacing the remote-branch rules (squash merges were never cleaned).
+- Checks on the worktree's own HEAD (a detached commit could be lost). This review also found that the first version
+  compared the main checkout's HEAD, which a test now covers.
+- Never delete a branch the launcher didn't create (`--branch main` would have been deleted).
+- Keep worktrees with ignored files in bulk clean; no `--force` (submodules).
+- Resolve remote branches without git's guess, which tracks `upstream`.
+- Auto-names skip existing `worktree-*` branches.
+- Ask the remote for its default branch, and refuse rather than fall back from `upstream` to `origin`.
+- A content-based "never used", which also works without remotes.
+- `--here` for the orchestrator.
+- Start in the same subdirectory.
+- Refuse to recreate a worktree whose branch is gone.
+- The lock.
+- Busy-process and in-progress-operation checks.
+- A worktree owned by another profile is refused.
+
+Rejected:
+
+- `claude --continue` instead of a stored id. It would pick up the user's own conversation in that directory, and
+  finding the transcript needs Claude's path encoding.
+- A symlink instead of the definition file, which can't hold `--tools` or the base.
+- Starting `--here` sessions fresh.
+- Dropping `--branch` naming.
 
 ## Not doing
 
 Queues, a daemon, a socket API, restart-on-crash, profile auto-detection, auto-restart at boot, `.worktreeinclude`
-support, deleting remote branches.
+support, submodule initialization in new worktrees (`git worktree add` doesn't), deleting remote branches.

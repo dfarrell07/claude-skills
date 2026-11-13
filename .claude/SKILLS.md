@@ -55,14 +55,17 @@ DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/del
 ## /sessions
 
 Start background Claude sessions one way: in the user's tmux, Remote Control on, a fresh environment, a named
-profile (`work`, `personal`, `personal2`) and directory. Starting one twice does nothing; `stop` touches only
-sessions it started. Run with no arguments, the session is this machine's orchestrator, started at boot. Design:
-`plans/session-orchestrator.md`.
+profile (`work`, `personal`, `personal2`) and directory. In a git repository each session gets its own worktree and
+branch, so several agents can share a project; `start <name>` reopens the same worktree and conversation after a stop
+or reboot, and `clean` removes finished worktrees without losing work. Run with no arguments, the session is this
+machine's orchestrator, started at boot. Design: `plans/session-orchestrator.md`.
 
 ```bash
-/sessions [start <profile> <dir> ... | ls | stop <name>]
-skills/sessions/scripts/session.sh start <profile> <dir> [--worktree W] [--name N] [--trust] [--prompt TEXT] [--tools RULES]
-skills/sessions/scripts/session.sh ls|stop <name>
+/sessions [start <profile> <dir> ... | start <name> | ls | stop <name> | clean [<name>]]
+skills/sessions/scripts/session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] \
+  [--prompt T] [--tools R]
+skills/sessions/scripts/session.sh start <name>   # again: same worktree, same conversation
+skills/sessions/scripts/session.sh ls | stop <name> | clean [<name>]
 ```
 
 ## /notes
