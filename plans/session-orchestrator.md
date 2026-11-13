@@ -101,12 +101,13 @@ agents can work in one project without stepping on each other, and nobody has to
 
 Each session has a definition, one small file in `${XDG_STATE_HOME:-~/.local/state}/claude-sessions/<name>`: profile,
 repository, worktree, starting directory, branch, base, whether the launcher created the branch, a session id, and
-`--tools`. The first start passes `--session-id <id>`; later starts pass `--resume <id>` when a transcript with that id
-exists (`<config dir>/projects/*/<id>.jsonl`, looked up inside the profile's shell, since only it knows the work
-profile's config dir), and `--session-id <id>` otherwise. Checked live: `--resume` fails with exit 1 while no transcript
-exists, a second `--session-id` with a used id fails as "already in use", and with Remote Control on the transcript is
-written at startup, so the check sees it from the first run. The lookup uses `find`, since zsh aborts on a glob that
-matches nothing (this broke the first live run; the tests now run zsh too). A `/clear` inside the session starts a new id, so a later resume returns to the conversation before it.
+`--tools`. The first start passes `--session-id <id>`; later starts pass `--resume <id>` when a transcript with that
+id exists (`<config dir>/projects/*/<id>.jsonl`, looked up inside the profile's shell, since only it knows the work
+profile's config dir), and `--session-id <id>` otherwise. Checked live: `--resume` fails with exit 1 while no
+transcript exists, a second `--session-id` with a used id fails as "already in use", and with Remote Control on the
+transcript is written at startup, so the check sees it from the first run. The lookup uses `find`, since zsh aborts on
+a glob that matches nothing (this broke the first live run; the tests now run zsh too). A `/clear` inside the session
+starts a new id, so a later resume returns to the conversation before it.
 
 So after `stop`, a crash or a reboot, `start <name>` reopens the same worktree and conversation; so does repeating a
 start that named the session (`--name` or `--branch`). An unnamed start is always a new agent. A definition that
