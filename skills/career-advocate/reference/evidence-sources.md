@@ -49,6 +49,12 @@ kept:
 - **Gerrit REST** (`/changes/?q=owner:...` and `reviewer:...`): authored and
   reviewed changes. Page through results, 100 at a time.
 - **OpenStack specs and conference schedules (sched):** assignee lists and talks.
+- **Mailing lists:** go to the canonical archive before mirrors. Old Mailman
+  pipermail links often redirect to groups.io, whose public groups can be read
+  without logging in. Its name search misses many posts, so use the sender
+  search instead: the "All Messages By This Member" link gives a
+  `posterid:` query. Gmane still serves old lists over NNTP (news.gmane.io:119).
+  Mirrors such as mail-archive.com and MARC only fill gaps.
 
 ## Unreachable sources
 
