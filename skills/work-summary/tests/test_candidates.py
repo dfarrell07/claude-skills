@@ -83,6 +83,38 @@ class CandidatesTest(unittest.TestCase):
         self.assertIn('same commits also in 1 other checkout(s): /scratch/repo-copy', digest)
         self.assertIn('    - ' + 'a' * 40 + ' Fix the parser\n    - ' + 'b' * 40 + ' Add tests', digest)
 
+    def commit_digest(self, commits):
+        data = capture()
+        data['metadata']['repositories'] = [r for r in data['metadata']['repositories'] if r['path'] in commits]
+        data['commits'] = commits
+        return candidates(data)
+
+    def test_same_hash_in_two_clones_counts_once(self):
+        row = commit('a', 'Fix the parser')
+        digest = self.commit_digest({'/work/repo': [row], '/scratch/repo-copy': [dict(row)]})
+        self.assertIn('(1 repositories, 1 commits)', digest)
+        self.assertEqual(digest.count('a' * 40 + ' Fix the parser'), 1)
+        self.assertIn('- /work/repo (remote org/repo): 1 commits', digest)
+
+    def test_amended_copy_with_a_new_hash_counts_once_and_prefers_canonical_path(self):
+        amended = dict(commit('b', 'Fix the parser\n\nbody'), committed_at='2026-10-12T00:00:00Z')
+        digest = self.commit_digest({'/scratch/repo-copy': [amended], '/work/repo': [commit('a', 'Fix the parser')]})
+        self.assertIn('(1 repositories, 1 commits)', digest)
+        self.assertIn('a' * 40 + ' Fix the parser', digest)
+        self.assertNotIn('b' * 40, digest)
+
+    def test_distinct_commits_are_untouched(self):
+        other = dict(commit('c', 'Fix the lexer'), authored_at='2026-10-12T00:00:00Z', committed_at='2026-10-12T00:00:00Z')
+        digest = self.commit_digest({'/work/repo': [commit('a', 'Fix the parser'), commit('b', 'Add tests'), other]})
+        self.assertIn('(1 repositories, 3 commits)', digest)
+        for sha in 'abc':
+            self.assertIn(sha * 40, digest)
+
+    def test_header_counts_unique_commits_across_clones(self):
+        rows = [commit('a', 'One'), commit('b', 'Two')]
+        digest = self.commit_digest({'/work/repo': rows, '/scratch/repo-copy': [dict(r) for r in rows]})
+        self.assertIn('## Local commits you authored (1 repositories, 2 commits)', digest)
+
     def test_jira_updates_without_comments_and_pushed_prs_are_not_lost(self):
         data = capture()
         data['jira'] = {'metadata': {'status': 'ok'}, 'activity': [], 'issues': [
