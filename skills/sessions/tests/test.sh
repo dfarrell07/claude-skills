@@ -85,9 +85,9 @@ check "  through its claude() guard" 0 "" test -e "$HOME/guard"
 check "personal drops Vertex" 0 "" lacks '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$HOME/log/personal2-plain.env"
 check "new conversation, named, Remote Control" 0 "--session-id
 $(id personal2-plain)
---name
-personal2-plain
 --remote-control
+personal2-plain
+--name
 personal2-plain
 --dangerously-skip-permissions" log personal2-plain args
 check "  no --plugin-dir for a directory that is no plugin" 0 "" lacks plugin-dir "$HOME/log/personal2-plain.args"
@@ -100,7 +100,7 @@ check "work profile" 0 "ready work-plain" s start work "$tmp/plain"
 check "  Vertex kept" 0 "ANTHROPIC_VERTEX_PROJECT_ID=rc-project" log work-plain env
 check "  Vertex on" 0 "CLAUDE_CODE_USE_VERTEX=1" log work-plain env
 check "  work env sourced" 0 "WORKVAR=1" log work-plain env
-check "  no Remote Control (Vertex has none)" 0 "" lacks remote-control "$HOME/log/work-plain.args"
+check "  Remote Control, as cwork" 0 "--remote-control" log work-plain args
 check "--allow: an allowlist" 0 "dontAsk
 --allowedTools
 Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --allow Read >/dev/null; cat '$HOME/log/personal-t.args'"
@@ -109,7 +109,12 @@ check "a flag without its value" 2 "usage" s start personal "$tmp/plain" --name
 check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
 check "a path is no session name" 2 "not a session name" s clean ../../home/.bashrc
 check "  " 2 "not a session name" s start ../x
+check "start <session> takes no definition flags" 2 "usage" s start personal2-plain --branch x
 check "a base that looks like an option" 2 "bad base" s start personal "$tmp/plain" --base --upload-pack=x
+check "a base that is a refspec" 2 "bad base" s start personal "$R" --name rs --base 'origin/+main:refs/heads/topic'
+check "an --allow that is an option" 2 "bad --allow" s start personal "$tmp/plain" --name a --allow --dangerously-skip-permissions
+mkdir -p "$tmp/x#y"
+check "a directory with # (a tmux format)" 2 "path with #" s start personal "$tmp/x#y"
 check "a bad branch name" 2 "bad branch name" s start personal "$tmp/plain" --branch 'a..b'
 check "a prompt ending in ;" 0 "--
 run it;" bash -c "bash '$sc' start personal '$tmp/plain' --name semi --prompt 'run it;' >/dev/null; cat '$HOME/log/personal-semi.args'"
@@ -147,7 +152,18 @@ mkdir -p "$WT/stray/.claude"
 check "a directory already there is never adopted" 1 "already exists" s start personal "$R" --name stray
 git -C "$R" worktree add -q "$WT/cw" -b cwt-branch
 check "  nor a worktree made outside the launcher" 1 "already exists" s start personal "$R" --name cw --branch wanted
-check "a remote branch ahead of the base" 0 "from origin/pr" s start personal "$R" --branch pr
+check "a remote branch ahead of the base" 0 "from origin/pr" s start personal "$R" --branch origin/pr
+check "  named for the branch, not origin/pr" 0 "" test -z "$(git -C "$R" branch --list 'origin/*')"
+git -C "$tmp/seed" commit -q --allow-empty -m fresh && git -C "$tmp/seed" push -q origin HEAD:fresh && git -C "$tmp/seed" reset -q --hard origin/main
+check "a branch pushed after the last fetch" 0 "from origin/fresh" s start personal "$R" --branch fresh
+check "  is fetched first" 0 "fresh" git -C "$WT/fresh" log -1 --format=%s
+check "an in-place name for a worktree session refused" 1 "works in place" s start personal "$R" --name repo
+check "a worktree name for an in-place session refused" 1 "has a worktree" s start personal "$R" --here --name fix-1
+git -C "$R" commit -q --allow-empty -m x && mkdir -p "$R/newdir" && touch "$R/newdir/f" && git -C "$R" add newdir && git -C "$R" commit -qm newdir
+check "a subdirectory not on the base starts at the top" 0 "ready personal-nd" s start personal "$R/newdir" --name nd
+check "  " 0 "$WT/nd" log personal-nd pwd
+git clone -q --template= "$tmp/origin.git" "$tmp/notemplate" && echo "$tmp/notemplate" >>"$HOME/trusted"
+check "a clone without .git/info" 0 "ready personal-nt" s start personal "$tmp/notemplate" --name nt
 git clone -q "$tmp/origin.git" "$tmp/my.repo" && echo "$tmp/my.repo" >>"$HOME/trusted"
 check "a repository name with a dot" 0 "ready personal-my_repo-1" s start personal "$tmp/my.repo"
 git init -q --bare -b devel "$tmp/upstream.git" && git -C "$tmp/seed" push -q "$tmp/upstream.git" main:devel
@@ -176,7 +192,7 @@ git -C "$R" branch -qm renamed worktree-repo-2 && s start personal-repo-2 >/dev/
 check "start <unknown>" 1 "no definition" s start personal-nope
 
 echo "-- clean"
-for n in repo repo-1 repo-2 fix-1 remote-only topic pr; do s stop "personal-$n" >/dev/null; done
+for n in repo repo-1 repo-2 fix-1 remote-only topic pr fresh nd nt; do s stop "personal-$n" >/dev/null; done
 check "a running session is not cleaned" 1 "running; stop it first" s clean personal2-plain
 echo x >"$WT/fix-1/new.txt"
 echo w >"$WT/repo-2/w" && git -C "$WT/repo-2" add w && git -C "$WT/repo-2" commit -qm wip
@@ -210,6 +226,10 @@ check "  kept" 0 "kept personal-smc: unpushed submodule commits" s clean persona
 check "submodule changes hidden by ignore=dirty are never removed" 0 "ready personal-smd" s start personal "$R" --name smd
 git -C "$WT/smd" config submodule.sm.ignore dirty && echo n >"$WT/smd/sm/notes.txt" && s stop personal-smd >/dev/null
 check "  kept" 0 "kept personal-smd: uncommitted changes" s clean personal-smd
+check "a failing git check keeps the worktree" 0 "ready personal-ro" s start personal "$R" --name ro
+echo n >"$WT/ro/notes.txt" && s stop personal-ro >/dev/null && chmod 000 "$(git -C "$WT/ro" rev-parse --git-dir)/index"
+check "  " 0 "kept personal-ro: git status failed" s clean personal-ro
+chmod 644 "$(git -C "$WT/ro" rev-parse --git-dir)/index"
 check "a worktree with submodules is removed" 0 "ready personal-sm" s start personal "$R" --name sm
 s stop personal-sm >/dev/null
 check "  with its branch" 0 "removed personal-sm and branch worktree-sm" s clean personal-sm

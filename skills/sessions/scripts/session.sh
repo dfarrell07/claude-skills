@@ -77,7 +77,7 @@ default_base() {
 	local r head
 	for r in upstream origin; do
 		g remote get-url "$r" >/dev/null 2>&1 || continue
-		head=$(timeout 30 git -C "$D_repo" ls-remote --symref "$r" HEAD 2>/dev/null |
+		head=$(timeout 30 git -C "$D_repo" ls-remote --symref "$r" HEAD 2>/dev/null 9>&- |
 			sed -n 's|^ref: refs/heads/\(.*\)\tHEAD$|\1|p') || true
 		head=${head:-$(g symbolic-ref --quiet --short "refs/remotes/$r/HEAD" 2>/dev/null | sed "s|^$r/||")}
 		[[ -n $head ]] || die "cannot tell $r's default branch (offline?); pass --base"
@@ -90,7 +90,8 @@ default_base() {
 fetch() { # fetch <remote>/<branch>, best effort: a stale base beats no session
 	local r=${1%%/*}
 	[[ $1 == */* ]] && g remote get-url "$r" >/dev/null 2>&1 || return 0
-	timeout 30 git -C "$D_repo" fetch --quiet "$r" -- "${1#*/}" 2>/dev/null || echo "warning: could not fetch $1; using it as it is" >&2
+	timeout 30 git -C "$D_repo" fetch --quiet "$r" -- "${1#*/}" 2>/dev/null 9>&- ||
+		echo "warning: could not fetch $1; using it as it is" >&2
 }
 
 # Add the worktree of the loaded definition. new=1: its branch may be created; otherwise it must still exist.
@@ -99,7 +100,9 @@ add_worktree() {
 	[[ ! -e $D_worktree ]] || die "$D_worktree exists but is not a git worktree; move it away"
 	g worktree prune
 	if ! g check-ignore -q .claude/worktrees/x; then
-		echo '**/.claude/worktrees/' >>"$(g rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+		local info
+		info=$(g rev-parse --path-format=absolute --git-common-dir)/info
+		mkdir -p "$info" && echo '**/.claude/worktrees/' >>"$info/exclude"
 	fi
 	mkdir -p "${D_worktree%/*}"
 	if g show-ref --verify --quiet "refs/heads/$D_branch"; then
@@ -109,7 +112,12 @@ add_worktree() {
 		die "branch $D_branch is gone (renamed?): restore it, or clean $NAME and start again"
 	else
 		D_created=1
-		for r in origin upstream; do # an existing remote branch: a local copy that pushes nowhere until told to
+		for r in origin upstream; do # a --branch the remote has, as it has it now
+			if [[ -n $branch ]] && g remote get-url "$r" >/dev/null 2>&1; then
+				timeout 30 git -C "$D_repo" fetch -q "$r" -- "+refs/heads/$D_branch:refs/remotes/$r/$D_branch" 2>/dev/null 9>&- || true
+			fi
+		done
+		for r in origin upstream; do # a local copy of it, which pushes nowhere until told to
 			! g show-ref --verify --quiet "refs/remotes/$r/$D_branch" || { from=$r/$D_branch; D_base=$from; break; }
 		done # D_base: finished means nothing beyond the remote branch it came from
 		[[ -n $from ]] || { from=$D_base; fetch "$D_base"; }
@@ -118,7 +126,7 @@ add_worktree() {
 		echo "worktree $D_worktree on new branch $D_branch from $from"
 	fi
 	if g submodule status --recursive 2>/dev/null | grep -q '^[^-]'; then # as initialized in the main checkout
-		git -C "$D_worktree" submodule update --init --recursive --quiet || echo "warning: submodules not initialized" >&2
+		git -C "$D_worktree" submodule update --init --recursive --quiet 9>&- || echo "warning: submodules not initialized" >&2
 	fi
 }
 
@@ -126,14 +134,19 @@ add_worktree() {
 define() {
 	local prof=$1 dir sub='' main='' n k owner
 	profile "$prof"
-	dir=$(cd "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
+	dir=$(CDPATH='' cd "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
+	[[ $dir != *'#'* ]] || die "$dir: tmux cannot start in a path with #" 2
 	[[ -z $branch ]] || git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "bad branch name: $branch" 2
-	[[ $base != -* ]] || die "bad base: $base" 2
+	[[ -z $base || ($base =~ ^[A-Za-z0-9._/@^~-]+$ && $base != -*) ]] || die "bad base: $base" 2 # never a refspec
+	[[ $allow != -* ]] || die "bad --allow: $allow" 2
 	if [[ -z $here ]] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 		main=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)
 		[[ $main == */.git ]] || die "$dir: no main checkout to hold worktrees (bare repository?); use --here"
 		main=${main%/.git}
 		sub=$(git -C "$dir" rev-parse --show-prefix) # start in the same subdirectory of the worktree
+		if [[ $branch == */* ]] && git -C "$dir" remote get-url "${branch%%/*}" >/dev/null 2>&1; then
+			branch=${branch#*/} # origin/foo means the branch foo
+		fi
 	fi
 	D_repo=$main
 	if [[ -n $name || -n $branch || -z $main ]]; then
@@ -148,6 +161,8 @@ define() {
 	NAME=$prof-$n
 	if load "$NAME"; then # an existing session: its definition wins, and must be what was asked for
 		[[ ${D_repo:-$D_dir} == "${main:-$dir}" ]] || die "$NAME is already defined for ${D_repo:-$D_dir}; choose another --name"
+		[[ -z $D_worktree && -z $main || -n $D_worktree && -n $main ]] ||
+			die "$NAME ${D_worktree:+has a worktree}${D_worktree:-works in place}; choose another --name"
 		[[ -z $branch || $branch == "$D_branch" ]] || die "$NAME is on $D_branch; choose another --name"
 		[[ -z $base ]] || die "$NAME exists; --base applies only to a new session"
 		D_allow=${allow:-$D_allow}
@@ -183,7 +198,11 @@ start() {
 	NEW=''
 	lock
 	case ${#pos[@]} in
-	1) NAME=${pos[0]}; load "$NAME" || die "no definition for $NAME (session.sh ls)" ;;
+	1)
+		[[ -z $name$branch$base$here$allow ]] || usage # a defined session keeps its definition
+		NAME=${pos[0]}
+		load "$NAME" || die "no definition for $NAME (session.sh ls)"
+		;;
 	2) define "${pos[@]}" ;;
 	*) usage ;;
 	esac
@@ -202,15 +221,17 @@ start() {
 		return
 	fi
 	if [[ -n $D_worktree ]] && ! is_worktree "$D_worktree"; then add_worktree "$NEW"; fi
+	if [[ ! -d $D_dir && -n $NEW ]]; then # the subdirectory isn't on the base branch
+		echo "warning: ${D_dir#"$D_worktree"/} is not on $D_branch; starting at the worktree's top" >&2
+		D_dir=$D_worktree
+	fi
 	[[ -d $D_dir ]] || die "$D_dir is gone"
 	save "$NAME"
 
 	# A fresh environment (tmux's TMUX and TMUX_PANE kept, so the session knows where it runs), then the user's
 	# interactive shell rc, as a new terminal gets, then the profile: nothing from the caller or the tmux server
 	# (CLAUDE_CODE_* markers, another account's variables) reaches the session.
-	local path=$PATH v vars
-	[[ :$path: == *":$HOME/.local/bin:"* ]] || path=$HOME/.local/bin:$path
-	vars=("PATH=$path" TERM=tmux-256color)
+	local v vars=("PATH=$PATH" TERM=tmux-256color)
 	for v in HOME USER LOGNAME SHELL LANG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK TMUX_TMPDIR \
 		DISPLAY WAYLAND_DISPLAY KRB5CCNAME; do
 		[[ -z ${!v:-} ]] || vars+=("$v=${!v}")
@@ -228,8 +249,7 @@ start() {
 			grep -q .; then "$c" --session-id "$id" "$@"
 		elif [ -n "$wt" ]; then "$c" --continue "$@"
 		else "$c" --resume "$id" "$@"; fi' session "$ENV_FILE" "$D_id" "$D_worktree" "${SETS[@]}" --)
-	local cmd=(claude --name "$NAME") root=${D_worktree:-$D_dir}
-	[[ $D_profile == work ]] || cmd+=(--remote-control "$NAME") # Remote Control needs the Anthropic API, not Vertex
+	local cmd=(claude --remote-control "$NAME" --name "$NAME") root=${D_worktree:-$D_dir}
 	if [[ -n $D_allow ]]; then # only these tools; everything else is denied
 		cmd+=(--permission-mode dontAsk --allowedTools "$D_allow")
 	else
@@ -304,15 +324,16 @@ finished() { [[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) == "$(g 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
 # clean <name> removes that (a branch keeps the commits). Ignored files are build output: the worktree started with none.
 keep() {
-	local all=$1 wt=$D_worktree tip p
-	[[ -z $(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) ]] ||
-		{ echo "uncommitted changes"; return; }
+	local all=$1 wt=$D_worktree out tip p # every check fails closed: an error keeps the worktree
+	out=$(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) || { echo "git status failed"; return; }
+	[[ -z $out ]] || { echo "uncommitted changes"; return; }
 	for p in /proc/[0-9]*/cwd; do # someone working there by hand
 		[[ $(readlink "$p" 2>/dev/null)/ != "$wt"/* ]] || { echo "in use by process ${p//[^0-9]/}"; return; }
 	done
-	[[ -z $(git -C "$wt" submodule foreach -q --recursive 'git log --oneline -1 HEAD --branches --not --remotes') ]] ||
-		{ echo "unpushed submodule commits"; return; }
-	tip=$(git -C "$wt" rev-parse HEAD) # the worktree's own HEAD, not the main checkout's
+	out=$(git -C "$wt" submodule foreach -q --recursive 'git log --oneline -1 HEAD --branches --not --remotes') ||
+		{ echo "git submodule failed"; return; }
+	[[ -z $out ]] || { echo "unpushed submodule commits"; return; }
+	tip=$(git -C "$wt" rev-parse HEAD) || { echo "no HEAD"; return; } # the worktree's own, not the main checkout's
 	if ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null; then
 		finished "$tip" || { echo "commits on a detached HEAD"; return; }
 	fi
@@ -322,8 +343,8 @@ keep() {
 clean() {
 	[[ $# -le 1 ]] || usage
 	local names=("$@") all='' why r
-	[[ $# == 1 ]] || { all=1; for r in "$STATE"/*; do [[ -f $r ]] && names+=("${r##*/}"); done; }
 	lock
+	[[ $# == 1 ]] || { all=1; for r in "$STATE"/*; do [[ -f $r ]] && names+=("${r##*/}"); done; }
 	for NAME in "${names[@]}"; do
 		load "$NAME" || die "no definition for $NAME"
 		if alive "$NAME"; then
