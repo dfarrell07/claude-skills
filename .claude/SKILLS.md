@@ -64,7 +64,7 @@ machine's orchestrator, meant to start at boot (laptop-setup). Design: `plans/se
 /sessions [start <profile> <dir> ... | start <session> | ls | stop <session> | clean [<session>]]
 skills/sessions/scripts/session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] \
   [--prompt T] [--allow R]
-skills/sessions/scripts/session.sh start <session>   # again: same worktree, latest conversation
+skills/sessions/scripts/session.sh start <session>   # again: same worktree and conversation
 skills/sessions/scripts/session.sh ls | stop <session> | clean [<session>]
 ```
 

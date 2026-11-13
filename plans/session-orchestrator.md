@@ -68,18 +68,19 @@ In a git repository each session gets its own worktree and branch unless `--here
 checkout and nobody has to ask for one.
 
 - **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it).
-  The main checkout comes from `--git-common-dir`, so `<dir>` may be a linked worktree or a subdirectory (the session
-  starts in the same subdirectory, or at the top if the base lacks it); a bare repository is refused. Under the
+  The main checkout comes from `--git-common-dir` (or is `<dir>`'s own when its `.git` is a file), so `<dir>` may be a
+  linked worktree or a subdirectory (the session starts in the same subdirectory, or at the top if the base lacks
+  it); a bare repository is refused. Under the
   repository, the worktree inherits its trust. `**/.claude/worktrees/` goes into `info/exclude` unless already
   ignored. A new session whose worktree path already exists is refused: nothing is adopted (a `cwt` worktree on
   another branch, or a stray directory in which the session would run on the main checkout).
 - **Made by the launcher** with `git worktree add`, not `claude --worktree`, which can't take an existing branch or a
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
-- **Branch**: `--branch B` (`origin/B` means B) or `worktree-<N>`. An existing local branch is checked out as it is
-  (and never deleted). A new one is created from `origin/B` or `upstream/B`, fetched first, if one exists (which is
-  then its base), else from the base, always with `--no-track`, so a bare `git push` fails rather than landing on the
-  base or in the canonical repository.
+- **Branch**: `--branch B` or `worktree-<N>`; `--branch` and `--base` need a worktree. An existing local branch is
+  checked out as it is (and never deleted). A new one is created from the remote's B, fetched first, if one exists
+  (`upstream/B` names the remote; else `origin`, then `upstream`), which is then its base, else from the base, always
+  with `--no-track`, so a bare `git push` fails rather than landing on the base or in the canonical repository.
 - **Base**: `--base REF`, else the default branch of `upstream` if that remote exists (forks), else of `origin`: asked
   of the remote with `ls-remote --symref`, else its local `<remote>/HEAD`; with neither, the start is refused (never a
   fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first, and must be a
@@ -117,16 +118,16 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
 - Removal uses `git worktree remove --force`, which submodules need; the checks cover what it overrides, and it still
   refuses a locked worktree. Only a branch the launcher created, and finished, is deleted.
 
-Worktrees without a definition (`cwt`, by hand) are not touched. laptop-setup should make `cwt` call the launcher
-(below), so they get definitions; Claude's own subagent worktrees are swept by Claude.
+Worktrees without a definition are not touched; Claude's own subagent worktrees are swept by Claude.
 
 ## Orchestrator permissions
 
 `--allow RULES` replaces `--dangerously-skip-permissions` with `--permission-mode dontAsk --allowedTools RULES`. For the
-orchestrator: `Bash(bash <checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)`. Checked
-live: other Bash (`touch`, `systemctl`) is denied; Claude Code's built-in read-only commands (`ls`, `cat`) still run.
-The skill's `allowed-tools` is the same launcher rule, so loading it widens nothing; a bare `Skill` rule would let the
-model load another skill whose `allowed-tools` grants all of Bash.
+orchestrator: `Bash(bash <checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)`, plus the
+profile's own settings allow rules, which dontAsk still honours. Checked live: other Bash (`touch`, `systemctl`) is
+denied; Claude Code's built-in read-only commands (`ls`) still run. The skill itself has no `allowed-tools`: it would
+let any session that loads it run the launcher without asking. A bare `Skill` rule would let the model load another
+skill whose `allowed-tools` grants all of Bash.
 
 This limits what the orchestrator's own mistakes can do; it is not a security boundary. Its job is to start sessions
 with `--dangerously-skip-permissions` and a prompt, and any other session can run the launcher or type into it. So the

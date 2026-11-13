@@ -49,6 +49,7 @@ git init -q --bare -b main "$tmp/origin.git"
 git clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
 mkdir -p "$tmp/seed/sub" && echo s >"$tmp/seed/sub/f" && echo '*.log' >"$tmp/seed/.gitignore"
 git -C "$tmp/seed" submodule add -q "$tmp/sub.git" sm
+git -C "$tmp/seed" submodule add -q "$tmp/sub.git" sm2 # two: grep -q under pipefail once hid them
 git -C "$tmp/seed" add -A && git -C "$tmp/seed" commit -qm files && git -C "$tmp/seed" push -q origin main
 git -C "$tmp/seed" push -q origin main:remote-only
 git -C "$tmp/seed" commit -q --allow-empty -m pr && git -C "$tmp/seed" push -q origin HEAD:pr && git -C "$tmp/seed" reset -q --hard origin/main
@@ -115,7 +116,9 @@ check "a base that is a refspec" 2 "bad base" s start personal "$R" --name rs --
 check "an --allow that is an option" 2 "bad --allow" s start personal "$tmp/plain" --name a --allow --dangerously-skip-permissions
 mkdir -p "$tmp/x#y"
 check "a directory with # (a tmux format)" 2 "path with #" s start personal "$tmp/x#y"
-check "a bad branch name" 2 "bad branch name" s start personal "$tmp/plain" --branch 'a..b'
+check "a bad branch name" 2 "bad branch name" s start personal "$R" --branch 'a..b'
+check "  nor @" 2 "bad branch name" s start personal "$R" --branch @
+check "--branch in place refused" 2 "need a worktree" s start personal "$tmp/plain" --branch feat
 check "a prompt ending in ;" 0 "--
 run it;" bash -c "bash '$sc' start personal '$tmp/plain' --name semi --prompt 'run it;' >/dev/null; cat '$HOME/log/personal-semi.args'"
 touch "$HOME/fail-personal-f"
@@ -134,7 +137,7 @@ check "a repo gets a worktree" 0 "worktree $WT/repo-1 on new branch worktree-rep
 check "  session runs there" 0 "$WT/repo-1" log personal-repo-1 pwd
 check "  from origin's main, not the checked-out branch" 0 "$(git -C "$R" rev-parse origin/main)" git -C "$WT/repo-1" rev-parse HEAD
 check "  no upstream to push to by accident" 128 "" git -C "$WT/repo-1" rev-parse --abbrev-ref '@{u}'
-check "  submodules initialized" 0 "" test -e "$WT/repo-1/sm/.git"
+check "  submodules initialized" 0 "" test -e "$WT/repo-1/sm/.git" -a -e "$WT/repo-1/sm2/.git"
 check "  main checkout stays clean" 0 "" test -z "$(git -C "$R" status --porcelain)"
 check "a second agent gets the next one" 0 "ready personal-repo-2" s start personal "$R"
 check "named, from a subdirectory, with a task" 0 "ready personal-fix-1" s start personal "$R/sub" --name fix-1 --prompt "do it"
@@ -157,8 +160,8 @@ check "  named for the branch, not origin/pr" 0 "" test -z "$(git -C "$R" branch
 git -C "$tmp/seed" commit -q --allow-empty -m fresh && git -C "$tmp/seed" push -q origin HEAD:fresh && git -C "$tmp/seed" reset -q --hard origin/main
 check "a branch pushed after the last fetch" 0 "from origin/fresh" s start personal "$R" --branch fresh
 check "  is fetched first" 0 "fresh" git -C "$WT/fresh" log -1 --format=%s
-check "an in-place name for a worktree session refused" 1 "works in place" s start personal "$R" --name repo
-check "a worktree name for an in-place session refused" 1 "has a worktree" s start personal "$R" --here --name fix-1
+check "an in-place name for a worktree session refused" 1 "already defined for $R;" s start personal "$R" --name repo
+check "a worktree name for an in-place session refused" 1 "already defined for $R (a worktree)" s start personal "$R" --here --name fix-1
 git -C "$R" commit -q --allow-empty -m x && mkdir -p "$R/newdir" && touch "$R/newdir/f" && git -C "$R" add newdir && git -C "$R" commit -qm newdir
 check "a subdirectory not on the base starts at the top" 0 "ready personal-nd" s start personal "$R/newdir" --name nd
 check "  " 0 "$WT/nd" log personal-nd pwd
@@ -170,6 +173,12 @@ git init -q --bare -b devel "$tmp/upstream.git" && git -C "$tmp/seed" push -q "$
 git clone -q "$tmp/origin.git" "$tmp/fork" && git -C "$tmp/fork" remote add upstream "$tmp/upstream.git"
 echo "$tmp/fork" >>"$HOME/trusted"
 check "a fork starts from upstream's default branch" 0 "from upstream/devel" s start personal "$tmp/fork"
+git -C "$tmp/seed" push -q origin main:rel && git -C "$tmp/seed" commit -q --allow-empty -m fix &&
+	git -C "$tmp/seed" push -q "$tmp/upstream.git" HEAD:rel && git -C "$tmp/seed" reset -q --hard origin/main
+check "--branch upstream/rel takes upstream's, not the fork's" 0 "from upstream/rel" s start personal "$tmp/fork" --branch upstream/rel
+git init -q --separate-git-dir "$tmp/sep.git" "$tmp/sepwt" && git -C "$tmp/sepwt" commit -q --allow-empty -m s
+echo "$tmp/sepwt" >>"$HOME/trusted"
+check "a checkout whose .git is a file" 0 "ready personal-sepwt-1" s start personal "$tmp/sepwt"
 check "ls" 0 "personal-repo-1 running $WT/repo-1" s ls
 
 echo "-- restarts"
@@ -230,6 +239,10 @@ check "a failing git check keeps the worktree" 0 "ready personal-ro" s start per
 echo n >"$WT/ro/notes.txt" && s stop personal-ro >/dev/null && chmod 000 "$(git -C "$WT/ro" rev-parse --git-dir)/index"
 check "  " 0 "kept personal-ro: git status failed" s clean personal-ro
 chmod 644 "$(git -C "$WT/ro" rev-parse --git-dir)/index"
+git -C "$tmp/seed" tag v1 && git -C "$tmp/seed" push -q origin v1 && git -C "$R" fetch -q --tags
+check "a branch named like a tag" 0 "ready personal-v1" s start personal "$R" --branch v1
+echo v >"$WT/v1/v" && git -C "$WT/v1" add v && git -C "$WT/v1" commit -qm v && s stop personal-v1 >/dev/null
+check "  keeps its unmerged commits" 0 "removed personal-v1 (branch v1 kept)" s clean personal-v1
 check "a worktree with submodules is removed" 0 "ready personal-sm" s start personal "$R" --name sm
 s stop personal-sm >/dev/null
 check "  with its branch" 0 "removed personal-sm and branch worktree-sm" s clean personal-sm

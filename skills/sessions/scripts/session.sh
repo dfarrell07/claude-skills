@@ -26,7 +26,8 @@ is_worktree() { [[ $(git -C "$1" rev-parse --show-toplevel 2>/dev/null) == "$1" 
 lock() { mkdir -p "$STATE"; exec 9>"$STATE/.lock"; flock 9; }
 
 # A definition: one file of key=value lines in $STATE, named after the session. repo and worktree are empty for a
-# session that works in place; dir is where it starts; created=1 when the launcher made the branch, the only kind
+# session that works in place; dir is where it starts; base is what "finished" is measured against (the remote branch
+# a --branch came from, else the base it was made from); created=1 when the launcher made the branch, the only kind
 # clean deletes; id is the conversation's; allow, the orchestrator's tool allowlist.
 FIELDS=(profile repo worktree dir branch base created id allow)
 load() { # load <name>: sets D_<field>; fails when undefined
@@ -112,20 +113,19 @@ add_worktree() {
 		die "branch $D_branch is gone (renamed?): restore it, or clean $NAME and start again"
 	else
 		D_created=1
-		for r in origin upstream; do # a --branch the remote has, as it has it now
-			if [[ -n $branch ]] && g remote get-url "$r" >/dev/null 2>&1; then
+		for r in ${remote:-origin upstream}; do # a --branch a remote has, as it has it now: a local copy that pushes
+			g remote get-url "$r" >/dev/null 2>&1 || continue # nowhere until told to
+			[[ -z $branch ]] ||
 				timeout 30 git -C "$D_repo" fetch -q "$r" -- "+refs/heads/$D_branch:refs/remotes/$r/$D_branch" 2>/dev/null 9>&- || true
-			fi
-		done
-		for r in origin upstream; do # a local copy of it, which pushes nowhere until told to
 			! g show-ref --verify --quiet "refs/remotes/$r/$D_branch" || { from=$r/$D_branch; D_base=$from; break; }
-		done # D_base: finished means nothing beyond the remote branch it came from
+		done
 		[[ -n $from ]] || { from=$D_base; fetch "$D_base"; }
 		g rev-parse --verify --quiet "$from^{commit}" >/dev/null || die "no such base: $from"
 		g worktree add --quiet --no-track -b "$D_branch" "$D_worktree" "$from" || die "could not create $D_branch"
 		echo "worktree $D_worktree on new branch $D_branch from $from"
 	fi
-	if g submodule status --recursive 2>/dev/null | grep -q '^[^-]'; then # as initialized in the main checkout
+	if g submodule status --recursive 2>/dev/null | grep '^[^-]' >/dev/null; then # as in the main checkout (not grep -q:
+		# it would exit early, and git's SIGPIPE fail the pipe)
 		git -C "$D_worktree" submodule update --init --recursive --quiet 9>&- || echo "warning: submodules not initialized" >&2
 	fi
 }
@@ -136,18 +136,24 @@ define() {
 	profile "$prof"
 	dir=$(CDPATH='' cd "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
 	[[ $dir != *'#'* ]] || die "$dir: tmux cannot start in a path with #" 2
-	[[ -z $branch ]] || git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "bad branch name: $branch" 2
+	[[ -z $branch || ($branch != @ && $branch != refs/* && $(git check-ref-format --branch "$branch" 2>/dev/null) == "$branch") ]] ||
+		die "bad branch name: $branch" 2
 	[[ -z $base || ($base =~ ^[A-Za-z0-9._/@^~-]+$ && $base != -*) ]] || die "bad base: $base" 2 # never a refspec
 	[[ $allow != -* ]] || die "bad --allow: $allow" 2
 	if [[ -z $here ]] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		main=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)
-		[[ $main == */.git ]] || die "$dir: no main checkout to hold worktrees (bare repository?); use --here"
-		main=${main%/.git}
+		local common gd # the main checkout: around <common>/.git, or this one when its .git is a file
+		common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)
+		gd=$(git -C "$dir" rev-parse --path-format=absolute --git-dir)
+		if [[ $common == */.git ]]; then main=${common%/.git}
+		elif [[ $gd == "$common" && $(git -C "$dir" rev-parse --is-bare-repository) == false ]]; then
+			main=$(git -C "$dir" rev-parse --show-toplevel)
+		else die "$dir: can't find a main checkout to hold worktrees (bare repository?); use --here"; fi
 		sub=$(git -C "$dir" rev-parse --show-prefix) # start in the same subdirectory of the worktree
 		if [[ $branch == */* ]] && git -C "$dir" remote get-url "${branch%%/*}" >/dev/null 2>&1; then
-			branch=${branch#*/} # origin/foo means the branch foo
+			remote=${branch%%/*} branch=${branch#*/} # upstream/foo means foo, from upstream
 		fi
 	fi
+	[[ -n $main || -z $branch$base ]] || die "--branch and --base need a worktree (a repository, without --here)" 2
 	D_repo=$main
 	if [[ -n $name || -n $branch || -z $main ]]; then
 		n=$(slug "${name:-${branch:-${dir##*/}}}")
@@ -160,9 +166,8 @@ define() {
 	fi
 	NAME=$prof-$n
 	if load "$NAME"; then # an existing session: its definition wins, and must be what was asked for
-		[[ ${D_repo:-$D_dir} == "${main:-$dir}" ]] || die "$NAME is already defined for ${D_repo:-$D_dir}; choose another --name"
-		[[ -z $D_worktree && -z $main || -n $D_worktree && -n $main ]] ||
-			die "$NAME ${D_worktree:+has a worktree}${D_worktree:-works in place}; choose another --name"
+		[[ $D_repo == "$main" && (-n $main || $D_dir == "$dir") ]] ||
+			die "$NAME is already defined for ${D_repo:-$D_dir}${D_worktree:+ (a worktree)}; choose another --name"
 		[[ -z $branch || $branch == "$D_branch" ]] || die "$NAME is on $D_branch; choose another --name"
 		[[ -z $base ]] || die "$NAME exists; --base applies only to a new session"
 		D_allow=${allow:-$D_allow}
@@ -182,7 +187,7 @@ define() {
 }
 
 start() {
-	local pos=() name='' branch='' base='' here='' trust='' prompt='' allow=''
+	local pos=() name='' branch='' base='' here='' trust='' prompt='' allow='' remote=''
 	while [[ $# -gt 0 ]]; do
 		case $1 in
 		--here | --trust) printf -v "${1#--}" 1; shift ;;
@@ -250,7 +255,7 @@ start() {
 		elif [ -n "$wt" ]; then "$c" --continue "$@"
 		else "$c" --resume "$id" "$@"; fi' session "$ENV_FILE" "$D_id" "$D_worktree" "${SETS[@]}" --)
 	local cmd=(claude --remote-control "$NAME" --name "$NAME") root=${D_worktree:-$D_dir}
-	if [[ -n $D_allow ]]; then # only these tools; everything else is denied
+	if [[ -n $D_allow ]]; then # these tools (and the profile's settings allow rules); everything else is denied
 		cmd+=(--permission-mode dontAsk --allowedTools "$D_allow")
 	else
 		cmd+=(--dangerously-skip-permissions)
@@ -366,7 +371,7 @@ clean() {
 		fi
 		if ! g show-ref --verify --quiet "refs/heads/$D_branch"; then
 			echo "removed $NAME"
-		elif [[ $D_created == 1 ]] && finished "$D_branch" && g branch -q -D "$D_branch"; then
+		elif [[ $D_created == 1 ]] && finished "refs/heads/$D_branch" && g branch -q -D "$D_branch"; then
 			echo "removed $NAME and branch $D_branch"
 		else
 			echo "removed $NAME (branch $D_branch kept)"

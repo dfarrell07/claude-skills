@@ -4,7 +4,6 @@ description: Start, list, stop and clean up background Claude Code sessions the 
 version: 0.1.0
 argument-hint: "[start <profile> <dir> ... | start <session> | ls | stop <session> | clean [<session>]]"
 user-invocable: true
-allowed-tools: Bash(bash ${CLAUDE_SKILL_DIR}/scripts/session.sh *)
 ---
 
 # Sessions
@@ -26,9 +25,9 @@ bash ${CLAUDE_SKILL_DIR}/scripts/session.sh clean [<session>]
 ```
 
 A session is named `<profile>-<name>` (e.g. `personal-fix-flaky-e2e`): its tmux session (`tmux attach -t <session>`)
-and its Remote Control name in claude.ai/code and the mobile app. In a git
-repository it gets its own worktree, `<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` (or the
-`--branch` given), fresh from the remote's default branch (upstream's, for a fork), so several agents can share a
+and its Remote Control name in claude.ai/code and the mobile app. In a git repository it gets its own worktree,
+`<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` or the `--branch` given (an existing local
+branch as it is, else new from the remote's default branch, upstream's for a fork), so several agents can share a
 project. Started from a subdirectory, it starts in the same subdirectory of its worktree.
 
 ## Turning a request into a call
@@ -39,9 +38,13 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
   the matches and ask.
 - **Name**: whenever the user gives a task, pass `--name` with a short slug of it (`--name fix-flaky-e2e`), so the
   session, worktree and branch say what they are for. With no task, omit it: in a repository each start is then a
-  new agent, `<repo>-1`, `<repo>-2`, ... ("three agents in claude-skills" is three starts).
-- **Branch**: `--branch B` when the user names a branch to work on (its latest from the remote, or a new one); the
-  name defaults to it. `--base REF` only when they name what a new branch starts from (`--base upstream/release-0.20`).
+  new agent, `<repo>-1`, `<repo>-2`, ... ("three agents in claude-skills" is three starts). A name already defined
+  reopens that session; for a second agent on the same task, or new work under an old name, add a suffix
+  (`--name fix-flaky-e2e-2`).
+- **Branch**: `--branch B` when the user names a branch to work on: a local branch as it is, else the remote's latest
+  (`upstream/B` for upstream's), else a new one; the name defaults to it. If B is checked out in the main checkout,
+  the start fails: ask whether to use `--here`. `--base REF` only when they name what a new branch starts from
+  (`--base upstream/release-0.20`).
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
   uncommitted changes"). A directory that is not a repository is always in place.
 - **Trust**: claude asks once per directory tree; worktrees inherit their repository's answer. Pass `--trust` only when
@@ -55,10 +58,10 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
   in-place session afresh, `clean <session>` first.
 
 Output of `start`: `worktree ...` when a new branch was made; `started <session> in <dir>`, or `exists <session>`
-(already running: nothing started, no prompt sent); then `ready`, `needs-trust` (exit 3), or `waiting` (exit 0, not
-ready in 30 s, after its last screen lines). `<session> failed before it was ready` (after claude's last lines) or
-`exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the
-attach command.
+(already running: nothing started; a `--prompt` given now is not sent); then `ready`, `needs-trust` (exit 3), or
+`waiting` (exit 0, not ready in 30 s, after its last screen lines). `<session> failed before it was ready` (after
+claude's last lines) or `exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`.
+Relay results with the attach command.
 
 ## Cleanup
 
