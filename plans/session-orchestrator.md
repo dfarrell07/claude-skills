@@ -67,18 +67,19 @@ leaves the session waiting. The orchestrator passes `--trust` only for a directo
 In a git repository each session gets its own worktree and branch unless `--here` is passed, so agents never share a
 checkout and nobody has to ask for one.
 
-- **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it). The
-  main checkout comes from `--git-common-dir`, so `<dir>` may be a linked worktree or a subdirectory (the session
-  starts in the same subdirectory, or at the top if the base lacks it); a bare repository is refused. Under the repository, the worktree inherits its
-  trust. `**/.claude/worktrees/` goes into `info/exclude` unless already ignored. A new session whose worktree path
-  already exists is refused: nothing is adopted (a `cwt` worktree on another branch, or a stray directory in which the
-  session would run on the main checkout).
+- **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it).
+  The main checkout comes from `--git-common-dir`, so `<dir>` may be a linked worktree or a subdirectory (the session
+  starts in the same subdirectory, or at the top if the base lacks it); a bare repository is refused. Under the
+  repository, the worktree inherits its trust. `**/.claude/worktrees/` goes into `info/exclude` unless already
+  ignored. A new session whose worktree path already exists is refused: nothing is adopted (a `cwt` worktree on
+  another branch, or a stray directory in which the session would run on the main checkout).
 - **Made by the launcher** with `git worktree add`, not `claude --worktree`, which can't take an existing branch or a
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
 - **Branch**: `--branch B` (`origin/B` means B) or `worktree-<N>`. An existing local branch is checked out as it is
   (and never deleted). A new one is created from `origin/B` or `upstream/B`, fetched first, if one exists (which is
-  then its base), else from the base, always with `--no-track`, so a bare `git push` fails rather than landing on the base or in the canonical repository.
+  then its base), else from the base, always with `--no-track`, so a bare `git push` fails rather than landing on the
+  base or in the canonical repository.
 - **Base**: `--base REF`, else the default branch of `upstream` if that remote exists (forks), else of `origin`: asked
   of the remote with `ls-remote --symref`, else its local `<remote>/HEAD`; with neither, the start is refused (never a
   fallback from upstream to origin). No remote: the main checkout's branch. The base is fetched first, and must be a

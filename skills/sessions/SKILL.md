@@ -57,7 +57,8 @@ project. Started from a subdirectory, it starts in the same subdirectory of its 
 Output of `start`: `worktree ...` when a new branch was made; `started <session> in <dir>`, or `exists <session>`
 (already running: nothing started, no prompt sent); then `ready`, `needs-trust` (exit 3), or `waiting` (exit 0, not
 ready in 30 s, after its last screen lines). `<session> failed before it was ready` (after claude's last lines) or
-`exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
+`exited before it was ready` is exit 1. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the
+attach command.
 
 ## Cleanup
 
