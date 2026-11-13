@@ -4,8 +4,7 @@
 #   session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] [--prompt T] [--allow R]
 #   session.sh start <name> [--trust] [--prompt T]
 #   session.sh ls | stop <name> | clean [<name>]
-# Exit: 0 ok, 1 failed, 2 usage, 3 needs trust. Runs only tmux, git, the user's shell and claude: never systemctl,
-# loginctl, reboot or tmux kill-server.
+# Exit: 0 ok, 1 failed, 2 usage, 3 needs trust. Never runs systemctl, loginctl, reboot or tmux kill-server.
 set -euo pipefail
 
 PROFILES='^(work|personal|personal2)-'
@@ -14,6 +13,7 @@ STATE=${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions
 
 die() { echo "session: $1" >&2; exit "${2:-1}"; }
 usage() { sed -n '4,6s/^#   /usage: /p' "$0" >&2; exit 2; }
+named() { [[ $1 =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || die "not a session name: $1" 2; } # also keeps paths out
 # The user's default tmux server (SESSIONS_TMUX_SOCKET: a private one, for tests), even from inside another server.
 tm() { env -u TMUX tmux ${SESSIONS_TMUX_SOCKET:+-L "$SESSIONS_TMUX_SOCKET"} "$@"; }
 alive() { tm has-session -t "=$1" 2>/dev/null; }
@@ -30,6 +30,7 @@ lock() { mkdir -p "$STATE"; exec 9>"$STATE/.lock"; flock 9; }
 # clean deletes; id is the conversation's; allow, the orchestrator's tool allowlist.
 FIELDS=(profile repo worktree dir branch base created id allow)
 load() { # load <name>: sets D_<field>; fails when undefined
+	named "$1"
 	[[ -f $STATE/$1 ]] || return 1
 	local f k v
 	for f in "${FIELDS[@]}"; do printf -v "D_$f" ''; done
@@ -89,7 +90,7 @@ default_base() {
 fetch() { # fetch <remote>/<branch>, best effort: a stale base beats no session
 	local r=${1%%/*}
 	[[ $1 == */* ]] && g remote get-url "$r" >/dev/null 2>&1 || return 0
-	timeout 30 git -C "$D_repo" fetch --quiet "$r" "${1#*/}" 2>/dev/null || echo "warning: could not fetch $1; using it as it is" >&2
+	timeout 30 git -C "$D_repo" fetch --quiet "$r" -- "${1#*/}" 2>/dev/null || echo "warning: could not fetch $1; using it as it is" >&2
 }
 
 # Add the worktree of the loaded definition. new=1: its branch may be created; otherwise it must still exist.
@@ -109,8 +110,8 @@ add_worktree() {
 	else
 		D_created=1
 		for r in origin upstream; do # an existing remote branch: a local copy that pushes nowhere until told to
-			! g show-ref --verify --quiet "refs/remotes/$r/$D_branch" || { from=$r/$D_branch; break; }
-		done
+			! g show-ref --verify --quiet "refs/remotes/$r/$D_branch" || { from=$r/$D_branch; D_base=$from; break; }
+		done # D_base: finished means nothing beyond the remote branch it came from
 		[[ -n $from ]] || { from=$D_base; fetch "$D_base"; }
 		g rev-parse --verify --quiet "$from^{commit}" >/dev/null || die "no such base: $from"
 		g worktree add --quiet --no-track -b "$D_branch" "$D_worktree" "$from" || die "could not create $D_branch"
@@ -126,6 +127,8 @@ define() {
 	local prof=$1 dir sub='' main='' n k owner
 	profile "$prof"
 	dir=$(cd "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
+	[[ -z $branch ]] || git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "bad branch name: $branch" 2
+	[[ $base != -* ]] || die "bad base: $base" 2
 	if [[ -z $here ]] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 		main=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)
 		[[ $main == */.git ]] || die "$dir: no main checkout to hold worktrees (bare repository?); use --here"
@@ -156,6 +159,7 @@ define() {
 	D_worktree=$main/.claude/worktrees/$n # the name without its profile, as cwt and claude --worktree name it
 	owner=$(claimed "$D_worktree")
 	[[ -z $owner ]] || die "$D_worktree belongs to $owner; choose another --name"
+	[[ ! -e $D_worktree ]] || die "$D_worktree already exists (cwt, or by hand); choose another --name"
 	D_dir=$D_worktree${sub:+/${sub%/}}
 	D_branch=${branch:-worktree-$n}
 	D_base=${base:-$(default_base)}
@@ -186,7 +190,7 @@ start() {
 	profile "$D_profile"
 
 	if alive "$NAME" && dead "$NAME"; then
-		tm kill-session -t "=$NAME" # claude failed earlier; its last screen was shown then
+		tm kill-session -t "=$NAME" # claude failed earlier
 	fi
 	if alive "$NAME"; then # the name is the key: never a second claude
 		local was
@@ -224,20 +228,21 @@ start() {
 			grep -q .; then "$c" --session-id "$id" "$@"
 		elif [ -n "$wt" ]; then "$c" --continue "$@"
 		else "$c" --resume "$id" "$@"; fi' session "$ENV_FILE" "$D_id" "$D_worktree" "${SETS[@]}" --)
-	local cmd=(claude --remote-control "$NAME" --name "$NAME")
+	local cmd=(claude --name "$NAME") root=${D_worktree:-$D_dir}
+	[[ $D_profile == work ]] || cmd+=(--remote-control "$NAME") # Remote Control needs the Anthropic API, not Vertex
 	if [[ -n $D_allow ]]; then # only these tools; everything else is denied
 		cmd+=(--permission-mode dontAsk --allowedTools "$D_allow")
 	else
 		cmd+=(--dangerously-skip-permissions)
 	fi
-	cmd+=(--plugin-dir "${D_worktree:-$D_dir}")
+	[[ ! -f $root/.claude-plugin/plugin.json ]] || cmd+=(--plugin-dir "$root") # a plugin under development
 	[[ -z $prompt ]] || cmd+=(-- "$prompt") # --allowedTools would take a bare prompt as a rule
 	# remain-on-exit failed: a claude that fails keeps its screen for ready() to show. 9>&-: a tmux server this
 	# starts must not inherit the lock.
 	# shellcheck disable=SC2016 # expanded by sh in the pane
-	tm new-session -d -s "$NAME" -c "$D_dir" -x 200 -y 50 \
-		sh -c 'exec env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" "$@"' sh "${vars[@]}" "${run[@]}" "${cmd[@]}" \
-		\; set-option -t "=$NAME:" remain-on-exit failed 9>&-
+	local pane=(sh -c 'exec env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" "$@"' sh "${vars[@]}" "${run[@]}" "${cmd[@]}")
+	pane=("${pane[@]/%;/\\;}") # tmux would take a trailing ; as the end of its command
+	tm new-session -d -s "$NAME" -c "$D_dir" -x 200 -y 50 "${pane[@]}" \; set-option -t "=$NAME:" remain-on-exit failed 9>&-
 	flock -u 9
 	echo "started $NAME in $D_dir"
 	ready "$NAME" "$trust"
@@ -281,7 +286,8 @@ list() {
 }
 
 stop() {
-	[[ $# -eq 1 && $1 =~ $PROFILES ]] || die "stop takes one session name from ls" 2
+	[[ $# -eq 1 ]] || usage
+	named "$1"
 	alive "$1" || die "no session $1"
 	if [[ -n ${TMUX_PANE:-} ]]; then # not the one this runs in
 		local me
@@ -295,11 +301,12 @@ stop() {
 # Adds nothing to the base: merged (also by squash), or never used.
 finished() { [[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) == "$(g rev-parse "$D_base^{tree}")" ]]; }
 
-# Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work and
-# ignored files; clean <name> removes those (a branch keeps the commits).
+# Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
+# clean <name> removes that (a branch keeps the commits). Ignored files are build output: the worktree started with none.
 keep() {
 	local all=$1 wt=$D_worktree tip p
-	[[ -z $(git -C "$wt" status --porcelain --untracked-files=all) ]] || { echo "uncommitted changes"; return; }
+	[[ -z $(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) ]] ||
+		{ echo "uncommitted changes"; return; }
 	for p in /proc/[0-9]*/cwd; do # someone working there by hand
 		[[ $(readlink "$p" 2>/dev/null)/ != "$wt"/* ]] || { echo "in use by process ${p//[^0-9]/}"; return; }
 	done
@@ -309,10 +316,7 @@ keep() {
 	if ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null; then
 		finished "$tip" || { echo "commits on a detached HEAD"; return; }
 	fi
-	[[ -n $all ]] || return 0
-	finished "$tip" || { echo "unmerged work"; return; }
-	[[ -z $(git -C "$wt" status --porcelain --ignored=matching | grep '^!!') ]] ||
-		echo "ignored files (build output, .env...): clean $NAME deletes them"
+	[[ -z $all ]] || finished "$tip" || echo "unmerged work"
 }
 
 clean() {
@@ -333,7 +337,7 @@ clean() {
 			continue
 		fi
 		if is_worktree "$D_worktree"; then
-			[[ $D_base != */* ]] || fetch "$D_base"
+			fetch "$D_base"
 			why=$(keep "$all")
 			[[ -z $why ]] || { echo "kept $NAME: $why"; continue; }
 			# --force: keep() checked what it overrides (submodules); a single one still refuses a locked worktree.

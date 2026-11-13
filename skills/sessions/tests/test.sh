@@ -51,6 +51,7 @@ mkdir -p "$tmp/seed/sub" && echo s >"$tmp/seed/sub/f" && echo '*.log' >"$tmp/see
 git -C "$tmp/seed" submodule add -q "$tmp/sub.git" sm
 git -C "$tmp/seed" add -A && git -C "$tmp/seed" commit -qm files && git -C "$tmp/seed" push -q origin main
 git -C "$tmp/seed" push -q origin main:remote-only
+git -C "$tmp/seed" commit -q --allow-empty -m pr && git -C "$tmp/seed" push -q origin HEAD:pr && git -C "$tmp/seed" reset -q --hard origin/main
 git clone -q --recurse-submodules "$tmp/origin.git" "$tmp/repo"
 git -C "$tmp/repo" checkout -q -b feature && git -C "$tmp/repo" commit -q --allow-empty -m feature
 git -C "$tmp/repo" branch -q topic main
@@ -84,25 +85,34 @@ check "  through its claude() guard" 0 "" test -e "$HOME/guard"
 check "personal drops Vertex" 0 "" lacks '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$HOME/log/personal2-plain.env"
 check "new conversation, named, Remote Control" 0 "--session-id
 $(id personal2-plain)
---remote-control
-personal2-plain
 --name
 personal2-plain
---dangerously-skip-permissions
---plugin-dir
-$tmp/plain" log personal2-plain args
+--remote-control
+personal2-plain
+--dangerously-skip-permissions" log personal2-plain args
+check "  no --plugin-dir for a directory that is no plugin" 0 "" lacks plugin-dir "$HOME/log/personal2-plain.args"
+mkdir -p "$tmp/plug/.claude-plugin" && echo '{}' >"$tmp/plug/.claude-plugin/plugin.json" && echo "$tmp/plug" >>"$HOME/trusted"
+check "a plugin under development is loaded" 0 "--plugin-dir
+$tmp/plug" bash -c "bash '$sc' start personal '$tmp/plug' >/dev/null; cat '$HOME/log/personal-plug.args'"
 check "--here in a repo works in place" 0 "ready personal-repo" s start personal "$R" --here
 check "  no worktree" 0 "$R" log personal-repo pwd
 check "work profile" 0 "ready work-plain" s start work "$tmp/plain"
 check "  Vertex kept" 0 "ANTHROPIC_VERTEX_PROJECT_ID=rc-project" log work-plain env
 check "  Vertex on" 0 "CLAUDE_CODE_USE_VERTEX=1" log work-plain env
 check "  work env sourced" 0 "WORKVAR=1" log work-plain env
+check "  no Remote Control (Vertex has none)" 0 "" lacks remote-control "$HOME/log/work-plain.args"
 check "--allow: an allowlist" 0 "dontAsk
 --allowedTools
 Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --allow Read >/dev/null; cat '$HOME/log/personal-t.args'"
 check "  instead of skip-permissions" 0 "" lacks dangerously "$HOME/log/personal-t.args"
 check "a flag without its value" 2 "usage" s start personal "$tmp/plain" --name
 check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
+check "a path is no session name" 2 "not a session name" s clean ../../home/.bashrc
+check "  " 2 "not a session name" s start ../x
+check "a base that looks like an option" 2 "bad base" s start personal "$tmp/plain" --base --upload-pack=x
+check "a bad branch name" 2 "bad branch name" s start personal "$tmp/plain" --branch 'a..b'
+check "a prompt ending in ;" 0 "--
+run it;" bash -c "bash '$sc' start personal '$tmp/plain' --name semi --prompt 'run it;' >/dev/null; cat '$HOME/log/personal-semi.args'"
 touch "$HOME/fail-personal-f"
 check "a failing claude shows why" 1 "fake failure" s start personal "$tmp/plain" --name f
 if command -v zsh >/dev/null; then
@@ -124,9 +134,7 @@ check "  main checkout stays clean" 0 "" test -z "$(git -C "$R" status --porcela
 check "a second agent gets the next one" 0 "ready personal-repo-2" s start personal "$R"
 check "named, from a subdirectory, with a task" 0 "ready personal-fix-1" s start personal "$R/sub" --name fix-1 --prompt "do it"
 check "  starts in the same subdirectory" 0 "$WT/fix-1/sub" log personal-fix-1 pwd
-check "  plugin dir is the worktree, prompt after --" 0 "--plugin-dir
-$WT/fix-1
---
+check "  prompt after --" 0 "--
 do it" log personal-fix-1 args
 check "a remote-only branch" 0 "on new branch remote-only from origin/remote-only" s start personal "$R" --branch remote-only
 check "  without tracking it" 128 "" git -C "$WT/remote-only" rev-parse --abbrev-ref '@{u}'
@@ -136,7 +144,10 @@ check "a worktree another profile owns refused" 1 "belongs to personal-fix-1" s 
 check "another branch under a used name refused" 1 "is on worktree-fix-1" s start personal "$R" --name fix-1 --branch other
 check "--base on an existing session refused" 1 "only to a new session" s start personal "$R" --name fix-1 --base origin/main
 mkdir -p "$WT/stray/.claude"
-check "a directory that is not a worktree refused" 1 "not a git worktree" s start personal "$R" --name stray
+check "a directory already there is never adopted" 1 "already exists" s start personal "$R" --name stray
+git -C "$R" worktree add -q "$WT/cw" -b cwt-branch
+check "  nor a worktree made outside the launcher" 1 "already exists" s start personal "$R" --name cw --branch wanted
+check "a remote branch ahead of the base" 0 "from origin/pr" s start personal "$R" --branch pr
 git clone -q "$tmp/origin.git" "$tmp/my.repo" && echo "$tmp/my.repo" >>"$HOME/trusted"
 check "a repository name with a dot" 0 "ready personal-my_repo-1" s start personal "$tmp/my.repo"
 git init -q --bare -b devel "$tmp/upstream.git" && git -C "$tmp/seed" push -q "$tmp/upstream.git" main:devel
@@ -165,7 +176,7 @@ git -C "$R" branch -qm renamed worktree-repo-2 && s start personal-repo-2 >/dev/
 check "start <unknown>" 1 "no definition" s start personal-nope
 
 echo "-- clean"
-for n in repo repo-1 repo-2 fix-1 remote-only topic; do s stop "personal-$n" >/dev/null; done
+for n in repo repo-1 repo-2 fix-1 remote-only topic pr; do s stop "personal-$n" >/dev/null; done
 check "a running session is not cleaned" 1 "running; stop it first" s clean personal2-plain
 echo x >"$WT/fix-1/new.txt"
 echo w >"$WT/repo-2/w" && git -C "$WT/repo-2" add w && git -C "$WT/repo-2" commit -qm wip
@@ -173,11 +184,11 @@ echo y >"$WT/topic/build.log"
 out=$(s clean 2>&1)
 check "bulk: finished work goes, with its branch" 0 "removed personal-repo-1 and branch worktree-repo-1" echo "$out"
 check "  a remote branch with nothing new is finished" 0 "removed personal-remote-only and branch remote-only" echo "$out"
+check "  also one ahead of the base" 0 "removed personal-pr and branch pr" echo "$out"
+check "  build output (ignored files) goes too, not the user's branch" 0 "removed personal-topic (branch topic kept)" echo "$out"
 check "  kept: uncommitted" 0 "kept personal-fix-1: uncommitted changes" echo "$out"
 check "  kept: unmerged" 0 "kept personal-repo-2: unmerged work" echo "$out"
-check "  kept: ignored files" 0 "kept personal-topic: ignored files" echo "$out"
 check "  in-place sessions stay" 0 "personal-repo stopped" s ls
-check "clean <name> takes ignored files, not the user's branch" 0 "removed personal-topic (branch topic kept)" s clean personal-topic
 check "clean <name> with unmerged work keeps the branch" 0 "removed personal-repo-2 (branch worktree-repo-2 kept)" s clean personal-repo-2
 check "  its commit is safe" 0 "wip" git -C "$R" log -1 --format=%s worktree-repo-2
 check "uncommitted work is never removed" 0 "kept personal-fix-1: uncommitted" s clean personal-fix-1
@@ -196,6 +207,9 @@ git -C "$WT/smc/sm" checkout -q -b local && git -C "$WT/smc/sm" commit -q --allo
 	git -C "$WT/smc/sm" checkout -q --detach HEAD~1 &&
 	s stop personal-smc >/dev/null
 check "  kept" 0 "kept personal-smc: unpushed submodule commits" s clean personal-smc
+check "submodule changes hidden by ignore=dirty are never removed" 0 "ready personal-smd" s start personal "$R" --name smd
+git -C "$WT/smd" config submodule.sm.ignore dirty && echo n >"$WT/smd/sm/notes.txt" && s stop personal-smd >/dev/null
+check "  kept" 0 "kept personal-smd: uncommitted changes" s clean personal-smd
 check "a worktree with submodules is removed" 0 "ready personal-sm" s start personal "$R" --name sm
 s stop personal-sm >/dev/null
 check "  with its branch" 0 "removed personal-sm and branch worktree-sm" s clean personal-sm
@@ -204,7 +218,7 @@ check "clean <name> on an in-place session forgets it" 0 "forgot personal-repo" 
 echo "-- stop"
 tmux -L "$SESSIONS_TMUX_SOCKET" new-session -d -s mine sleep 600
 check "ls hides others" 0 "" ls_lacks '^mine '
-check "stop refuses others" 2 "one session name" s stop mine
+check "stop refuses others" 2 "not a session name" s stop mine
 check "stop missing" 1 "no session" s stop personal-nope
 
-[[ $fails == 0 ]] && echo "all passed" || { echo "$fails failed"; exit 1; }
+if [[ $fails == 0 ]]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
