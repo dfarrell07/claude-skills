@@ -221,7 +221,8 @@ start() {
 	local run=("$sh" -i -c 'f=$1 id=$2; shift 2; if [ -n "$f" ]; then set -a; . "$f" || exit 1; set +a; fi
 		while [ "$1" != -- ]; do if [ "$1" = -u ]; then unset "$2"; shift; else export "$1"; fi; shift; done
 		shift; c=$1; shift; r=--session-id
-		for t in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do [ -f "$t" ] && r=--resume; done
+		find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -mindepth 2 -maxdepth 2 -name "$id.jsonl" 2>/dev/null |
+			grep -q . && r=--resume # find, not a glob: zsh aborts on one that matches nothing
 		"$c" "$r" "$id" "$@"' session "$ENV_FILE" "$D_id" "${SETS[@]}" --)
 	local cmd=("${SESSIONS_CLAUDE:-claude}" --remote-control "$NAME" --name "$NAME")
 	if [[ -n $D_tools ]]; then # only these tools, everything else denied
@@ -246,7 +247,7 @@ ready() {
 		alive "$name" || die "$name exited before it was ready"
 		s=$(screen "$name")
 		if dead "$name"; then
-			tail -5 <<<"$s" >&2
+			screen "$name" | tail -5 >&2
 			tm kill-session -t "=$name"
 			die "$name failed before it was ready"
 		elif grep -q '^❯' <<<"$s"; then # the input box; the trust menu's cursor is indented

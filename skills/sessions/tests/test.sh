@@ -77,6 +77,11 @@ check "  work env file" 0 "WORKVAR=1" log work-plain env
 check "--tools replaces skip-permissions" 0 "dontAsk
 --allowedTools
 Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --tools Read >/dev/null; cat '$tmp/home/log/personal-t.args'"
+if command -v zsh >/dev/null; then
+	echo 'export RCVAR=zsh' >"$tmp/home/.zshrc"
+	check "zsh as the user's shell" 0 "ready personal-z" env SHELL="$(command -v zsh)" bash "$sc" start personal "$tmp/plain" --name z
+	check "  its rc applied" 0 "RCVAR=zsh" log personal-z env
+fi
 check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
 check "failing claude shows why" 1 "failed before it was ready" env SESSIONS_CLAUDE=/bin/false bash "$sc" start personal "$tmp/plain" --name f
 
