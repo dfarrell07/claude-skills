@@ -1,44 +1,61 @@
 #!/usr/bin/env bash
-# Offline tests for session.sh: a fake claude on a private tmux server, a local bare repository as origin.
+# Offline tests for session.sh: a fake claude on PATH, a private tmux server, local bare repositories as remotes.
 set -uo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
-sc=$here/../scripts/session.sh
+sc=$(cd "$(dirname "$0")/../scripts" && pwd)/session.sh
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/sessions-test.XXXXXX")
 tmp=$(cd "$tmp" && pwd -P)
-export SESSIONS_TMUX_SOCKET=sessions-test-$$ SESSIONS_CLAUDE=$tmp/claude SESSIONS_WAIT=5 LEAK=1 CLAUDECODE=1
-export HOME=$tmp/home SHELL=/bin/bash SESSIONS_WORK_ENV=$tmp/work-env SESSIONS_STATE=$tmp/state
-export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_NOSYSTEM=1
+unset XDG_STATE_HOME TMUX TMUX_PANE
+export SESSIONS_TMUX_SOCKET=sessions-test-$$ SESSIONS_WAIT=5 LEAK=1 CLAUDECODE=1
+export HOME=$tmp/home SHELL=/bin/bash PATH=$tmp/bin:$PATH GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$tmp/gitconfig
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 trap 'tmux -L "$SESSIONS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/plain" "$HOME/.claude/projects/p" "$HOME/.config/claude"
+git config --global protocol.file.allow always # local submodules
 fails=0
 
-# Logs its env, args and cwd under $HOME/log/<name>; asks for trust once per directory tree, like claude.
-cat >"$tmp/claude" <<'EOF'
+# The fake claude logs env, args and cwd to $HOME/log/<name>.*; asks for trust once per directory tree and takes only
+# Down then Enter, like claude; fails when $HOME/fail-<name> exists; runs stop on itself when $HOME/stopself-<name>
+# exists.
+cat >"$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 n=; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [[ ${a[i]} == --name ]] && n=${a[i+1]}; done
 mkdir -p "$HOME/log"; env | sort >"$HOME/log/$n.env"; printf '%s\n' "$@" >"$HOME/log/$n.args"; pwd >"$HOME/log/$n.pwd"
+[[ ! -e $HOME/fail-$n ]] || { echo "fake failure"; exit 1; }
 t=; d=$PWD; while :; do grep -qxF "$d" "$HOME/trusted" 2>/dev/null && t=1; [[ $d == / ]] && break; d=$(dirname "$d"); done
-if [[ -z $t ]]; then printf ' ❯ No, exit\n   Yes, I trust this folder\n'; read -r; echo "$PWD" >>"$HOME/trusted"; fi
+if [[ -z $t ]]; then
+	printf ' ❯ No, exit\n   Yes, I trust this folder\n'; IFS= read -r l; [[ $l == *$'\e'*B* ]] || exit 1
+	echo "$PWD" >>"$HOME/trusted"
+fi
+if [[ -e $HOME/stopself-$n ]]; then
+	SESSIONS_TMUX_SOCKET=$(basename "${TMUX%%,*}") bash "$(cat "$HOME/sc")" stop "$n" >"$HOME/log/$n.stop" 2>&1
+fi
 echo "❯ Try"; exec sleep 600
 EOF
-chmod +x "$tmp/claude"
-mkdir -p "$tmp/plain" "$tmp/home/.claude/projects/p"
-# The shell rc a new terminal gets; personal profiles must drop its Vertex variables.
-echo 'export RCVAR=1 ANTHROPIC_VERTEX_PROJECT_ID=rc-project' >"$tmp/home/.bashrc"
-echo 'WORKVAR=1' >"$tmp/work-env"
+chmod +x "$tmp/bin/claude"
+echo "$sc" >"$HOME/sc"
+# The shell rc a new terminal gets, with a claude() guard like zshrc.j2's; personal profiles drop its Vertex variables.
+cat >"$HOME/.bashrc" <<'EOF'
+export RCVAR=1 ANTHROPIC_VERTEX_PROJECT_ID=rc-project
+claude() { touch "$HOME/guard"; command claude "$@"; }
+EOF
+echo 'WORKVAR=1' >"$HOME/.config/claude/work-env"
 
-# origin: main, plus a branch only the remote has. repo: a clone with a feature branch checked out.
+# origin: main, a branch only the remote has, and a submodule. repo: a clone with a feature branch checked out.
+git init -q --bare -b main "$tmp/sub.git"
+git clone -q "$tmp/sub.git" "$tmp/subseed" 2>/dev/null
+git -C "$tmp/subseed" commit -q --allow-empty -m s && git -C "$tmp/subseed" push -q origin main
 git init -q --bare -b main "$tmp/origin.git"
 git clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
-git -C "$tmp/seed" commit -q --allow-empty -m init
 mkdir -p "$tmp/seed/sub" && echo s >"$tmp/seed/sub/f" && echo '*.log' >"$tmp/seed/.gitignore"
+git -C "$tmp/seed" submodule add -q "$tmp/sub.git" sm
 git -C "$tmp/seed" add -A && git -C "$tmp/seed" commit -qm files && git -C "$tmp/seed" push -q origin main
 git -C "$tmp/seed" push -q origin main:remote-only
-git clone -q "$tmp/origin.git" "$tmp/repo"
+git clone -q --recurse-submodules "$tmp/origin.git" "$tmp/repo"
 git -C "$tmp/repo" checkout -q -b feature && git -C "$tmp/repo" commit -q --allow-empty -m feature
 git -C "$tmp/repo" branch -q topic main
-echo "$tmp/repo" >"$tmp/home/trusted"
 R=$tmp/repo WT=$tmp/repo/.claude/worktrees
+echo "$R" >"$HOME/trusted"
 
 check() { # check <name> <expected exit> <expected output substring> <command...>
 	local what=$1 code=$2 want=$3 out rc
@@ -51,85 +68,119 @@ check() { # check <name> <expected exit> <expected output substring> <command...
 	fi
 }
 s() { bash "$sc" "$@"; }
-log() { cat "$tmp/home/log/$1.$2"; }
-id() { sed -n 's/^id=//p' "$tmp/state/$1"; }
+log() { cat "$HOME/log/$1.$2"; }
+id() { sed -n 's/^id=//p' "$HOME/.local/state/claude-sessions/$1"; }
+lacks() { ! grep -qE -- "$1" "$2"; } # lacks <regex> <file>
+ls_lacks() { local out; out=$(s ls) && ! grep -qE -- "$1" <<<"$out"; }
 
 echo "-- in place"
 check "new dir stops at trust" 3 "needs-trust personal2-plain" s start personal2 "$tmp/plain"
-check "rerun with --trust accepts" 0 "ready personal2-plain" s start personal2 "$tmp/plain" --trust
+check "rerun with --trust answers it" 0 "ready personal2-plain" s start personal2 "$tmp/plain" --trust
 check "rerun is a no-op" 0 "exists personal2-plain" s start personal2 "$tmp/plain"
-check "caller env does not leak" 1 "" grep -E '^(LEAK|CLAUDECODE)=' "$tmp/home/log/personal2-plain.env"
+check "caller env does not leak" 0 "" lacks '^(LEAK|CLAUDECODE)=' "$HOME/log/personal2-plain.env"
 check "profile env set" 0 "CLAUDE_CONFIG_DIR=$HOME/.claude-per2" log personal2-plain env
 check "shell rc applied" 0 "RCVAR=1" log personal2-plain env
-check "personal drops Vertex" 1 "" grep -E '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$tmp/home/log/personal2-plain.env"
-check "remote control named, new conversation" 0 "--session-id
+check "  through its claude() guard" 0 "" test -e "$HOME/guard"
+check "personal drops Vertex" 0 "" lacks '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$HOME/log/personal2-plain.env"
+check "new conversation, named, Remote Control" 0 "--session-id
 $(id personal2-plain)
 --remote-control
 personal2-plain
 --name
-personal2-plain" log personal2-plain args
+personal2-plain
+--dangerously-skip-permissions
+--plugin-dir
+$tmp/plain" log personal2-plain args
 check "--here in a repo works in place" 0 "ready personal-repo" s start personal "$R" --here
 check "  no worktree" 0 "$R" log personal-repo pwd
 check "work profile" 0 "ready work-plain" s start work "$tmp/plain"
-check "  work env sourced, Vertex kept" 0 "ANTHROPIC_VERTEX_PROJECT_ID=rc-project
-CLAUDE_CODE_USE_VERTEX=1" bash -c "grep -E '^(ANTHROPIC_VERTEX|CLAUDE_CODE_USE_VERTEX)' '$tmp/home/log/work-plain.env'"
-check "  work env file" 0 "WORKVAR=1" log work-plain env
-check "--tools replaces skip-permissions" 0 "dontAsk
+check "  Vertex kept" 0 "ANTHROPIC_VERTEX_PROJECT_ID=rc-project" log work-plain env
+check "  Vertex on" 0 "CLAUDE_CODE_USE_VERTEX=1" log work-plain env
+check "  work env sourced" 0 "WORKVAR=1" log work-plain env
+check "--allow: an allowlist" 0 "dontAsk
 --allowedTools
-Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --tools Read >/dev/null; cat '$tmp/home/log/personal-t.args'"
+Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --allow Read >/dev/null; cat '$HOME/log/personal-t.args'"
+check "  instead of skip-permissions" 0 "" lacks dangerously "$HOME/log/personal-t.args"
+check "a flag without its value" 2 "usage" s start personal "$tmp/plain" --name
+check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
+touch "$HOME/fail-personal-f"
+check "a failing claude shows why" 1 "fake failure" s start personal "$tmp/plain" --name f
 if command -v zsh >/dev/null; then
-	echo 'export RCVAR=zsh' >"$tmp/home/.zshrc"
+	echo 'export RCVAR=zsh' >"$HOME/.zshrc"
 	check "zsh as the user's shell" 0 "ready personal-z" env SHELL="$(command -v zsh)" bash "$sc" start personal "$tmp/plain" --name z
 	check "  its rc applied" 0 "RCVAR=zsh" log personal-z env
 fi
-check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
-check "failing claude shows why" 1 "failed before it was ready" env SESSIONS_CLAUDE=/bin/false bash "$sc" start personal "$tmp/plain" --name f
+touch "$HOME/stopself-personal-me"
+check "a session that stops itself" 0 "ready personal-me" s start personal "$tmp/plain" --name me
+check "  is refused" 0 "refusing to stop my own session" log personal-me stop
 
 echo "-- worktrees"
 check "a repo gets a worktree" 0 "worktree $WT/repo-1 on new branch worktree-repo-1 from origin/main" s start personal "$R"
 check "  session runs there" 0 "$WT/repo-1" log personal-repo-1 pwd
 check "  from origin's main, not the checked-out branch" 0 "$(git -C "$R" rev-parse origin/main)" git -C "$WT/repo-1" rev-parse HEAD
 check "  no upstream to push to by accident" 128 "" git -C "$WT/repo-1" rev-parse --abbrev-ref '@{u}'
-check "  main checkout stays clean" 0 "" bash -c "[[ -z \$(git -C '$R' status --porcelain) ]]"
+check "  submodules initialized" 0 "" test -e "$WT/repo-1/sm/.git"
+check "  main checkout stays clean" 0 "" test -z "$(git -C "$R" status --porcelain)"
 check "a second agent gets the next one" 0 "ready personal-repo-2" s start personal "$R"
 check "named, from a subdirectory, with a task" 0 "ready personal-fix-1" s start personal "$R/sub" --name fix-1 --prompt "do it"
 check "  starts in the same subdirectory" 0 "$WT/fix-1/sub" log personal-fix-1 pwd
-check "  prompt after --" 0 "--
+check "  plugin dir is the worktree, prompt after --" 0 "--plugin-dir
+$WT/fix-1
+--
 do it" log personal-fix-1 args
-check "a remote-only branch" 0 "on remote-only from origin/remote-only" s start personal "$R" --branch remote-only
+check "a remote-only branch" 0 "on new branch remote-only from origin/remote-only" s start personal "$R" --branch remote-only
 check "  without tracking it" 128 "" git -C "$WT/remote-only" rev-parse --abbrev-ref '@{u}'
 check "an existing local branch" 0 "ready personal-topic" s start personal "$R" --branch topic
 check "same name for another repo refused" 1 "already defined for $R" s start personal "$tmp/plain" --name repo-1
 check "a worktree another profile owns refused" 1 "belongs to personal-fix-1" s start work "$R" --name fix-1
+check "another branch under a used name refused" 1 "is on worktree-fix-1" s start personal "$R" --name fix-1 --branch other
+check "--base on an existing session refused" 1 "only to a new session" s start personal "$R" --name fix-1 --base origin/main
+mkdir -p "$WT/stray/.claude"
+check "a directory that is not a worktree refused" 1 "not a git worktree" s start personal "$R" --name stray
+git clone -q "$tmp/origin.git" "$tmp/my.repo" && echo "$tmp/my.repo" >>"$HOME/trusted"
+check "a repository name with a dot" 0 "ready personal-my_repo-1" s start personal "$tmp/my.repo"
+git init -q --bare -b devel "$tmp/upstream.git" && git -C "$tmp/seed" push -q "$tmp/upstream.git" main:devel
+git clone -q "$tmp/origin.git" "$tmp/fork" && git -C "$tmp/fork" remote add upstream "$tmp/upstream.git"
+echo "$tmp/fork" >>"$HOME/trusted"
+check "a fork starts from upstream's default branch" 0 "from upstream/devel" s start personal "$tmp/fork"
 check "ls" 0 "personal-repo-1 running $WT/repo-1" s ls
 
 echo "-- restarts"
 check "stop" 0 "stopped personal-repo-1" s stop personal-repo-1
 check "ls shows it stopped" 0 "personal-repo-1 stopped $WT/repo-1" s ls
-touch "$tmp/home/.claude/projects/p/$(id personal-repo-1).jsonl" # its first message was saved
-check "start <name> resumes it" 0 "ready personal-repo-1" s start personal-repo-1
-check "  same conversation" 0 "--resume
-$(id personal-repo-1)" log personal-repo-1 args
+touch "$HOME/.claude/projects/p/$(id personal-repo-1).jsonl" # it has a conversation
+check "start <name> continues it in its worktree" 0 "ready personal-repo-1" s start personal-repo-1
+check "  the newest conversation there (survives /clear)" 0 "--continue" log personal-repo-1 args
 check "  same worktree" 0 "$WT/repo-1" log personal-repo-1 pwd
+s stop personal-repo >/dev/null
+touch "$HOME/.claude/projects/p/$(id personal-repo).jsonl"
+check "an in-place session resumes its own id" 0 "--resume
+$(id personal-repo)" bash -c "bash '$sc' start personal-repo >/dev/null; cat '$HOME/log/personal-repo.args'"
+s stop personal-repo-2 >/dev/null && git -C "$R" worktree remove --force "$WT/repo-2"
+check "a worktree removed by hand comes back" 0 "ready personal-repo-2" s start personal-repo-2
+s stop personal-repo-2 >/dev/null && git -C "$R" worktree remove --force "$WT/repo-2" &&
+	git -C "$R" branch -qm worktree-repo-2 renamed
+check "  but not with its branch gone" 1 "branch worktree-repo-2 is gone" s start personal-repo-2
+git -C "$R" branch -qm renamed worktree-repo-2 && s start personal-repo-2 >/dev/null
 check "start <unknown>" 1 "no definition" s start personal-nope
 
 echo "-- clean"
 for n in repo repo-1 repo-2 fix-1 remote-only topic; do s stop "personal-$n" >/dev/null; done
-check "running sessions are not cleaned" 1 "running; stop it first" s clean personal2-plain
+check "a running session is not cleaned" 1 "running; stop it first" s clean personal2-plain
 echo x >"$WT/fix-1/new.txt"
 echo w >"$WT/repo-2/w" && git -C "$WT/repo-2" add w && git -C "$WT/repo-2" commit -qm wip
 echo y >"$WT/topic/build.log"
-check "bulk clean" 0 "removed personal-repo-1 and branch worktree-repo-1" s clean
-check "  kept: uncommitted" 0 "personal-fix-1 stopped" s ls
-check "  kept: unmerged work" 0 "personal-repo-2 stopped" s ls
-check "  kept: ignored files" 0 "personal-topic stopped" s ls
-check "  remote-only branch with nothing new is finished" 1 "" bash -c "bash '$sc' ls | grep -q remote-only"
-check "  working-in-place definitions stay" 0 "personal-repo stopped" s ls
-check "uncommitted work is never removed" 0 "kept personal-fix-1: uncommitted" s clean personal-fix-1
-check "clean <name> takes ignored files" 0 "removed personal-topic (branch topic kept)" s clean personal-topic
-check "  the user's own branch survives" 0 "topic" git -C "$R" branch --list topic
+out=$(s clean 2>&1)
+check "bulk: finished work goes, with its branch" 0 "removed personal-repo-1 and branch worktree-repo-1" echo "$out"
+check "  a remote branch with nothing new is finished" 0 "removed personal-remote-only and branch remote-only" echo "$out"
+check "  kept: uncommitted" 0 "kept personal-fix-1: uncommitted changes" echo "$out"
+check "  kept: unmerged" 0 "kept personal-repo-2: unmerged work" echo "$out"
+check "  kept: ignored files" 0 "kept personal-topic: ignored files" echo "$out"
+check "  in-place sessions stay" 0 "personal-repo stopped" s ls
+check "clean <name> takes ignored files, not the user's branch" 0 "removed personal-topic (branch topic kept)" s clean personal-topic
 check "clean <name> with unmerged work keeps the branch" 0 "removed personal-repo-2 (branch worktree-repo-2 kept)" s clean personal-repo-2
 check "  its commit is safe" 0 "wip" git -C "$R" log -1 --format=%s worktree-repo-2
+check "uncommitted work is never removed" 0 "kept personal-fix-1: uncommitted" s clean personal-fix-1
 check "squash-merged work counts as finished" 0 "ready personal-sq" s start personal "$R" --name sq
 echo z >"$WT/sq/z" && git -C "$WT/sq" add z && git -C "$WT/sq" commit -qm z
 git -C "$tmp/seed" pull -q && echo z >"$tmp/seed/z" && git -C "$tmp/seed" add z && git -C "$tmp/seed" commit -qm squashed &&
@@ -140,11 +191,19 @@ check "detached commits are never removed" 0 "ready personal-det" s start person
 git -C "$WT/det" checkout -q --detach && echo l >"$WT/det/l" && git -C "$WT/det" add l && git -C "$WT/det" commit -qm lost
 s stop personal-det >/dev/null
 check "  kept" 0 "kept personal-det: commits on a detached HEAD" s clean personal-det
+check "unpushed submodule commits are never removed" 0 "ready personal-smc" s start personal "$R" --name smc
+git -C "$WT/smc/sm" checkout -q -b local && git -C "$WT/smc/sm" commit -q --allow-empty -m local &&
+	git -C "$WT/smc/sm" checkout -q --detach HEAD~1 &&
+	s stop personal-smc >/dev/null
+check "  kept" 0 "kept personal-smc: unpushed submodule commits" s clean personal-smc
+check "a worktree with submodules is removed" 0 "ready personal-sm" s start personal "$R" --name sm
+s stop personal-sm >/dev/null
+check "  with its branch" 0 "removed personal-sm and branch worktree-sm" s clean personal-sm
 check "clean <name> on an in-place session forgets it" 0 "forgot personal-repo" s clean personal-repo
 
 echo "-- stop"
 tmux -L "$SESSIONS_TMUX_SOCKET" new-session -d -s mine sleep 600
-check "ls hides others" 1 "" bash -c "bash '$sc' ls | grep -q mine"
+check "ls hides others" 0 "" ls_lacks '^mine '
 check "stop refuses others" 2 "one session name" s stop mine
 check "stop missing" 1 "no session" s stop personal-nope
 
