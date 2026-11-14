@@ -103,6 +103,9 @@ check "another repository with a plugin manifest is no plugin" 0 "" bash -c "bas
 self=$(git -C "${sc%/*}" rev-parse --show-toplevel) && echo "$self" >>"$HOME/trusted"
 check "the launcher's own checkout is" 0 "--plugin-dir
 $self" bash -c "bash '$sc' start personal '$self' --here --name self >/dev/null; cat '$HOME/log/personal-self.args'"
+mkdir -p "$tmp/cfg/cache/skills/sessions" && git init -q "$tmp/cfg" && git -C "$tmp/cfg" commit -q --allow-empty -m c &&
+	cp -r "${sc%/*}" "$tmp/cfg/cache/skills/sessions/" && echo "$tmp/cfg" >>"$HOME/trusted"
+check "a copy installed inside another repository loads nothing" 0 "" bash -c "bash '$tmp/cfg/cache/skills/sessions/scripts/session.sh' start personal '$tmp/cfg' --here --name cfg >/dev/null; ! grep -q plugin-dir '$HOME/log/personal-cfg.args'"
 check "--here in a repo works in place" 0 "ready personal-repo" s start personal "$R" --here
 check "  no worktree" 0 "$R" log personal-repo pwd
 check "work profile" 0 "ready work-plain" s start work "$tmp/plain"
@@ -291,6 +294,14 @@ git -C "$WT/ws" merge -q --ff-only origin/main && printf 'a:\nb: 1\n' >"$WT/ws/x
 printf 'a:\n    b: 1\n' >"$tmp/seed/x.yaml" && git -C "$tmp/seed" commit -qam reindent && git -C "$tmp/seed" push -q origin main
 s stop personal-ws >/dev/null
 check "  is not finished" 0 "kept personal-ws: unmerged work" s clean
+check "the same edit to another copy of a repeated block" 0 "ready personal-blk" s start personal "$R" --name blk
+blocks() { printf 'name: a\nk\nk\nk\ntag: %s\nk\nk\nk\nname: b\nk\nk\nk\ntag: %s\nk\nk\nk\n' "$1" "$2"; }
+git -C "$tmp/seed" pull -q && blocks v1 v1 >"$tmp/seed/c.yaml" && git -C "$tmp/seed" add c.yaml &&
+	git -C "$tmp/seed" commit -qm blocks && git -C "$tmp/seed" push -q origin main && git -C "$R" fetch -q
+git -C "$WT/blk" merge -q --ff-only origin/main && blocks v1 v2 >"$WT/blk/c.yaml" && git -C "$WT/blk" commit -qam "b to v2"
+blocks v2 v1 >"$tmp/seed/c.yaml" && git -C "$tmp/seed" commit -qam "a to v2" && git -C "$tmp/seed" push -q origin main
+s stop personal-blk >/dev/null
+check "  is not finished" 0 "kept personal-blk: unmerged work" s clean
 check "detached commits are never removed" 0 "ready personal-det" s start personal "$R" --name det
 git -C "$WT/det" checkout -q --detach && echo l >"$WT/det/l" && git -C "$WT/det" add l && git -C "$WT/det" commit -qm lost
 s stop personal-det >/dev/null

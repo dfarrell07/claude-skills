@@ -10,7 +10,10 @@ set -euo pipefail
 PROFILES='^(work|personal|personal2)-'
 WAIT=${SESSIONS_WAIT:-30}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions
-SELF=$(git -C "${BASH_SOURCE%/*}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo none)
+# The checkout this launcher is in, if its plugin root is a repository's top (not, say, an installed copy inside
+# ~/.claude): only it, and its worktrees, load as the plugin.
+SELF=$(cd "${BASH_SOURCE%/*}/../../.." 2>/dev/null && [[ $(git rev-parse --show-toplevel 2>/dev/null) == "$(pwd -P)" ]] &&
+	git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || SELF=none
 
 die() { echo "session: $1" >&2; exit "${2:-1}"; }
 usage() { sed -n '4,6s/^#   /usage: /p' "$0" >&2; exit 2; }
@@ -345,18 +348,29 @@ stop() {
 }
 
 # Adds nothing to the base: merged (also by squash or rebase), or never used.
-finished() { # an unknown base is never finished
-	local t mb p ids own
-	t=$(g rev-parse --verify -q "$D_base^{tree}") || return 1
+finished() {
+	local t mb own base pid c ok=1
+	t=$(g rev-parse --verify -q "$D_base^{tree}") || return 1 # an unknown base is never finished
 	[[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) != "$t" ]] || return 0 # merged, or nothing new
-	# Merged as other commits, with the base changing the same lines since: rebased (each commit's patch is on the
-	# base) or squashed (the whole branch's patch is). Patch ids --verbatim: whitespace is content (YAML, Makefiles).
+	# Merged as other commits, with the base changing the same lines since: rebased (each commit is on the base) or
+	# squashed (the whole branch is). Patch ids (--verbatim: whitespace is content) find candidates; the diff must
+	# then match exactly, hunk positions included, since an id ignores them (the same edit to another copy of a block).
 	mb=$(g merge-base "$D_base" "$1") || return 1
-	ids=$(g log -p --format='commit %H' "$mb..$D_base" | git patch-id --verbatim | cut -d' ' -f1)
-	own=$(g log -p --no-merges --format='commit %H' "$D_base..$1" | git patch-id --verbatim | cut -d' ' -f1)
-	[[ -n $own ]] && ! grep -qvxFf <(echo "$ids") <<<"$own" && return 0
-	p=$(g diff "$mb" "$1" | git patch-id --verbatim) && [[ -n $p ]] || return 1
-	grep -qxF "${p%% *}" <<<"$ids"
+	base=$(g log -p --format='commit %H' "$mb..$D_base" | git patch-id --verbatim)
+	own=$(g log -p --no-merges --format='commit %H' "$D_base..$1" | git patch-id --verbatim)
+	if [[ -n $own ]]; then
+		while read -r pid c; do on_base "$(g show --format= "$c" | sed '/^index /d')" "$pid" || { ok=''; break; }; done <<<"$own"
+		[[ -z $ok ]] || return 0
+	fi
+	pid=$(g diff "$mb" "$1" | git patch-id --verbatim) && [[ -n $pid ]] || return 1
+	on_base "$(g diff "$mb" "$1" | sed '/^index /d')" "${pid%% *}"
+}
+on_base() { # on_base <diff> <patch id>: a commit in finished()'s $base with that id and exactly that diff
+	local p b
+	while read -r p b; do
+		[[ $p != "$2" || $(g show --format= "$b" | sed '/^index /d') != "$1" ]] || return 0
+	done <<<"$base"
+	return 1
 }
 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
