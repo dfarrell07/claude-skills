@@ -249,10 +249,13 @@ check "a running session is not cleaned" 1 "running; stop it first" s clean pers
 echo x >"$WT/fix-1/new.txt"
 echo w >"$WT/repo-2/w" && git -C "$WT/repo-2" add w && git -C "$WT/repo-2" commit -qm wip
 echo y >"$WT/topic/build.log"
+(cd "$WT/pr" && exec sleep 300) & holder=$! # someone working in a finished worktree by hand
 out=$(s clean 2>&1)
 check "bulk: finished work goes, with its branch" 0 "removed personal-repo-1 and branch worktree-repo-1" echo "$out"
 check "  a remote branch with nothing new is finished" 0 "removed personal-remote-only and branch remote-only" echo "$out"
-check "  also one ahead of the base" 0 "removed personal-pr and branch pr" echo "$out"
+check "  kept: in use by a process" 0 "kept personal-pr: in use by process $holder" echo "$out"
+kill "$holder"; wait "$holder" 2>/dev/null || true
+check "  then, one ahead of the base is finished" 0 "removed personal-pr and branch pr" s clean
 check "  build output (ignored files) goes too, not the user's branch" 0 "removed personal-topic (branch topic kept)" echo "$out"
 check "  kept: uncommitted" 0 "kept personal-fix-1: uncommitted changes" echo "$out"
 check "  kept: unmerged" 0 "kept personal-repo-2: unmerged work" echo "$out"
