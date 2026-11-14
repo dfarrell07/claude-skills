@@ -10,6 +10,7 @@ set -euo pipefail
 PROFILES='^(work|personal|personal2)-'
 WAIT=${SESSIONS_WAIT:-30}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions
+SELF=$(git -C "${BASH_SOURCE%/*}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo none)
 
 die() { echo "session: $1" >&2; exit "${2:-1}"; }
 usage() { sed -n '4,6s/^#   /usage: /p' "$0" >&2; exit 2; }
@@ -277,7 +278,10 @@ start() {
 	else
 		cmd+=(--dangerously-skip-permissions)
 	fi
-	[[ ! -f $root/.claude-plugin/plugin.json ]] || cmd+=(--plugin-dir "$root") # a plugin under development
+	# The launcher's own checkout (or a worktree of it) loads as the plugin, as laptop-setup's cper and cwork do; no
+	# other repository does, whatever it holds.
+	[[ $(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) != "$SELF" ]] ||
+		cmd+=(--plugin-dir "$root")
 	[[ -z $prompt ]] || cmd+=(-- "$prompt") # --allowedTools would take a bare prompt as a rule
 	# remain-on-exit failed: a claude that fails keeps its screen for ready() to show. The client runs in the clean
 	# environment too, since a tmux server it starts keeps it for every later session; 9>&-: nor the lock.
@@ -341,17 +345,18 @@ stop() {
 }
 
 # Adds nothing to the base: merged (also by squash or rebase), or never used.
-# shellcheck disable=SC2143 # grep -q exits early, and under pipefail that fails the pipe
 finished() { # an unknown base is never finished
-	local t mb p
+	local t mb p ids own
 	t=$(g rev-parse --verify -q "$D_base^{tree}") || return 1
 	[[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) != "$t" ]] || return 0 # merged, or nothing new
 	# Merged as other commits, with the base changing the same lines since: rebased (each commit's patch is on the
-	# base) or squashed (the whole branch's patch is). No grep -q: under pipefail its early exit fails the pipe.
+	# base) or squashed (the whole branch's patch is). Patch ids --verbatim: whitespace is content (YAML, Makefiles).
 	mb=$(g merge-base "$D_base" "$1") || return 1
-	[[ -n $(g cherry "$D_base" "$1") && -z $(g cherry "$D_base" "$1" | grep '^+') ]] && return 0
-	p=$(g diff "$mb" "$1" | git patch-id --stable) && [[ -n $p ]] || return 1
-	[[ -n $(g log -p --format='commit %H' "$mb..$D_base" | git patch-id --stable | grep "^${p%% *} ") ]]
+	ids=$(g log -p --format='commit %H' "$mb..$D_base" | git patch-id --verbatim | cut -d' ' -f1)
+	own=$(g log -p --no-merges --format='commit %H' "$D_base..$1" | git patch-id --verbatim | cut -d' ' -f1)
+	[[ -n $own ]] && ! grep -qvxFf <(echo "$ids") <<<"$own" && return 0
+	p=$(g diff "$mb" "$1" | git patch-id --verbatim) && [[ -n $p ]] || return 1
+	grep -qxF "${p%% *}" <<<"$ids"
 }
 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;

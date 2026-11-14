@@ -99,8 +99,10 @@ personal2-plain
 --dangerously-skip-permissions" log personal2-plain args
 check "  no --plugin-dir for a directory that is no plugin" 0 "" lacks plugin-dir "$HOME/log/personal2-plain.args"
 mkdir -p "$tmp/plug/.claude-plugin" && echo '{}' >"$tmp/plug/.claude-plugin/plugin.json" && echo "$tmp/plug" >>"$HOME/trusted"
-check "a plugin under development is loaded" 0 "--plugin-dir
-$tmp/plug" bash -c "bash '$sc' start personal '$tmp/plug' >/dev/null; cat '$HOME/log/personal-plug.args'"
+check "another repository with a plugin manifest is no plugin" 0 "" bash -c "bash '$sc' start personal '$tmp/plug' >/dev/null; ! grep -q plugin-dir '$HOME/log/personal-plug.args'"
+self=$(git -C "${sc%/*}" rev-parse --show-toplevel) && echo "$self" >>"$HOME/trusted"
+check "the launcher's own checkout is" 0 "--plugin-dir
+$self" bash -c "bash '$sc' start personal '$self' --here --name self >/dev/null; cat '$HOME/log/personal-self.args'"
 check "--here in a repo works in place" 0 "ready personal-repo" s start personal "$R" --here
 check "  no worktree" 0 "$R" log personal-repo pwd
 check "work profile" 0 "ready work-plain" s start work "$tmp/plain"
@@ -282,6 +284,13 @@ s stop personal-sq2 >/dev/null && s stop personal-rb >/dev/null
 out=$(s clean 2>&1)
 check "  squashed counts as finished" 0 "removed personal-sq2 and branch worktree-sq2" echo "$out"
 check "  rebased counts as finished" 0 "removed personal-rb and branch worktree-rb" echo "$out"
+check "a whitespace change the base re-whitespaced" 0 "ready personal-ws" s start personal "$R" --name ws
+git -C "$tmp/seed" pull -q && printf 'a:\n  b: 1\n' >"$tmp/seed/x.yaml" && git -C "$tmp/seed" add x.yaml &&
+	git -C "$tmp/seed" commit -qm yaml && git -C "$tmp/seed" push -q origin main && git -C "$R" fetch -q
+git -C "$WT/ws" merge -q --ff-only origin/main && printf 'a:\nb: 1\n' >"$WT/ws/x.yaml" && git -C "$WT/ws" commit -qam unindent
+printf 'a:\n    b: 1\n' >"$tmp/seed/x.yaml" && git -C "$tmp/seed" commit -qam reindent && git -C "$tmp/seed" push -q origin main
+s stop personal-ws >/dev/null
+check "  is not finished" 0 "kept personal-ws: unmerged work" s clean
 check "detached commits are never removed" 0 "ready personal-det" s start personal "$R" --name det
 git -C "$WT/det" checkout -q --detach && echo l >"$WT/det/l" && git -C "$WT/det" add l && git -C "$WT/det" commit -qm lost
 s stop personal-det >/dev/null

@@ -5,7 +5,7 @@ laptop-setup (below).
 
 ## Problem
 
-Background Claude Code sessions are started by hand (`cw`, `ccp`, `cwt` open tmux; `cper`, `cper2`, `cwork` run in
+Background Claude Code sessions are started by hand (`cw`, `cwt` open tmux; `cper`, `cper2`, `cwork` run in
 the foreground) or by asking whatever session is idle, which drags its context, environment and `CLAUDE_CODE_*`
 markers into the new one (a claude started inside another stops saving its transcript). Several agents in one
 repository share a checkout unless someone sets up worktrees by hand.
@@ -45,10 +45,9 @@ shape, so no argument can name a path outside its state.
 
 All get `--remote-control`, `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
 `--dangerously-skip-permissions`, as `cper`, `cper2` and `cwork` do; Remote Control on Vertex (`work`) is unverified,
-as for `cwork` (the docs say it needs the Anthropic API). Unlike them, `--plugin-dir` is passed only for a directory
-with a plugin manifest: a plugin under development, loaded with the same trust as that repository's own hooks, rather
-than every repository loaded as a plugin. work-env is optional because hosts on the older zshrc keep the Vertex
-variables in the rc.
+as for `cwork` (the docs say it needs the Anthropic API). Like them (laptop-setup's plugin-dir allowlist),
+`--plugin-dir` is passed only for the launcher's own checkout or a worktree of it, never another repository, whatever
+it holds. work-env is optional because hosts on the older zshrc keep the Vertex variables in the rc.
 
 **Environment**: `env -i` with a short allowlist (HOME, USER, LOGNAME, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH
 agent, TMUX_TMPDIR, display, Kerberos, the pane's own TMUX and TMUX_PANE, and `TERM=tmux-256color`), then the user's
@@ -109,15 +108,15 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
 
 ## List, stop and clean
 
-`ls` also shows `work-*`, `personal-*` and `personal2-*` tmux sessions without a definition (`cw`, `ccp`), which
+`ls` also shows `work-*`, `personal-*` and `personal2-*` tmux sessions without a definition (`cw`), which
 `stop` accepts. `stop` never stops the session it runs in. What `clean` keeps and removes is in SKILL.md; why:
 
 - **Finished** means the work adds nothing to the base: `git merge-tree --write-tree <base> <tip>` equals the base's
   tree, which holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
   unused branch, and can't lose content. Once the base has changed the same lines since (go.mod, CI files), that merge
-  conflicts, so a branch also counts as finished when `git cherry` finds every commit on the base (rebase merge) or
-  its whole diff matches a base commit by patch-id (squash merge). Checks use the worktree's own HEAD, so commits on a
-  detached HEAD, which no branch keeps, are seen.
+  conflicts, so a branch also counts as finished when every commit's patch is on the base (rebase merge) or its whole
+  diff is (squash merge), compared by `git patch-id --verbatim`, since whitespace is content. Checks use the
+  worktree's own HEAD, so commits on a detached HEAD, which no branch keeps, are seen.
 - Every check fails closed: a git command that errors keeps the worktree, and an unknown base (its remote branch
   deleted) is never finished.
 - `git status` is asked with `--ignore-submodules=none`, so a `submodule.<name>.ignore` setting can't hide changes.
@@ -159,8 +158,8 @@ ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start perso
   --allow "Bash(bash %h/<checkout>/skills/sessions/scripts/session.sh *) Skill(claude-skills:sessions)"
 ```
 
-- `<checkout>` must be the physical path (no symlink): the launcher passes `--plugin-dir <checkout>` (it has a plugin
-  manifest), so the skill loads from there and `${CLAUDE_SKILL_DIR}` is that path, which the allow rule must match.
+- `<checkout>` must be the physical path (no symlink): the launcher passes `--plugin-dir <checkout>` (its own checkout),
+  so the skill loads from there and `${CLAUDE_SKILL_DIR}` is that path, which the allow rule must match.
 - `--here`: the orchestrator works in the checkout, not a worktree.
 - The `clean` first forgets its definition, so each boot starts a fresh conversation (it holds nothing worth keeping)
   rather than a resumed one, which after a long break may ask whether to resume.
@@ -175,7 +174,7 @@ Also for laptop-setup:
 - make `cwt <n>` run `session.sh start work . --name <n>; tmux attach -t work-<n>` (`;` rather than `&&`: at
   `needs-trust`, attaching is how to answer), so its worktrees are defined and cleaned (existing ones need a one-time
   `git worktree remove`);
-- in time let `cw` and `ccp` call the launcher too, or template its profile table (and the subagent limit), so the two
+- in time let `cw` call the launcher too, or template its profile table (and the subagent limit), so the two
   can't drift.
 
 ## Assumptions
