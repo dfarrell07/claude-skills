@@ -10,8 +10,8 @@ user-invocable: true
 
 **Arguments:** $ARGUMENTS
 
-With arguments, run them through the launcher and report its output. Without arguments you are this machine's
-**session orchestrator**: say `orchestrator ready` and wait for requests.
+With arguments, carry out that one request (launcher arguments or plain words) as below and report the output. Without
+arguments you are this machine's **session orchestrator**: say `orchestrator ready` and wait for requests.
 
 Run the launcher exactly as below, one call per command, nothing chained: as the orchestrator you may run only this and
 read-only commands such as `ls`.
@@ -27,14 +27,14 @@ bash ${CLAUDE_SKILL_DIR}/scripts/session.sh clean [<session>]
 A session is named `<profile>-<name>` (e.g. `personal-fix-flaky-e2e`): its tmux session (`tmux attach -t <session>`)
 and its Remote Control name in claude.ai/code and the mobile app. In a git repository it gets its own worktree,
 `<repo>/.claude/worktrees/<name>`, on its own branch, `worktree-<name>` or the `--branch` given, so several agents
-can share a project. Started from a subdirectory, it starts in the same subdirectory of its worktree.
+can share a project. Given a subdirectory, it starts in the same subdirectory of its worktree.
 
 ## Turning a request into a call
 
 - **Profile** (the account): `work`, `personal` or `personal2`. Use the one the user named; if none, ask. Never guess:
   the account decides where the code goes.
-- **Directory**: a path as given, or a bare repository name, which the launcher looks up in `~`, `~/repos` and
-  `~/src/<org>`; on `several match`, list them and ask.
+- **Directory**: a path as given, or a bare repository name, which the launcher looks up in the current directory,
+  `~`, `~/repos` and `~/src/<org>`; on `several match`, list them and ask.
 - **Name**: whenever the user gives a task, pass `--name` with a short slug of it (`--name fix-flaky-e2e`), so the
   session, worktree and branch say what they are for. With no task, omit it: in a repository each start is then a
   new agent, `<repo>-1`, `<repo>-2`, ... ("three agents in claude-skills" is three starts). A name already defined
@@ -42,9 +42,10 @@ can share a project. Started from a subdirectory, it starts in the same subdirec
   (`--name fix-flaky-e2e-2`).
 - **Branch**: `--branch B` when the user names a branch to work on: a local branch as it is, else the remote's latest
   (`upstream/B` for upstream's), else a new one; the name defaults to it. Without `--branch`, the branch is new, from
-  the remote's default branch (upstream's, for a fork). If B is checked out in the main checkout, the start fails: ask
-  whether to work in the checkout itself (`--here`, without `--branch`). `--base REF` only when they name what a new
-  branch starts from (`--base upstream/release-0.20`).
+  the remote's default branch (upstream's, for a fork). If B is checked out elsewhere, the start fails and git names
+  the path: for the main checkout, ask whether to work there (`--here`, without `--branch`); for a session's worktree,
+  that session already has B (`ls`). `--base REF` only when they name what a new branch starts from (`--base
+  upstream/release-0.20`).
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
   uncommitted changes"). A directory that is not a repository is always in place.
 - **Trust**: claude asks once per directory tree; worktrees inherit their repository's answer. Pass `--trust` only when
@@ -60,13 +61,14 @@ can share a project. Started from a subdirectory, it starts in the same subdirec
 
 `start` prints `worktree ...` if it made a branch, then `started <session> in <dir>` or `exists <session>` (already
 running: nothing started, no prompt sent), then `ready`, `needs-trust` (exit 3) or `waiting` (exit 0: not ready after
-30 s; its last screen lines come just before). A failure is `session: ...` (exit 1; 2 for a bad request), after claude's
-last lines if it ran. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
+30 s; its last screen lines come just before). A failure is `session: ...` or `usage: ...` (exit 1; 2 for a bad
+request), after claude's last lines if it ran. `ls` prints `<session> running|stopped|failed <dir>`. Relay results
+with the attach command.
 
 ## Cleanup
 
 `stop` keeps the worktree, so `start` can resume it. `clean` goes through the stopped sessions: it removes each one
-whose work is finished (merged, also by squash, or never used), with its build output, and prints `removed ...`,
+whose work is finished (merged in any way, or never used), with its build output, and prints `removed ...`,
 `forgot ...` (its directory or repository is gone) or `kept <session>: <why>`; running and in-place sessions are
 skipped. `clean <session>` also removes one with unmerged commits (its branch keeps them), and forgets an in-place
 one; run it only for a session the user named. Uncommitted changes, unpushed submodule commits, commits on a detached

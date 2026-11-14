@@ -13,7 +13,8 @@ STATE=${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions
 
 die() { echo "session: $1" >&2; exit "${2:-1}"; }
 usage() { sed -n '4,6s/^#   /usage: /p' "$0" >&2; exit 2; }
-named() { [[ $1 =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || die "not a session name: $1" 2; } # also keeps paths out
+NAMED=${PROFILES}'[A-Za-z0-9_-]+$'
+named() { [[ $1 =~ $NAMED ]] || die "not a session name: $1" 2; } # also keeps paths out
 # The user's default tmux server (SESSIONS_TMUX_SOCKET: a private one, for tests), even from inside another server.
 tm() { env -u TMUX tmux ${SESSIONS_TMUX_SOCKET:+-L "$SESSIONS_TMUX_SOCKET"} "$@"; }
 alive() { tm has-session -t "=$1" 2>/dev/null; }
@@ -41,7 +42,7 @@ load() { # load <name>: sets D_<field>; fails when undefined
 }
 defined() { # the defined sessions' names
 	local n
-	for n in "$STATE"/*; do [[ ! -f $n || ! ${n##*/} =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || echo "${n##*/}"; done
+	for n in "$STATE"/*; do [[ ! -f $n || ! ${n##*/} =~ $NAMED ]] || echo "${n##*/}"; done
 }
 save() {
 	local f v tmp
@@ -113,7 +114,6 @@ add_worktree() {
 	if g show-ref --verify --quiet "refs/heads/$D_branch"; then
 		[[ -z $new || -n $branch ]] || # an earlier session's branch, kept by clean: not for new work
 			die "branch $D_branch exists (an earlier session's); --branch $D_branch continues it, or choose another --name"
-		[[ -z $new ]] || D_created=0
 		g worktree add --quiet "$D_worktree" "$D_branch" || die "could not check out $D_branch"
 	elif [[ -z $new ]]; then
 		die "branch $D_branch is gone (renamed?): restore it, or clean $NAME and start again"
