@@ -56,7 +56,7 @@ DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/del
 
 Start background Claude sessions one way: in the user's tmux, Remote Control on, a fresh environment, a named
 profile (`work`, `personal`, `personal2`) and directory. In a git repository each session gets its own worktree and
-branch, so several agents can share a project; `start <name>` reopens the same worktree and conversation after a stop
+branch, so several agents can share a project; `start <session>` reopens the same worktree and conversation after a stop
 or reboot, and `clean` removes finished worktrees without losing work. Run with no arguments, the session is this
 machine's orchestrator, meant to start at boot (laptop-setup). Design: `plans/session-orchestrator.md`.
 

@@ -48,19 +48,20 @@ can share a project. Started from a subdirectory, it starts in the same subdirec
 - **In place**: `--here` when the user wants the checkout itself or its current state ("in my checkout", "with my
   uncommitted changes"). A directory that is not a repository is always in place.
 - **Trust**: claude asks once per directory tree; worktrees inherit their repository's answer. Pass `--trust` only when
-  the user named that directory in this request (a bare name counts). On `needs-trust`, ask the user; if
-  they confirm, run `start <session> --trust`.
+  the user named that directory in this request (a bare name counts). On `needs-trust`, ask the user: if
+  they confirm, run `start <session> --trust`; if not, `stop <session>`, then `clean <session>`.
 - **Prompt**: `--prompt '<text>'` when the user gave the session a task: their words, not your restatement,
   single-quoted (a `'` in them written `'\''`), so backticks and `$` stay text.
 - **Again**: `start <session>` (with no other flags than `--trust` and `--prompt`) reopens a stopped or failed session
   in the same worktree and its latest conversation (in place: the conversation it started with), also after a reboot.
   "Restart my sessions": `ls`, then `start <session>` for each `stopped` or `failed` one the user wants. To start an
-  in-place session afresh: `clean <session>`, then `start <profile> <dir> --here --name <N>` as for a new one.
+  in-place session afresh: `stop` it if running, `clean <session>`, then `start <profile> <dir> --here --name <N>` as
+  for a new one.
 
 `start` prints `worktree ...` if it made a branch, then `started <session> in <dir>` or `exists <session>` (already
 running: nothing started, no prompt sent), then `ready`, `needs-trust` (exit 3) or `waiting` (exit 0: not ready after
-30 s; its last screen lines come just before). A failure is `session: ...` with exit 1, after claude's last lines if it
-ran. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
+30 s; its last screen lines come just before). A failure is `session: ...` (exit 1; 2 for a bad request), after claude's
+last lines if it ran. `ls` prints `<session> running|stopped|failed <dir>`. Relay results with the attach command.
 
 ## Cleanup
 

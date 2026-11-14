@@ -118,6 +118,8 @@ check "a bare name is looked up (~/src/<org>/<name>)" 0 "ready personal-thing" s
 check "  " 0 "$HOME/src/org/thing" log personal-thing pwd
 check "  several matches refused" 2 "several match" s start personal dup
 check "  none" 1 "no such directory: nowhere" s start personal nowhere
+mkdir -p "$tmp/cwd/dup"
+check "  one in the current directory too" 2 "several match" bash -c "cd '$tmp/cwd' && bash '$sc' start personal dup"
 check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
 check "a path is no session name" 2 "not a session name" s clean ../../home/.bashrc
 check "  " 2 "not a session name" s start ../x
@@ -267,6 +269,19 @@ git -C "$tmp/seed" pull -q && echo z >"$tmp/seed/z" && git -C "$tmp/seed" add z 
 	git -C "$tmp/seed" push -q origin main
 s stop personal-sq >/dev/null
 check "  removed with its branch" 0 "removed personal-sq and branch worktree-sq" s clean
+check "squashed, then the base changed the same lines" 0 "ready personal-sq2" s start personal "$R" --name sq2
+echo v1 >"$WT/sq2/go.mod" && git -C "$WT/sq2" add go.mod && git -C "$WT/sq2" commit -qm v1
+git -C "$tmp/seed" pull -q && echo v1 >"$tmp/seed/go.mod" && git -C "$tmp/seed" add go.mod && git -C "$tmp/seed" commit -qm "v1 (#1)" &&
+	echo v2 >"$tmp/seed/go.mod" && git -C "$tmp/seed" commit -qam v2 && git -C "$tmp/seed" push -q origin main
+check "rebased, then the base changed the same lines" 0 "ready personal-rb" s start personal "$R" --name rb
+for i in 1 2; do echo "r$i" >"$WT/rb/rb$i" && git -C "$WT/rb" add "rb$i" && git -C "$WT/rb" commit -qm "rb$i"; done
+git -C "$tmp/seed" pull -q && git -C "$tmp/seed" fetch -q "$WT/rb" HEAD && # merged as new commits (rebase)
+	git -C "$tmp/seed" cherry-pick FETCH_HEAD~1 FETCH_HEAD >/dev/null
+echo r9 >"$tmp/seed/rb1" && git -C "$tmp/seed" commit -qam "rb1 again" && git -C "$tmp/seed" push -q origin main
+s stop personal-sq2 >/dev/null && s stop personal-rb >/dev/null
+out=$(s clean 2>&1)
+check "  squashed counts as finished" 0 "removed personal-sq2 and branch worktree-sq2" echo "$out"
+check "  rebased counts as finished" 0 "removed personal-rb and branch worktree-rb" echo "$out"
 check "detached commits are never removed" 0 "ready personal-det" s start personal "$R" --name det
 git -C "$WT/det" checkout -q --detach && echo l >"$WT/det/l" && git -C "$WT/det" add l && git -C "$WT/det" commit -qm lost
 s stop personal-det >/dev/null

@@ -25,8 +25,8 @@ untrusted workspace instead of asking.
 ## Starting a session
 
 The launcher never guesses: the **profile** is required, because accounts are a data boundary. A bare directory name
-is looked up in `~`, `~/repos` and `~/src/<org>` (laptop-setup's clones); several matches are refused, so the
-orchestrator asks. It does the lookup because the orchestrator's allowlist has no `find`.
+is looked up in the current directory, `~`, `~/repos` and `~/src/<org>` (laptop-setup's clones); several matches are
+refused, so the orchestrator asks. It does the lookup because the orchestrator's allowlist has no `find`.
 
 **Name**: `<profile>-<N>`, the tmux session, `--name` and the Remote Control name. N is `--name`, else `--branch`,
 else `<repo>-<k>` for a new agent in a repository (the first k with no definition, session, worktree or
@@ -102,8 +102,7 @@ directory).
 starts with `--continue`, the newest conversation in its own directory, which only it uses, so a `/clear` inside it
 carries over. (`--continue` skips conversations begun with `/loop` and may pick one that `/add-dir`ed the worktree.)
 An in-place session (`--here`, a directory that isn't a repository, the orchestrator), whose directory the user may also
-work in, resumes with `--resume <id>`:
-after a `/clear` that is the conversation before it; use `/resume` there.
+work in, resumes with `--resume <id>`; after a `/clear` that is the conversation before it, so use `/resume` there.
 
 **Lock**: `flock` on the state directory serializes naming, definitions and adding or removing worktrees, so parallel
 starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is about to use.
@@ -114,9 +113,11 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
 `stop` accepts. `stop` never stops the session it runs in. What `clean` keeps and removes is in SKILL.md; why:
 
 - **Finished** means the work adds nothing to the base: `git merge-tree --write-tree <base> <tip>` equals the base's
-  tree. That holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
-  unused branch, and can't lose content. Checks use the worktree's own HEAD, so commits on a detached HEAD, which no
-  branch keeps, are seen.
+  tree, which holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
+  unused branch, and can't lose content. Once the base has changed the same lines since (go.mod, CI files), that merge
+  conflicts, so a branch also counts as finished when `git cherry` finds every commit on the base (rebase merge) or
+  its whole diff matches a base commit by patch-id (squash merge). Checks use the worktree's own HEAD, so commits on a
+  detached HEAD, which no branch keeps, are seen.
 - Every check fails closed: a git command that errors keeps the worktree, and an unknown base (its remote branch
   deleted) is never finished.
 - `git status` is asked with `--ignore-submodules=none`, so a `submodule.<name>.ignore` setting can't hide changes.
@@ -171,9 +172,9 @@ ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start perso
 Also for laptop-setup:
 
 - widen `cls`, `ca` and `cstatus` to `^(work|personal|personal2)-`;
-- make `cwt <n>` `session.sh start work . --name <n>; tmux attach -t work-<n>` (`;`: at `needs-trust`, attaching is
-  how to answer), so its worktrees are defined and
-  cleaned (existing ones need a one-time `git worktree remove`);
+- make `cwt <n>` run `session.sh start work . --name <n>; tmux attach -t work-<n>` (`;` rather than `&&`: at
+  `needs-trust`, attaching is how to answer), so its worktrees are defined and cleaned (existing ones need a one-time
+  `git worktree remove`);
 - in time let `cw` and `ccp` call the launcher too, or template its profile table (and the subagent limit), so the two
   can't drift.
 

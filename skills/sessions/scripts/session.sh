@@ -145,7 +145,9 @@ define() {
 	local prof=$1 dir=$2 sub='' main='' n k owner c found=()
 	profile "$prof"
 	if [[ $dir != */* && $dir != . && $dir != .. ]]; then # a bare name: ~/<name>, ~/repos/<name> or ~/src/<org>/<name>
-		for c in "$HOME/$dir" "$HOME/repos/$dir" "$HOME/src/"*/"$dir"; do [[ ! -d $c ]] || found+=("$c"); done
+		for c in "$dir" "$HOME/$dir" "$HOME/repos/$dir" "$HOME/src/"*/"$dir"; do # the same one twice counts once
+			c=$(CDPATH='' cd "$c" 2>/dev/null && pwd -P) && [[ " ${found[*]} " != *" $c "* ]] && found+=("$c")
+		done
 		[[ ${#found[@]} -le 1 ]] || die "$dir: several match: ${found[*]}; give the path" 2
 		dir=${found[0]:-$dir}
 	fi
@@ -338,10 +340,18 @@ stop() {
 	if [[ -f $STATE/$1 ]]; then echo "stopped $1 (start $1 resumes it; clean $1 removes it)"; else echo "stopped $1"; fi
 }
 
-# Adds nothing to the base: merged (also by squash), or never used.
+# Adds nothing to the base: merged (also by squash or rebase), or never used.
+# shellcheck disable=SC2143 # grep -q exits early, and under pipefail that fails the pipe
 finished() { # an unknown base is never finished
-	local t
-	t=$(g rev-parse --verify -q "$D_base^{tree}") && [[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) == "$t" ]]
+	local t mb p
+	t=$(g rev-parse --verify -q "$D_base^{tree}") || return 1
+	[[ $(g merge-tree --write-tree "$D_base" "$1" 2>/dev/null) != "$t" ]] || return 0 # merged, or nothing new
+	# Merged as other commits, with the base changing the same lines since: rebased (each commit's patch is on the
+	# base) or squashed (the whole branch's patch is). No grep -q: under pipefail its early exit fails the pipe.
+	mb=$(g merge-base "$D_base" "$1") || return 1
+	[[ -n $(g cherry "$D_base" "$1") && -z $(g cherry "$D_base" "$1" | grep '^+') ]] && return 0
+	p=$(g diff "$mb" "$1" | git patch-id --stable) && [[ -n $p ]] || return 1
+	[[ -n $(g log -p --format='commit %H' "$mb..$D_base" | git patch-id --stable | grep "^${p%% *} ") ]]
 }
 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
