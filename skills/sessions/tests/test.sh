@@ -89,6 +89,7 @@ check "profile env set" 0 "CLAUDE_CONFIG_DIR=$HOME/.claude-per2" log personal2-p
 check "shell rc applied" 0 "RCVAR=1" log personal2-plain env
 rm -f "$HOME/guard" && s start personal "$tmp/plain" --name g >/dev/null
 check "  through its claude() guard" 0 "" test -e "$HOME/guard"
+check "personal keeps claude's default config dir" 0 "" lacks '^CLAUDE_CONFIG_DIR=' "$HOME/log/personal-g.env"
 check "personal drops Vertex" 0 "" lacks '^(ANTHROPIC_VERTEX_PROJECT_ID|CLAUDE_CODE_USE_VERTEX=1)' "$HOME/log/personal2-plain.env"
 check "new conversation, named, Remote Control" 0 "--session-id
 $(id personal2-plain)

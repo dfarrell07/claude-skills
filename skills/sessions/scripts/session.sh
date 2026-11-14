@@ -75,7 +75,9 @@ profile() {
 		[[ -f $ENV_FILE ]] || ENV_FILE='' # older setups keep the Vertex variables in the shell rc
 		SETS=(CLAUDE_CODE_USE_VERTEX=1 "$subagents")
 		;;
-	personal) SETS=("${personal[@]}" "CLAUDE_CONFIG_DIR=$HOME/.claude") ;;
+	# personal: claude's default config (~/.claude.json and ~/.claude), as cper has it. CLAUDE_CONFIG_DIR=~/.claude
+	# would not be the same: claude then keeps its settings in ~/.claude/.claude.json, a new file, and onboards again.
+	personal) SETS=("${personal[@]}" -u CLAUDE_CONFIG_DIR) ;;
 	personal2) SETS=("${personal[@]}" "CLAUDE_CONFIG_DIR=$HOME/.claude-per2") ;;
 	*) die "unknown profile '$1' (work, personal, personal2)" 2 ;;
 	esac

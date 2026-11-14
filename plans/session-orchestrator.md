@@ -40,8 +40,10 @@ shape, so no argument can name a path outside its state.
 | Profile | Applied after the shell rc | Like |
 | --- | --- | --- |
 | `work` | source `~/.config/claude/work-env` if present; `CLAUDE_CODE_USE_VERTEX=1` | `cwork` |
-| `personal` | unset Vertex/Bedrock/API-key variables; `CLAUDE_CONFIG_DIR=~/.claude`, `CLAUDE_CODE_USE_VERTEX=0` | `cper` |
+| `personal` | unset Vertex/Bedrock/API-key variables and `CLAUDE_CONFIG_DIR`; `CLAUDE_CODE_USE_VERTEX=0` | `cper` |
 | `personal2` | same, with `CLAUDE_CONFIG_DIR=~/.claude-per2` | `cper2` |
+
+`CLAUDE_CONFIG_DIR=~/.claude` is not the default: claude would read `~/.claude/.claude.json` and onboard again.
 
 All get `--remote-control`, `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
 `--dangerously-skip-permissions`, as `cper`, `cper2` and `cwork` do; Remote Control on Vertex (`work`) is unverified,
