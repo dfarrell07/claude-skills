@@ -112,6 +112,11 @@ check "--allow: an allowlist" 0 "dontAsk
 Read" bash -c "bash '$sc' start personal '$tmp/plain' --name t --allow Read >/dev/null; cat '$HOME/log/personal-t.args'"
 check "  instead of skip-permissions" 0 "" lacks dangerously "$HOME/log/personal-t.args"
 check "a flag without its value" 2 "usage" s start personal "$tmp/plain" --name
+mkdir -p "$HOME/src/org/thing" "$HOME/repos/dup" "$HOME/src/o/dup"
+check "a bare name is looked up (~/src/<org>/<name>)" 0 "ready personal-thing" s start personal thing --trust
+check "  " 0 "$HOME/src/org/thing" log personal-thing pwd
+check "  several matches refused" 2 "several match" s start personal dup
+check "  none" 1 "no such directory: nowhere" s start personal nowhere
 check "unknown profile" 2 "unknown profile" s start bogus "$tmp/plain"
 check "a path is no session name" 2 "not a session name" s clean ../../home/.bashrc
 check "  " 2 "not a session name" s start ../x

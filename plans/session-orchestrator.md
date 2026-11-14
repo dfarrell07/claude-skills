@@ -24,8 +24,9 @@ untrusted workspace instead of asking.
 
 ## Starting a session
 
-The launcher never guesses: the **profile** is required, because accounts are a data boundary, and a bare directory
-name is resolved by the orchestrator, which asks when unsure.
+The launcher never guesses: the **profile** is required, because accounts are a data boundary. A bare directory name
+is looked up in `~`, `~/repos` and `~/src/<org>` (laptop-setup's clones); several matches are refused, so the
+orchestrator asks. It does the lookup because the orchestrator's allowlist has no `find`.
 
 **Name**: `<profile>-<N>`, the tmux session, `--name` and the Remote Control name. N is `--name`, else `--branch`,
 else `<repo>-<k>` for a new agent in a repository (the first k with no definition, session, worktree or
@@ -69,11 +70,10 @@ checkout and nobody has to ask for one.
 
 - **Where**: `<main checkout>/.claude/worktrees/<N>`, Claude's own location (`cwt` and `claude --worktree` use it).
   The main checkout comes from `--git-common-dir` (or is `<dir>`'s own when its `.git` is a file), so `<dir>` may be a
-  linked worktree or a subdirectory (the session starts in the same subdirectory, or at the top when the branch lacks
-  it); a bare repository is refused. Under the repository, the worktree inherits its trust. `**/.claude/worktrees/`
-  goes into `info/exclude` unless already ignored. A new session whose worktree path already exists is refused:
-  nothing is adopted (a `cwt` worktree on another branch, or a stray directory in which the session would run on the
-  main checkout).
+  linked worktree or a subdirectory (the session starts in the same subdirectory); a bare repository is refused. Under
+  the repository, the worktree inherits its trust. `**/.claude/worktrees/` goes into `info/exclude` unless already
+  ignored. A new session whose worktree path already exists is refused: nothing is adopted (a `cwt` worktree on
+  another branch, or a stray directory in which the session would run on the main checkout).
 - **Made by the launcher** with `git worktree add`, not `claude --worktree`, which can't take an existing branch or a
   chosen base. Claude's `.worktreeinclude`, worktree settings and WorktreeCreate hooks therefore don't apply; none is
   in use here.
@@ -94,13 +94,15 @@ checkout and nobody has to ask for one.
 Each session has a definition in `${XDG_STATE_HOME:-~/.local/state}/claude-sessions/<session>` (fields: the comment
 above `FIELDS` in `session.sh`), so after a stop, a crash or a reboot `start <session>` finds its worktree and
 conversation again. A worktree removed by hand is re-added from its branch; if the branch is gone too (renamed), the
-start is refused rather than resuming in a fresh tree. A restart whose starting subdirectory is gone from the branch
-starts at the worktree's top, in a new conversation (`--continue` looks only in the starting directory).
+start is refused rather than resuming in a fresh tree. A session whose starting subdirectory isn't on its branch (when
+new, or gone since) starts at the worktree's top, in a new conversation (`--continue` looks only in the starting
+directory).
 
 **Conversation**: the first start passes `--session-id <id>`. Once a transcript with that id exists, a worktree session
 starts with `--continue`, the newest conversation in its own directory, which only it uses, so a `/clear` inside it
 carries over. (`--continue` skips conversations begun with `/loop` and may pick one that `/add-dir`ed the worktree.)
-An in-place session (`--here`, the orchestrator), whose directory the user may also work in, resumes `--resume <id>`:
+An in-place session (`--here`, a directory that isn't a repository, the orchestrator), whose directory the user may also
+work in, resumes with `--resume <id>`:
 after a `/clear` that is the conversation before it; use `/resume` there.
 
 **Lock**: `flock` on the state directory serializes naming, definitions and adding or removing worktrees, so parallel
@@ -169,7 +171,8 @@ ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start perso
 Also for laptop-setup:
 
 - widen `cls`, `ca` and `cstatus` to `^(work|personal|personal2)-`;
-- make `cwt <n>` `session.sh start work . --name <n> && tmux attach -t work-<n>`, so its worktrees are defined and
+- make `cwt <n>` `session.sh start work . --name <n>; tmux attach -t work-<n>` (`;`: at `needs-trust`, attaching is
+  how to answer), so its worktrees are defined and
   cleaned (existing ones need a one-time `git worktree remove`);
 - in time let `cw` and `ccp` call the launcher too, or template its profile table (and the subagent limit), so the two
   can't drift.

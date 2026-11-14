@@ -27,8 +27,8 @@ lock() { mkdir -p "$STATE"; exec 9>"$STATE/.lock"; flock 9; }
 
 # A definition: one file of key=value lines in $STATE, named after the session. repo and worktree are empty for a
 # session that works in place; dir is where it starts; base is what "finished" is measured against (the remote branch
-# a new --branch was made from, else --base or the default base); created=1 when the launcher made the branch, the only kind
-# clean deletes; id is the conversation's; allow, the orchestrator's tool allowlist.
+# a new --branch was made from, else --base or the default base); created=1 when the launcher made the branch, the
+# only kind clean deletes; id is the conversation's; allow, the orchestrator's tool allowlist.
 FIELDS=(profile repo worktree dir branch base created id allow)
 load() { # load <name>: sets D_<field>; fails when undefined
 	named "$1"
@@ -39,7 +39,10 @@ load() { # load <name>: sets D_<field>; fails when undefined
 		[[ " ${FIELDS[*]} " != *" ${l%%=*} "* ]] || printf -v "D_${l%%=*}" '%s' "${l#*=}"
 	done <"$STATE/$1"
 }
-defined() { local n; for n in "$STATE"/*; do [[ ! -f $n || ! ${n##*/} =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || echo "${n##*/}"; done; }
+defined() { # the defined sessions' names
+	local n
+	for n in "$STATE"/*; do [[ ! -f $n || ! ${n##*/} =~ ${PROFILES}[A-Za-z0-9_-]+$ ]] || echo "${n##*/}"; done
+}
 save() {
 	local f v tmp
 	tmp=$(mktemp "$STATE/.$1.XXXXXX")
@@ -132,18 +135,24 @@ add_worktree() {
 	fi
 	# shellcheck disable=SC2143 # grep -q exits early, and git's SIGPIPE would fail the pipe
 	if [[ -n $(g submodule status --recursive 2>/dev/null | grep -v '^-') ]]; then # as in the main checkout
-		git -C "$D_worktree" submodule update --init --recursive --quiet 9>&- || echo "warning: submodules not initialized" >&2
+		git -C "$D_worktree" submodule update --init --recursive --quiet 9>&- ||
+			echo "warning: submodules not initialized" >&2
 	fi
 }
 
 # Resolve start <profile> <dir> into NAME and a loaded or new definition D_*.
 define() {
-	local prof=$1 dir sub='' main='' n k owner
+	local prof=$1 dir=$2 sub='' main='' n k owner c found=()
 	profile "$prof"
-	dir=$(CDPATH='' cd "$2" 2>/dev/null && pwd -P) || die "no such directory: $2"
+	if [[ $dir != */* && $dir != . && $dir != .. ]]; then # a bare name: ~/<name>, ~/repos/<name> or ~/src/<org>/<name>
+		for c in "$HOME/$dir" "$HOME/repos/$dir" "$HOME/src/"*/"$dir"; do [[ ! -d $c ]] || found+=("$c"); done
+		[[ ${#found[@]} -le 1 ]] || die "$dir: several match: ${found[*]}; give the path" 2
+		dir=${found[0]:-$dir}
+	fi
+	dir=$(CDPATH='' cd "$dir" 2>/dev/null && pwd -P) || die "no such directory: $2"
 	[[ $dir != *'#'* ]] || die "$dir: tmux cannot start in a path with #" 2
-	[[ -z $branch || ($branch != @ && $branch != refs/* && $(git check-ref-format --branch "$branch" 2>/dev/null) == "$branch") ]] ||
-		die "bad branch name: $branch" 2
+	[[ -z $branch || ($branch != @ && $branch != refs/* &&
+		$(git check-ref-format --branch "$branch" 2>/dev/null) == "$branch") ]] || die "bad branch name: $branch" 2
 	[[ -z $base || ($base =~ ^[A-Za-z0-9._/@^~-]+$ && $base != -*) ]] || die "bad base: $base" 2 # never a refspec
 	[[ $allow != -* ]] || die "bad --allow: $allow" 2
 	if [[ -z $here ]] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -273,7 +282,8 @@ start() {
 	# shellcheck disable=SC2016 # expanded by sh in the pane
 	local pane=(sh -c 'exec env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" "$@"' sh "${vars[@]}" "${run[@]}" "${cmd[@]}")
 	pane=("${pane[@]/%;/\\;}") # tmux would take a trailing ; as the end of its command
-	tm new-session -d -s "$NAME" -c "$D_dir" -x 200 -y 50 "${pane[@]}" \; set-option -t "=$NAME:" remain-on-exit failed 9>&-
+	tm new-session -d -s "$NAME" -c "$D_dir" -x 200 -y 50 "${pane[@]}" \
+		\; set-option -t "=$NAME:" remain-on-exit failed 9>&-
 	flock -u 9
 	echo "started $NAME in $D_dir"
 	ready "$NAME" "$trust"
@@ -335,10 +345,12 @@ finished() { # an unknown base is never finished
 }
 
 # Why a stopped session's worktree must be kept, or nothing. all=1 (clean with no name) also keeps unfinished work;
-# clean <name> removes that (a branch keeps the commits). Ignored files are build output: the worktree started with none.
+# clean <name> removes that (a branch keeps the commits). Ignored files are build output: the worktree started with
+# none.
 keep() {
 	local all=$1 wt=$D_worktree out tip p # every check fails closed: an error keeps the worktree
-	out=$(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) || { echo "git status failed"; return; }
+	out=$(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) ||
+		{ echo "git status failed"; return; }
 	[[ -z $out ]] || { echo "uncommitted changes"; return; }
 	for p in /proc/[0-9]*/cwd; do # someone working there by hand
 		[[ $(readlink "$p" 2>/dev/null)/ != "$wt"/* ]] || { echo "in use by process ${p//[^0-9]/}"; return; }
