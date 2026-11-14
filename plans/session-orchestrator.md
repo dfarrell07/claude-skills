@@ -46,8 +46,9 @@ shape, so no argument can name a path outside its state.
 All get `--remote-control`, `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=2000` and, unless `--allow` is given,
 `--dangerously-skip-permissions`, as `cper`, `cper2` and `cwork` do; Remote Control on Vertex (`work`) is unverified,
 as for `cwork` (the docs say it needs the Anthropic API). Like them (laptop-setup's plugin-dir allowlist),
-`--plugin-dir` is passed only for the launcher's own checkout or a worktree of it, never another repository, whatever
-it holds. work-env is optional because hosts on the older zshrc keep the Vertex variables in the rc.
+`--plugin-dir` is passed only for the launcher's own checkout or a worktree of it (an installed copy inside another
+repository, such as `~/.claude`, has none), never another repository, whatever it holds. work-env is optional because
+hosts on the older zshrc keep the Vertex variables in the rc.
 
 **Environment**: `env -i` with a short allowlist (HOME, USER, LOGNAME, PATH, SHELL, LANG, XDG_RUNTIME_DIR, D-Bus, SSH
 agent, TMUX_TMPDIR, display, Kerberos, the pane's own TMUX and TMUX_PANE, and `TERM=tmux-256color`), then the user's
@@ -114,9 +115,10 @@ starts get `repo-1` and `repo-2`, and `clean` can't remove a worktree a start is
 - **Finished** means the work adds nothing to the base: `git merge-tree --write-tree <base> <tip>` equals the base's
   tree, which holds for a merge, a squash merge (whose commits are on no remote once the branch is deleted) and an
   unused branch, and can't lose content. Once the base has changed the same lines since (go.mod, CI files), that merge
-  conflicts, so a branch also counts as finished when every commit's patch is on the base (rebase merge) or its whole
-  diff is (squash merge), compared by `git patch-id --verbatim`, since whitespace is content. Checks use the
-  worktree's own HEAD, so commits on a detached HEAD, which no branch keeps, are seen.
+  conflicts, so a branch also counts as finished when every commit is on the base (rebase merge) or its whole diff is
+  (squash merge): candidates found by `git patch-id --verbatim` (whitespace is content), then the diff matched
+  exactly, hunk positions included, since a patch id ignores them (the same edit to another copy of a repeated block).
+  Checks use the worktree's own HEAD, so commits on a detached HEAD, which no branch keeps, are seen.
 - Every check fails closed: a git command that errors keeps the worktree, and an unknown base (its remote branch
   deleted) is never finished.
 - `git status` is asked with `--ignore-submodules=none`, so a `submodule.<name>.ignore` setting can't hide changes.
