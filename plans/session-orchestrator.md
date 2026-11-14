@@ -17,7 +17,8 @@ repository share a checkout unless someone sets up worktrees by hand.
 - **One orchestrator per machine**: a Claude session, itself started by the launcher, reached over Remote Control or
   `tmux attach`. The skill (its operating prompt, and the reference for request handling, output and cleanup) turns
   requests into launcher calls; it does no repo work, so its context stays small.
-- **Boot**: a systemd user unit in laptop-setup, which owns the profiles, the shell launchers and the user units.
+- **Boot**: a systemd user unit (a LaunchAgent on macOS) in laptop-setup, which owns the profiles, the shell launchers
+  and the user units.
 
 Not `claude --bg`: Claude's own background sessions have no per-session profile (account), no tmux, and refuse an
 untrusted workspace instead of asking.
@@ -172,6 +173,10 @@ ExecStart=/bin/bash %h/<checkout>/skills/sessions/scripts/session.sh start perso
   handling (systemd-oomd) ever treats them as one.
 - `TMUX_TMPDIR` must match the shells' (`zshrc.j2` sets `$XDG_RUNTIME_DIR/tmux`).
 
+On macOS the unit is a LaunchAgent (`RunAtLoad`, `AbandonProcessGroup` so tmux outlives it) running the same
+`clean` and `start` commands, with `PATH` including Homebrew's `bin` (for `flock` and `tmux`) and `TMUX_TMPDIR` set
+as the shells set it. macOS needs no linger: a LaunchAgent starts at login, so an always-on Mac logs in automatically.
+
 Also for laptop-setup:
 
 - widen `cls`, `ca` and `cstatus` to `^(work|personal|personal2)-`;
@@ -187,7 +192,8 @@ Documented by Claude Code: transcripts at `<config>/projects/<encoded cwd>/<id>.
 encoded here); `--continue` takes the newest conversation in the directory; `--allowedTools` rule syntax; skills'
 `${CLAUDE_SKILL_DIR}`. Undocumented but visible when they break, and covered by tests with a fake claude: the input
 box starts with `❯`, the trust dialog's two lines, cursor on "No, exit"; with Remote Control on, the transcript is
-written at startup. Linux only (`flock`, `/proc`).
+written at startup. Linux and macOS: on macOS `flock` comes from Homebrew, session ids from `uuidgen`, and the
+"in use by a process" check from `lsof` instead of `/proc`.
 
 ## Rejected
 

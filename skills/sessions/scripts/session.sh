@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Background Claude Code sessions: tmux, Remote Control on, a clean environment, a named profile, and in a git
-# repository a worktree and branch of their own. Design: plans/session-orchestrator.md. Linux (flock, /proc).
+# repository a worktree and branch of their own. Design: plans/session-orchestrator.md. Linux and macOS (flock:
+# util-linux, or Homebrew's flock formula).
 #   session.sh start <profile> <dir> [--name N] [--branch B] [--base REF] [--here] [--trust] [--prompt T] [--allow R]
 #   session.sh start <session> [--trust] [--prompt T]
 #   session.sh ls | stop <session> | clean [<session>]
@@ -29,6 +30,27 @@ g() { git -C "$D_repo" "$@"; }
 is_worktree() { [[ $(git -C "$1" rev-parse --show-toplevel 2>/dev/null) == "$1" ]]; } # not just a directory
 # One start or clean at a time picks names, writes definitions and adds or removes worktrees.
 lock() { mkdir -p "$STATE"; exec 9>"$STATE/.lock"; flock 9; }
+new_id() { # a random UUID, lower case as claude writes them; macOS has no /proc
+	if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; else uuidgen | tr '[:upper:]' '[:lower:]'; fi
+}
+# The pid of a process whose working directory is in $1 (someone working there by hand), or nothing. Linux reads
+# /proc; macOS asks lsof, whose output is a p<pid> line followed by its n<cwd> line.
+in_use() {
+	local p pid='' real
+	real=$(cd "$1" 2>/dev/null && pwd -P) || real=$1 # both report resolved paths (/var is /private/var on macOS)
+	if [[ -d /proc/self ]]; then
+		for p in /proc/[0-9]*/cwd; do
+			[[ $(readlink "$p" 2>/dev/null)/ != "$real"/* ]] || { echo "${p//[^0-9]/}"; return; }
+		done
+	else
+		while IFS= read -r p; do
+			case $p in
+			p*) pid=${p#p} ;;
+			n*) [[ ${p#n}/ != "$real"/* ]] || { echo "$pid"; return; } ;;
+			esac
+		done < <(/usr/sbin/lsof -a -d cwd -F pn 2>/dev/null)
+	fi
+}
 
 # A definition: one file of key=value lines in $STATE, named after the session. repo and worktree are empty for a
 # session that works in place; dir is where it starts; base is what "finished" is measured against (the remote branch
@@ -197,7 +219,7 @@ define() {
 		return
 	fi
 	D_profile=$prof D_repo=$main D_worktree='' D_dir=$dir D_branch='' D_base='' D_created='' D_allow=$allow
-	D_id=$(cat /proc/sys/kernel/random/uuid)
+	D_id=$(new_id)
 	[[ -n $main ]] || return 0
 	D_worktree=$main/.claude/worktrees/$n # the name without its profile, as cwt and claude --worktree name it
 	owner=$(claimed "$D_worktree")
@@ -251,7 +273,7 @@ start() {
 	if [[ -n $D_worktree ]] && ! is_worktree "$D_worktree"; then add_worktree "$NEW"; fi
 	if [[ ! -d $D_dir && -n $D_worktree ]]; then # the subdirectory isn't on the branch (any more)
 		echo "warning: ${D_dir#"$D_worktree"/} is not on $D_branch; starting at the worktree's top, in a new conversation" >&2
-		D_dir=$D_worktree D_id=$(cat /proc/sys/kernel/random/uuid) # --continue looks only in the starting directory
+		D_dir=$D_worktree D_id=$(new_id) # --continue looks only in the starting directory
 	fi
 	[[ -d $D_dir ]] || die "$D_dir is gone"
 	save "$NAME"
@@ -383,9 +405,8 @@ keep() {
 	out=$(git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none) ||
 		{ echo "git status failed"; return; }
 	[[ -z $out ]] || { echo "uncommitted changes"; return; }
-	for p in /proc/[0-9]*/cwd; do # someone working there by hand
-		[[ $(readlink "$p" 2>/dev/null)/ != "$wt"/* ]] || { echo "in use by process ${p//[^0-9]/}"; return; }
-	done
+	p=$(in_use "$wt") # someone working there by hand
+	[[ -z $p ]] || { echo "in use by process $p"; return; }
 	out=$(git -C "$wt" submodule foreach -q --recursive 'git log --oneline -1 HEAD --branches --not --remotes') ||
 		{ echo "git submodule failed"; return; }
 	[[ -z $out ]] || { echo "unpushed submodule commits"; return; }
