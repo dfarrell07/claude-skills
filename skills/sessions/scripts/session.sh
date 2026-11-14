@@ -277,13 +277,13 @@ start() {
 	fi
 	[[ ! -f $root/.claude-plugin/plugin.json ]] || cmd+=(--plugin-dir "$root") # a plugin under development
 	[[ -z $prompt ]] || cmd+=(-- "$prompt") # --allowedTools would take a bare prompt as a rule
-	# remain-on-exit failed: a claude that fails keeps its screen for ready() to show. 9>&-: a tmux server this
-	# starts must not inherit the lock.
+	# remain-on-exit failed: a claude that fails keeps its screen for ready() to show. The client runs in the clean
+	# environment too, since a tmux server it starts keeps it for every later session; 9>&-: nor the lock.
 	# shellcheck disable=SC2016 # expanded by sh in the pane
 	local pane=(sh -c 'exec env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" "$@"' sh "${vars[@]}" "${run[@]}" "${cmd[@]}")
 	pane=("${pane[@]/%;/\\;}") # tmux would take a trailing ; as the end of its command
-	tm new-session -d -s "$NAME" -c "$D_dir" -x 200 -y 50 "${pane[@]}" \
-		\; set-option -t "=$NAME:" remain-on-exit failed 9>&-
+	env -i "${vars[@]}" tmux ${SESSIONS_TMUX_SOCKET:+-L "$SESSIONS_TMUX_SOCKET"} new-session -d -s "$NAME" -c "$D_dir" \
+		-x 200 -y 50 "${pane[@]}" \; set-option -t "=$NAME:" remain-on-exit failed 9>&-
 	flock -u 9
 	echo "started $NAME in $D_dir"
 	ready "$NAME" "$trust"

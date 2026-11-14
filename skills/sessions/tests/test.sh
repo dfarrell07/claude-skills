@@ -84,6 +84,7 @@ check "new dir stops at trust" 3 "needs-trust personal2-plain" s start personal2
 check "rerun with --trust answers it" 0 "ready personal2-plain" s start personal2 "$tmp/plain" --trust
 check "rerun is a no-op" 0 "exists personal2-plain" s start personal2 "$tmp/plain"
 check "caller env does not leak" 0 "" lacks '^(LEAK|CLAUDECODE)=' "$HOME/log/personal2-plain.env"
+check "  nor into the tmux server it started" 0 "" hasnt "$(tmux -L "$SESSIONS_TMUX_SOCKET" show-environment -g)" CLAUDECODE
 check "profile env set" 0 "CLAUDE_CONFIG_DIR=$HOME/.claude-per2" log personal2-plain env
 check "shell rc applied" 0 "RCVAR=1" log personal2-plain env
 rm -f "$HOME/guard" && s start personal "$tmp/plain" --name g >/dev/null
