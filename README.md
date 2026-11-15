@@ -15,5 +15,6 @@ Claude Code marketplace for work tracking and session notes.
 - `/delegate` - Run tasks on other agent CLIs (agy, codex; not claude) across accounts and get results token-efficiently
 - `/token-stats` - Show usage left and reset times for claude, codex and agy on every account, to route work
 - `/notes` - Take persistent markdown notes organized by topic
+- `/peers` - Find and message live Claude sessions in any `~/.claude*` profile, including ones ListAgents misses
 
 See [.claude/SKILLS.md](.claude/SKILLS.md) for details.
