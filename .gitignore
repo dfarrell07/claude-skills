@@ -15,3 +15,6 @@ Thumbs.db
 
 # Career advocate private data (transcrypt-encrypted when committed)
 skills/career-advocate/private/
+
+# Python
+__pycache__/

@@ -32,5 +32,8 @@ budget (only a probe shows if it works: delegate's `quota.sh codex:work`, ~12k t
 - Spend first what resets soonest with the most left: unused quota is lost at reset. A full pool resetting in hours
   beats a half-full one resetting in a week.
 - Keep a margin on pools that reset in days; don't drain a weekly pool to 0% early.
+- A pool at 100% whose `in` equals its full window (e.g. `5h00m` on a 5h pool) has not started; its clock only
+  starts on first use, so nothing is lost by leaving it idle.
 - Per-model pools (agy argon vs Gemini vs Claude/GPT) are separate: pick the model whose pool has room.
-- Claude accounts are shown for completeness. `/delegate` still never uses claude targets unless the user names them.
+- Claude accounts are shown for completeness. `/delegate` never uses claude unless the user names it, and that
+  includes `claude-*` models in agy's Claude/GPT pool (GPT there is fine).
