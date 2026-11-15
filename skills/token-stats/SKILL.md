@@ -16,9 +16,10 @@ python3 -I "$SKILL_DIR/scripts/token_stats.py" [tool:account ...]   # default: a
 **Arguments:** $ARGUMENTS
 
 `SKILL_DIR` is the directory containing this file. Run the script and show its table. Targets are
-`<claude|codex|agy>:<work|personal|personal2>`. Each line is one limit: `left` is percent **remaining** (all tools normalized), `resets` is UTC, `in` is time until reset. It asks
-each CLI for its own usage (`/usage`, codex `account/rateLimits/read`), so it spends no model tokens and reads no
-credential files. Never print tokens, keys or auth files when extending it.
+`<claude|codex|agy>:<work|personal|personal2>`. Each line is one limit: `left` is percent **remaining** (all tools
+normalized), `resets` is UTC, `in` is time until reset. It asks each CLI for its own usage (`/usage`, codex
+`account/rateLimits/read`), so it spends no model tokens and reads no credential files. Never print tokens, keys or
+auth files when extending it.
 
 Non-quota lines are expected: `claude:work` is Vertex, billed per token; `codex:work` uses an API key with an org
 budget (only a probe shows if it works: delegate's `quota.sh codex:work`, ~12k tokens); `agy:work` and
