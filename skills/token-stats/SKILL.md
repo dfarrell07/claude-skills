@@ -34,6 +34,9 @@ budget (only a probe shows if it works: delegate's `quota.sh codex:work`, ~12k t
 - Keep a margin on pools that reset in days; don't drain a weekly pool to 0% early.
 - A pool at 100% whose `in` equals its full window (e.g. `5h00m` on a 5h pool) has not started; its clock only
   starts on first use, so nothing is lost by leaving it idle.
-- Per-model pools (agy argon vs Gemini vs Claude/GPT) are separate: pick the model whose pool has room.
+- Rank pools only inside one account group: all `work`, or all `personal`/`personal2` (delegate's data boundary).
+- agy pools are per model family: `gemini-4-argon` needs room in `Gemini 4 Argon week` (count the `Gemini` pools
+  too, to be safe), other Gemini models in the `Gemini` pools, GPT models in `Claude/GPT`. Each delegate call uses
+  one model, so split work by pool.
 - Claude accounts are shown for completeness. `/delegate` never uses claude unless the user names it, and that
   includes `claude-*` models in agy's Claude/GPT pool (GPT there is fine).
