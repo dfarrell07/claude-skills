@@ -75,14 +75,14 @@ def codex(account):
         return f"not set up (~/{home} missing)"
     proc = subprocess.Popen(["codex", "app-server"], env=child_env({"CODEX_HOME": f"{HOME}/{home}"}),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    for msg in ({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "token-stats", "version": "1"}}},
-                {"method": "initialized"}, {"id": 2, "method": "account/rateLimits/read"}):
-        proc.stdin.write(json.dumps(msg) + "\n")
-    proc.stdin.flush()
     reply = {}
     watchdog = threading.Timer(30, proc.kill)  # a wedged server must not stall every other target
     watchdog.start()
     try:
+        hello = {"clientInfo": {"name": "token-stats", "version": "1"}}
+        for msg in ({"id": 1, "method": "initialize", "params": hello}, {"method": "initialized"}, {"id": 2, "method": "account/rateLimits/read"}):
+            proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
         for line in proc.stdout:  # skip notifications until our reply
             msg = json.loads(line)
             if msg.get("id") == 2:
@@ -93,20 +93,21 @@ def codex(account):
         proc.kill()
         proc.wait()
     err = (reply.get("error") or {}).get("message", "")
-    if "chatgpt authentication required" in err.lower() or "result" in reply and not reply["result"].get("rateLimits"):
+    if "chatgpt authentication required" in err.lower():
         return "no usage source: API-key auth, billed to the org budget (probe: delegate quota.sh)"
-    if "result" not in reply:
-        return f"error: {(reply.get('error') or {}).get('message', 'no reply from codex app-server')[:80]}"
-    limits = reply["result"]["rateLimits"]
+    result = reply.get("result") or {}
+    limits = result.get("rateLimitsByLimitId") or {"codex": result.get("rateLimits")}
     rows = []
-    for key in ("primary", "secondary"):
-        w = limits.get(key)
-        if w:
-            mins = w["windowDurationMins"]
-            window = f"{mins // 1440}d" if mins >= 1440 else f"{mins // 60}h"
-            rows.append((f"{window} window", round(100 - w["usedPercent"]),
-                         w.get("resetsAt") and datetime.fromtimestamp(w["resetsAt"], timezone.utc)))
-    return rows
+    for lid, lim in limits.items():  # one entry per limit; model-specific ones are named
+        prefix = "" if lid == "codex" else f"{(lim or {}).get('limitName') or lid} "
+        for key in ("primary", "secondary"):
+            w = (lim or {}).get(key)
+            if w:
+                mins = w["windowDurationMins"]
+                window = f"{mins // 1440}d" if mins >= 1440 else f"{mins // 60}h"
+                rows.append((f"{prefix}{window} window", round(100 - w["usedPercent"]),
+                             w.get("resetsAt") and datetime.fromtimestamp(w["resetsAt"], timezone.utc)))
+    return rows or f"error: {err[:80] or 'no rate limits in codex reply'}"
 
 
 def agy(account):
@@ -150,14 +151,17 @@ def main():
             sys.exit(f"bad target {t}: use <{'|'.join(TOOLS)}>:<{'|'.join(ACCOUNTS)}>")
     print(f"now {NOW:%Y-%m-%dT%H:%MZ}")
     print(f"{'target':<17} {'pool':<22} {'left':>4}  {'resets (UTC)':<17} in")
+    failed = False
     with ThreadPoolExecutor(len(targets)) as pool:
         for target, rows in pool.map(check, targets):
             if isinstance(rows, str):
                 print(f"{target:<17} {rows}")
+                failed |= rows.startswith("error")
                 continue
             for name, left, reset in sorted(rows, key=lambda r: r[2] or NOW + timedelta(days=999)):
                 when = f"{reset:%Y-%m-%dT%H:%MZ}  {until(reset)}" if reset else "unknown"
                 print(f"{target:<17} {name:<22} {left:>3}%  {when}")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
