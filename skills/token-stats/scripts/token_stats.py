@@ -21,13 +21,13 @@ TOOLS, ACCOUNTS = ("claude", "codex", "agy"), ("work", "personal", "personal2")
 NOW = datetime.now(timezone.utc)
 
 
+def child_env(extra=None):
+    """The parent session's CLAUDE* vars (config dir, session ids, tokens) must not reach the CLIs."""
+    return {**{k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}, **(extra or {})}
+
+
 def run(cmd, env=None, timeout=90):
-    e = dict(os.environ, **(env or {}))
-    for k in [k for k in e if k.startswith(("CLAUDE_CODE_SESSION", "CLAUDE_CODE_MESSAGING")) or k in (
-            "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_CHILD_SESSION")]:
-        if k not in (env or {}):
-            del e[k]
-    return subprocess.run(cmd, env=e, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    return subprocess.run(cmd, env=child_env(env), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                           timeout=timeout).stdout
 
 
@@ -58,10 +58,10 @@ def claude_reset(text):
 def claude(account):
     if account == "work":
         return "no quota: Vertex, billed per token (org model allow-list)"
-    env = {"CLAUDE_CODE_USE_VERTEX": "0"}
+    env = {"CLAUDE_CODE_USE_VERTEX": "0", "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     if account == "personal2":
         env["CLAUDE_CONFIG_DIR"] = f"{HOME}/.claude-per2"
-    out = run(["claude", "-p", "/usage", "--no-session-persistence"], env)
+    out = run(["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"], env)
     rows = []
     for m in re.finditer(r"^Current (.+?): (\d+)% used · resets (.+)$", out, re.M):
         name = "session 5h" if m[1] == "session" else m[1].replace("week (", "week ").rstrip(")")
@@ -73,7 +73,7 @@ def codex(account):
     home = {"work": ".codex", "personal": ".codex-personal", "personal2": ".codex-personal2"}[account]
     if not os.path.isdir(f"{HOME}/{home}"):
         return f"not set up (~/{home} missing)"
-    proc = subprocess.Popen(["codex", "app-server"], env=dict(os.environ, CODEX_HOME=f"{HOME}/{home}"),
+    proc = subprocess.Popen(["codex", "app-server"], env=child_env({"CODEX_HOME": f"{HOME}/{home}"}),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     for msg in ({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "token-stats", "version": "1"}}},
                 {"method": "initialized"}, {"id": 2, "method": "account/rateLimits/read"}):
