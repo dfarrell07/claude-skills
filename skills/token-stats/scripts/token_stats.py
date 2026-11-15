@@ -26,6 +26,10 @@ def child_env(extra=None):
     return {**{k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}, **(extra or {})}
 
 
+def no_figures(out):
+    return f"error: no usage figures ({' '.join(out.split())[:80] or 'empty reply'})"
+
+
 def run(cmd, env=None, timeout=90):
     return subprocess.run(cmd, env=child_env(env), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                           timeout=timeout).stdout
@@ -61,12 +65,15 @@ def claude(account):
     env = {"CLAUDE_CODE_USE_VERTEX": "0", "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     if account == "personal2":
         env["CLAUDE_CONFIG_DIR"] = f"{HOME}/.claude-per2"
-    out = run(["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"], env)
+    cmd = ["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"]
+    out = run(cmd, env)
+    if "Current " not in out:  # seen blank right at a limit reset; one retry fixes it
+        out = run(cmd, env)
     rows = []
     for m in re.finditer(r"^Current (.+?): (\d+)% used · resets (.+)$", out, re.M):
         name = "session 5h" if m[1] == "session" else m[1].replace("week (", "week ").rstrip(")")
         rows.append((name, 100 - int(m[2]), claude_reset(m[3])))
-    return rows or f"no usage figures ({out.strip()[:80] or 'empty reply'})"
+    return rows or no_figures(out)
 
 
 def codex(account):
@@ -125,7 +132,7 @@ def agy(account):
             window = "5h" if "Five Hour" in f[1] else "week" if "Weekly" in f[1] else f[1]
             rows.append((f"{pool} {window}", round(float(f[2].rstrip("%"))),
                          datetime.fromisoformat(f[3].replace("Z", "+00:00"))))
-    return rows or f"no usage figures ({out.strip()[:80] or 'empty reply'})"
+    return rows or no_figures(out)
 
 
 def until(t):
