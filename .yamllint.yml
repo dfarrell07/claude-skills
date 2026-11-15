@@ -2,6 +2,10 @@
 # YAML linting rules
 extends: default
 
+# npm install (local runs) puts third-party YAML here; CI never installs it
+ignore: |
+  node_modules/
+
 rules:
   # Line length set to 140 to match Go linting standards used in parent organization
   line-length:
