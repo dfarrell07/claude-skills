@@ -52,6 +52,19 @@ skills/delegate/scripts/quota.sh <tool:account>...   # each target's own usage n
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/delegate.sh ...
 ```
 
+## /token-stats
+
+Show how much usage is left (percent remaining) and when it resets, for claude,
+codex and agy on the work, personal and personal2 accounts. Asks each CLI for
+its own usage numbers, so it costs no model tokens. Use it to route work to
+quota that resets soonest.
+
+```bash
+/token-stats                        # all nine targets
+/token-stats agy:personal codex:personal
+python3 -I skills/token-stats/scripts/token_stats.py [tool:account ...]
+```
+
 ## /notes
 
 Take and manage persistent markdown notes organized by topic.

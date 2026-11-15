@@ -15,8 +15,8 @@ python3 -I "$SKILL_DIR/scripts/token_stats.py" [tool:account ...]   # default: a
 
 **Arguments:** $ARGUMENTS
 
-`SKILL_DIR` is the directory containing this file. Run the script and show its table. Targets are `<claude|codex|agy>:<work|personal|personal2>`. Each line is one
-limit: `left` is percent **remaining** (all tools normalized), `resets` is UTC, `in` is time until reset. It asks
+`SKILL_DIR` is the directory containing this file. Run the script and show its table. Targets are
+`<claude|codex|agy>:<work|personal|personal2>`. Each line is one limit: `left` is percent **remaining** (all tools normalized), `resets` is UTC, `in` is time until reset. It asks
 each CLI for its own usage (`/usage`, codex `account/rateLimits/read`), so it spends no model tokens and reads no
 credential files. Never print tokens, keys or auth files when extending it.
 
