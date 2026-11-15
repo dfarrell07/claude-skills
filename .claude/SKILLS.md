@@ -65,6 +65,19 @@ quota that resets soonest.
 python3 -I skills/token-stats/scripts/token_stats.py [tool:account ...]
 ```
 
+## /peers
+
+Find and message live Claude Code sessions in any profile under `~/.claude*`
+(`~/.claude`, `~/.claude-per2`, ...). `ListAgents` shows only sessions in this session's
+`CLAUDE_CONFIG_DIR`, but `SendMessage` reaches any session given
+`to="uds:<socket path>"`; this lists those addresses.
+
+```bash
+/peers [session name]
+skills/peers/scripts/peers.py   # name, profile, status, pid, uds: address, cwd
+make peers-test
+```
+
 ## /notes
 
 Take and manage persistent markdown notes organized by topic.
