@@ -381,25 +381,63 @@ class Digest:
 
     def commits(self):
         identities = {entry['path']: entry for entry in self.metadata.get('repositories', [])}
-        groups = {}
+        found = {}
         for repo, entries in self.data.get('commits', {}).items():
             own = sorted((entry for entry in entries
                           if entry.get('author_email') in identities.get(repo, {}).get('identities', [])
                           and self.in_window(entry.get('committed_at'))),
                          key=lambda entry: entry['committed_at'], reverse=True)
-            if not own:
-                continue
+            if own:
+                found[repo] = own
+
+        def scratch(repo):
+            return sum(1 for part in Path(repo).parts if SCRATCH.search(part))
+
+        # The same work shows up in many clones and worktrees (same hash) and as amended, rebased or
+        # cherry-picked copies (new hash; same author, authored time and subject). Count it once, in the
+        # most ordinary checkout, otherwise the first one seen.
+        def work(entry):
+            subject = (entry.get('message') or '').strip().split('\n')[0]
+            return entry.get('author_email'), entry.get('authored_at'), subject
+
+        by_hash, by_work = {}, {}
+        for repo, own in found.items():
+            for entry in own:
+                if entry['hash'] not in by_hash or scratch(repo) < scratch(by_hash[entry['hash']][0]):
+                    by_hash[entry['hash']] = (repo, entry)
+        for repo, entry in by_hash.values():
+            if work(entry) not in by_work or scratch(repo) < scratch(by_work[work(entry)][0]):
+                by_work[work(entry)] = (repo, entry)
+        kept = {}
+        for repo, entry in by_work.values():
+            kept.setdefault(repo, []).append(entry)
+        kept = {repo: sorted(rows, key=lambda entry: entry['committed_at'], reverse=True)
+                for repo, rows in kept.items()}
+
+        groups, home = {}, {}
+        for repo, own in kept.items():
             remotes = sorted({remote.get('repo') or remote.get('host', '') for remote in
                               identities.get(repo, {}).get('remotes', []) if remote.get('repo') or remote.get('host')})
             # Clones, worktrees, scratch copies and re-runs repeat the same commits under new
             # hashes and dates; the subjects identify them.
             fingerprint = (tuple(remotes) or (Path(repo).name,), tuple(sorted({entry['message'] for entry in own})))
             groups.setdefault(fingerprint, []).append((repo, own, remotes))
+            home[repo] = fingerprint
+        # Checkouts whose commits were all counted elsewhere are listed under that repository.
+        for repo, own in found.items():
+            if repo not in kept:
+                shared = Counter(home[by_work[work(by_hash[entry['hash']][1])][0]] for entry in own)
+                target = shared.most_common(1)[0][0] if shared else None
+                if target is None:
+                    continue
+                remotes = sorted({remote.get('repo') or remote.get('host', '') for remote in
+                                  identities.get(repo, {}).get('remotes', []) if remote.get('repo') or remote.get('host')})
+                groups[target].append((repo, own, remotes))
 
         def primary(row):
             # Prefer the ordinary checkout over scratch, review, worktree or backup copies.
             parts = Path(row[0]).parts
-            return sum(1 for part in parts if SCRATCH.search(part)), len(parts), row[0]
+            return row[0] not in kept, sum(1 for part in parts if SCRATCH.search(part)), len(parts), row[0]
 
         def personal(remotes):
             # Remotes only under the user's own account usually hold side projects or forks.

@@ -56,9 +56,12 @@ def cross_reference_source(event, host):
 
 
 class Github:
-    def __init__(self, api, host, login, start, end, warn):
+    def __init__(self, api, host, login, start, end, warn, bound_creation=False):
         self.api, self.host, self.login = api, host, login
         self.start, self.end, self.warn = start, end, warn
+        # Explicit windows (quarters, years) skip items created after the window:
+        # they cannot hold activity inside it, and on old windows they dominate.
+        self.created_until = end.replace(microsecond=0) if bound_creation else None
         self.coverage = {}
         self.cache = {}
         self._activity_items = set()
@@ -109,18 +112,24 @@ class Github:
             (report or self.problem)(key, 'list reached the 10,000-row safety cap; coverage is incomplete')
         return result
 
-    def search(self, query, key, kind):
+    def search(self, query, key, kind, created_until=None):
         """Recover capped inventories with bounded native creation-time partitions.
 
         Keep the original query intact: an upper updated cutoff would hide old
         personal activity on items subsequently updated by somebody else.
         Creation timestamps are immutable, and native rows validate every slice.
+        With created_until, the root query and every partition stop at that time.
         """
+        base = query
+        if created_until is not None:
+            query = f'{base} created:<={iso(created_until)}'
         info = self.coverage.setdefault(key, {'status': 'ok', 'pages': 0, 'count': 0,
                                              'query': query, 'incomplete_results': False})
         found, seen = [], set()
         requests = 0
         observed = datetime.now(UTC).replace(microsecond=0)
+        if created_until is not None:
+            observed = min(observed, created_until)
         epoch = datetime(1970, 1, 1, tzinfo=UTC)
         info['partition_observed_at'] = iso(observed)
 
@@ -209,7 +218,7 @@ class Github:
                 continue
             middle = lower + timedelta(seconds=int((upper - lower).total_seconds()) // 2)
             for lo, hi in ((lower, middle), (middle + timedelta(seconds=1), upper)):
-                partition = query + ' created:' + iso(lo) + '..' + iso(hi)
+                partition = base + ' created:' + iso(lo) + '..' + iso(hi)
                 record, overflow, in_bounds = read(partition, lo, hi)
                 if overflow and in_bounds:
                     record['partitioned'] = True
@@ -254,8 +263,9 @@ class Github:
         ]
         items = {}
         for key, kind, query in specifications:
+            bound = self.created_until if key.startswith('recent_') else None
             try:
-                rows = self.search(query, key, kind)
+                rows = self.search(query, key, kind, bound)
             except Exception as error:  # noqa: BLE001 - one search must not discard the others
                 self.problem(key, f'search stopped early ({type(error).__name__}); other searches are kept')
                 continue
