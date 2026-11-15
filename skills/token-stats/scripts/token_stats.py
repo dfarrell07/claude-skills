@@ -80,7 +80,8 @@ def codex(account):
     watchdog.start()
     try:
         hello = {"clientInfo": {"name": "token-stats", "version": "1"}}
-        for msg in ({"id": 1, "method": "initialize", "params": hello}, {"method": "initialized"}, {"id": 2, "method": "account/rateLimits/read"}):
+        for msg in ({"id": 1, "method": "initialize", "params": hello}, {"method": "initialized"},
+                    {"id": 2, "method": "account/rateLimits/read"}):
             proc.stdin.write(json.dumps(msg) + "\n")
         proc.stdin.flush()
         for line in proc.stdout:  # skip notifications until our reply
