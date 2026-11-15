@@ -45,7 +45,7 @@ class PacketCase(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         # The collector resolves --root paths; macOS temp dirs sit behind the /var -> /private/var symlink.
         self.root = Path(self.temp.name).resolve()
-        self.run =self.root / "packet with spaces; literal $(false)"
+        self.run = self.root / "packet with spaces; literal $(false)"
         self.run.mkdir()
         self.packet = {
             "schema_version": 1,
