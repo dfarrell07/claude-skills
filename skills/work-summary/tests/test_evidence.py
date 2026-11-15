@@ -19,23 +19,21 @@ class NetworkCommandTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         evidence.reset_network_state()
         self.addCleanup(evidence.reset_network_state)
-        self.log = Path(self.tmp.name) / 'calls'
 
     def tool(self, script):
         path = Path(self.tmp.name) / 'gh'
-        path.write_text('#!/bin/sh\necho call >> ' + str(self.log) + '\n' + script)
+        path.write_text('#!/bin/sh\n' + script)
         path.chmod(0o700)
         return str(path)
-
-    def calls(self):
-        return len(self.log.read_text().splitlines()) if self.log.exists() else 0
 
     def test_repeated_timeouts_stop_further_reads_of_that_provider(self):
         gh = self.tool('sleep 5\n')
         for _ in range(evidence.BREAKER_LIMIT + 2):
             with self.assertRaises(subprocess.TimeoutExpired):
                 evidence.command([gh, 'api', 'user'], timeout=0.2)
-        self.assertEqual(self.calls(), evidence.BREAKER_LIMIT)
+        # Count the reads the breaker let through rather than having the stub log them:
+        # the 0.2s timeout can kill a fresh script before it runs (macOS exec checks are slow).
+        self.assertEqual(evidence.network_calls(), {'gh': evidence.BREAKER_LIMIT})
         self.assertEqual(evidence.command(['true']), '')
 
     def test_success_resets_the_timeout_count(self):
