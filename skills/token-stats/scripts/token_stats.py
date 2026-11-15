@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -31,20 +32,27 @@ def run(cmd, env=None, timeout=90):
 
 
 def claude_reset(text):
-    """'Nov 15, 5:59am (America/New_York)' -> UTC datetime; the year is the one that puts it nearest now."""
-    m = re.match(r"(\w{3}) (\d+), (\d+)(?::(\d+))?(am|pm) \(([^)]+)\)", text)
+    """'Nov 15, 5:59am (America/New_York)' or '4am (...)' -> UTC datetime. A missing date means the next such
+    time; a missing year means the year that puts it nearest now."""
+    m = re.match(r"(?:(\w{3}) (\d+),? )?(?:at )?(\d+)(?::(\d+))?\s*(am|pm) \(([^)]+)\)", text, re.I)
     if not m:
         return None
     mon, day, hour, mins, ampm, tz = m.groups()
-    hour = int(hour) % 12 + (12 if ampm == "pm" else 0)
-    local = NOW.astimezone(ZoneInfo(tz))
+    tz = ZoneInfo(tz)
+    local = NOW.astimezone(tz)
+    hm = {"hour": int(hour) % 12 + (12 if ampm.lower() == "pm" else 0), "minute": int(mins or 0)}
+    if not mon:
+        t = local.replace(**hm, second=0, microsecond=0)
+        return (t if t > local else t + timedelta(days=1)).astimezone(timezone.utc)
     best = None
     for year in (local.year - 1, local.year, local.year + 1):
-        t = datetime.strptime(f"{year} {mon} {day}", "%Y %b %d").replace(
-            hour=hour, minute=int(mins or 0), tzinfo=ZoneInfo(tz))
+        try:  # Feb 29 only exists in some years
+            t = datetime.strptime(f"{year} {mon} {day}", "%Y %b %d").replace(**hm, tzinfo=tz)
+        except ValueError:
+            continue
         if best is None or abs(t - local) < abs(best - local):
             best = t
-    return best.astimezone(timezone.utc)
+    return best and best.astimezone(timezone.utc)
 
 
 def claude(account):
@@ -72,6 +80,8 @@ def codex(account):
         proc.stdin.write(json.dumps(msg) + "\n")
     proc.stdin.flush()
     reply = {}
+    watchdog = threading.Timer(30, proc.kill)  # a wedged server must not stall every other target
+    watchdog.start()
     try:
         for line in proc.stdout:  # skip notifications until our reply
             msg = json.loads(line)
@@ -79,18 +89,23 @@ def codex(account):
                 reply = msg
                 break
     finally:
+        watchdog.cancel()
         proc.kill()
-    limits = (reply.get("result") or {}).get("rateLimits")
-    if not limits:
+        proc.wait()
+    err = (reply.get("error") or {}).get("message", "")
+    if "chatgpt authentication required" in err.lower() or "result" in reply and not reply["result"].get("rateLimits"):
         return "no usage source: API-key auth, billed to the org budget (probe: delegate quota.sh)"
+    if "result" not in reply:
+        return f"error: {(reply.get('error') or {}).get('message', 'no reply from codex app-server')[:80]}"
+    limits = reply["result"]["rateLimits"]
     rows = []
     for key in ("primary", "secondary"):
         w = limits.get(key)
         if w:
             mins = w["windowDurationMins"]
             window = f"{mins // 1440}d" if mins >= 1440 else f"{mins // 60}h"
-            rows.append((f"{window} window", 100 - int(w["usedPercent"]),
-                         datetime.fromtimestamp(w["resetsAt"], timezone.utc)))
+            rows.append((f"{window} window", round(100 - w["usedPercent"]),
+                         w.get("resetsAt") and datetime.fromtimestamp(w["resetsAt"], timezone.utc)))
     return rows
 
 
@@ -106,7 +121,7 @@ def agy(account):
         if len(f) == 4 and f[2].endswith("%"):
             pool = {"Gemini Models": "Gemini", "Claude and GPT models": "Claude/GPT"}.get(f[0], f[0])
             window = "5h" if "Five Hour" in f[1] else "week" if "Weekly" in f[1] else f[1]
-            rows.append((f"{pool} {window}", int(f[2].rstrip("%")),
+            rows.append((f"{pool} {window}", round(float(f[2].rstrip("%"))),
                          datetime.fromisoformat(f[3].replace("Z", "+00:00"))))
     return rows or f"no usage figures ({out.strip()[:80] or 'empty reply'})"
 

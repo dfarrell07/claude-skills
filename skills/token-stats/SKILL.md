@@ -27,8 +27,8 @@ budget (only a probe shows if it works: delegate's `quota.sh codex:work`, ~12k t
 
 ## Routing
 
-- A target is usable only if **every** limit on it has room: the lowest `left` wins (a 0% 5h session blocks a
-  target with a full week).
+- A target's room is its **lowest** `left`: every limit must have room (a 0% 5h session blocks a target with a
+  full week).
 - Spend first what resets soonest with the most left: unused quota is lost at reset. A full pool resetting in hours
   beats a half-full one resetting in a week.
 - Keep a margin on pools that reset in days; don't drain a weekly pool to 0% early.
