@@ -1,4 +1,4 @@
-.PHONY: help lint test unit-test triage-test shellcheck markdownlint yamllint gitlint work-summary work-summary-test peers-test
+.PHONY: help lint test unit-test triage-test shellcheck markdownlint yamllint gitlint work-summary work-summary-test peers-test delegate-test
 
 help:
 	@echo "Available targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  work-summary  - Generate work summary (last 7 days, or DAYS=N)"
 	@echo "  work-summary-test - Run offline work summary regression tests"
 	@echo "  peers-test    - Run offline peers tests"
+	@echo "  delegate-test - Check the Claude config dir each account gets (offline)"
 
 lint: shellcheck markdownlint yamllint
 
@@ -21,7 +22,7 @@ test: lint unit-test
 unit-test:
 	@echo "Running cve-agent unit tests..."
 	@bash skills/cve-agent/scripts/test.sh --level 1
-	@$(MAKE) triage-test work-summary-test peers-test
+	@$(MAKE) triage-test work-summary-test peers-test delegate-test
 
 triage-test:
 	@python3 skills/personal-jira-triage/tests/test_triage.py
@@ -54,3 +55,6 @@ work-summary:
 
 peers-test:
 	@PYTHONDONTWRITEBYTECODE=1 python3 skills/peers/tests/test_peers.py
+
+delegate-test:
+	@bash skills/delegate/tests/test_config_dir.sh

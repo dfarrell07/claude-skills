@@ -107,7 +107,8 @@ case $tool in
            CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
     case $account in
       work)      export CLAUDE_CODE_USE_VERTEX=1 ;;
-      personal)  export CLAUDE_CODE_USE_VERTEX=0 ;;
+      # Named, not unset: on macOS an unset CLAUDE_CONFIG_DIR is a separate (maybe logged-out) Keychain login.
+      personal)  export CLAUDE_CODE_USE_VERTEX=0 CLAUDE_CONFIG_DIR=$HOME/.claude ;;
       personal2) export CLAUDE_CODE_USE_VERTEX=0 CLAUDE_CONFIG_DIR=$HOME/.claude-per2 ;;
       *) unsupported "unknown account" ;;
     esac

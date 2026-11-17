@@ -63,8 +63,9 @@ def claude(account):
     if account == "work":
         return "no quota: Vertex, billed per token (org model allow-list)"
     env = {"CLAUDE_CODE_USE_VERTEX": "0", "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
-    if account == "personal2":
-        env["CLAUDE_CONFIG_DIR"] = f"{HOME}/.claude-per2"
+    # Always name the config dir: on macOS an unset CLAUDE_CONFIG_DIR is a separate Keychain login from an explicit
+    # ~/.claude (the one cper uses), and it may be logged out.
+    env["CLAUDE_CONFIG_DIR"] = f"{HOME}/.claude-per2" if account == "personal2" else f"{HOME}/.claude"
     cmd = ["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"]
     out = run(cmd, env)
     if "Current " not in out:  # seen blank right at a limit reset; one retry fixes it
