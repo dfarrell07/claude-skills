@@ -12,8 +12,7 @@ Claude Code marketplace for work tracking and session notes.
 ## Skills
 
 - `/work-summary` - Rank recent work as concise bullets and optional subtopics with selected core Jira/PR links, using available tools/connectors
-- `/delegate` - Run tasks on other agent CLIs (agy, codex; not claude) across accounts and get results token-efficiently
-- `/token-stats` - Show usage left and reset times for claude, codex and agy on every account, to route work
+- `/delegate` - Run tasks on other agent CLIs (agy, codex; not claude) or subagents, routed by live quota (`/delegate budget`)
 - `/notes` - Take persistent markdown notes organized by topic
 - `/peers` - Find and message live Claude sessions in any `~/.claude*` profile, including ones ListAgents misses
 

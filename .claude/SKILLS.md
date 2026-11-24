@@ -38,31 +38,19 @@ Query, view, and update Jira issues via acli.
 
 ## /delegate
 
-Run a task on another agent CLI (agy, codex; never claude unless named) under a chosen account. The answer goes to a file and only its
-path is printed, so results cost tokens only when read. Codex and claude runs
+Run a task on another agent CLI (agy, codex; never claude unless named) or a built-in subagent, picked from live
+quota (`budget.py`). The answer goes to a file and only its path is printed, so results cost tokens only when read. Codex and claude runs
 are read-only unless `DELEGATE_WRITE=1`. Each target has a default model and effort
 (see `skills/delegate/references/models.md`). `parallel` runs N agents on the same
 prompt; `chain` has each agent verify and improve the previous result.
 
 ```bash
 /delegate [parallel|chain] [tool:account ...] <task>
+/delegate budget                    # where work should go now, per account, best first
+python3 -I skills/delegate/scripts/budget.py [personal|work|<tool:account>|subagent ...]
 skills/delegate/scripts/multi.sh parallel|chain <prompt-file> <tool:account>...
 skills/delegate/scripts/delegate.sh <agy|codex>:<work|personal|personal2> <prompt-file> [out-file]
-skills/delegate/scripts/quota.sh <tool:account>...   # each target's own usage numbers (free), probe only if none
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=<low|...|max> skills/delegate/scripts/delegate.sh ...
-```
-
-## /token-stats
-
-Show how much usage is left (percent remaining) and when it resets, for claude,
-codex and agy on the work, personal and personal2 accounts. Asks each CLI for
-its own usage numbers, so it costs no model tokens. Use it to route work to
-quota that resets soonest.
-
-```bash
-/token-stats                        # all nine targets
-/token-stats agy:personal codex:personal
-python3 -I skills/token-stats/scripts/token_stats.py [tool:account ...]
 ```
 
 ## /peers
