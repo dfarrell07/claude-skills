@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# delegate.sh and token_stats.py must name CLAUDE_CONFIG_DIR for every Claude account: on macOS an unset one is a
+# delegate.sh and budget.py must name CLAUDE_CONFIG_DIR for every Claude account: on macOS an unset one is a
 # separate Keychain login from the explicit ~/.claude that cper uses. A stub `claude` records what it was given.
 set -Eeuo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -22,13 +22,10 @@ expect() {  # <what> <want>; each check reads only the call just made (the log i
 for acct in personal personal2; do
   want=$HOME/.claude; [[ $acct == personal2 ]] && want=$HOME/.claude-per2
   : >"$STUB_LOG"
-  DELEGATE_ALLOW_CLAUDE=1 DELEGATE_USAGE=1 bash "$root/skills/delegate/scripts/delegate.sh" "claude:$acct" "$tmp/prompt" >/dev/null
-  expect "delegate claude:$acct usage" "$want"
-  : >"$STUB_LOG"
   DELEGATE_ALLOW_CLAUDE=1 bash "$root/skills/delegate/scripts/delegate.sh" "claude:$acct" "$tmp/prompt" "$tmp/out-$acct" >/dev/null || true
   expect "delegate claude:$acct run" "$want"
   : >"$STUB_LOG"
-  python3 -I "$root/skills/token-stats/scripts/token_stats.py" "claude:$acct" >/dev/null
-  expect "token_stats claude:$acct" "$want"
+  python3 -I "$root/skills/delegate/scripts/budget.py" "claude:$acct" >/dev/null
+  expect "budget claude:$acct" "$want"
 done
 exit $fail

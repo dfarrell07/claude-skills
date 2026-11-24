@@ -13,7 +13,7 @@ help:
 	@echo "  work-summary  - Generate work summary (last 7 days, or DAYS=N)"
 	@echo "  work-summary-test - Run offline work summary regression tests"
 	@echo "  peers-test    - Run offline peers tests"
-	@echo "  delegate-test - Check the Claude config dir each account gets (offline)"
+	@echo "  delegate-test - Budget timing rules and each account's Claude config dir (offline)"
 
 lint: shellcheck markdownlint yamllint
 
@@ -57,4 +57,5 @@ peers-test:
 	@PYTHONDONTWRITEBYTECODE=1 python3 skills/peers/tests/test_peers.py
 
 delegate-test:
+	@python3 -I skills/delegate/tests/test_budget.py
 	@bash skills/delegate/tests/test_config_dir.sh

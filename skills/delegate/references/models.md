@@ -8,11 +8,11 @@ re-probe before trusting a denial. The defaults live in `scripts/delegate.sh` (t
 
 - `agy:personal`, `agy:personal2`: `gemini-4-argon`, then `gemini-3.8-flash`, medium. agy tokens are plentiful and wasted
   on weak models, so use the strongest Gemini. Medium beat high on a real audit (7.5 min and no wrong claims, vs 17.5 min
-  and 3 wrong); pass `DELEGATE_EFFORT=high` to try it. `agy /usage` shows three pools: Gemini models and Claude/GPT
-  models (each 5-hour and weekly), and argon alone (weekly). A 429 "Individual quota reached" names the reset (days for
-  argon), so flash is the fallback; the Claude models on agy share one smaller quota.
-- `codex:personal`: `gpt-6-luna`, medium. The free personal account has few tokens, so keep prompts tight, but use it
-  for its fair share of runs; it has a 30-day window, so unspent quota is lost at reset.
+  and 3 wrong); pass `DELEGATE_EFFORT=high` to try it. `agy /usage` shows two pools, each 5-hour and weekly: Gemini
+  models (argon and flash share it) and Claude/GPT models. A 429 "Individual quota reached" names the reset; flash is
+  the fallback for a per-model denial. `agy models` also lists Gemini 4 neon, carbon and hydrogen, not yet measured.
+- `codex:personal`: `gpt-6-luna`, medium. The free personal account has one 30-day window with few tokens, so keep
+  prompts tight.
 - `codex:work`: `gpt-6.1-sol`, then `gpt-5.6-luna`, high. Sol when the budget allows; luna is what the work project can use.
 - `claude:personal`, `claude:personal2`: `claude-sonnet-5-5`, medium. Off-limits: claude is the orchestrator, and
   delegate exists to use weaker models. Only if the user names the target in that request.
@@ -94,4 +94,4 @@ echo "Reply with exactly: ok" > /tmp/p.md
 DELEGATE_MODEL=<model> DELEGATE_EFFORT=low bash scripts/delegate.sh <tool>:<account> /tmp/p.md
 ```
 
-Work accounts spend real budget, so probe a model once rather than sweeping. `scripts/quota.sh` does this for you.
+Work accounts spend real budget, so probe a model once rather than sweeping.
