@@ -47,6 +47,13 @@ class WorkLinksTest(unittest.TestCase):
             broken = copy.deepcopy(data)
             broken['jira']['issues'][0]['pr_links'][0][field] = value
 
+    def test_null_comment_list_is_read_as_no_comments(self):
+        from work_links import native_review_links
+        issue = self.capture()['jira']['issues'][0]
+        for native in ({'comments': None}, 'text', [1], 5):
+            issue['detail'] = {'fields': {'comment': native}}
+            self.assertEqual(native_review_links(issue), [])
+
     def test_moved_native_jira_key_links_canonical_ticket_and_retains_original_reference(self):
         data = self.capture()
         native = {'key': 'TEST-123', 'id': '123', 'self': 'https://jira.example.test/rest/api/3/issue/123',

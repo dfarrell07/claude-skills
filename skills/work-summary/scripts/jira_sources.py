@@ -18,7 +18,7 @@ from urllib.parse import quote, urlsplit
 sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
-    HOST, command, decode_json, integer, iso, require, timestamp, unique_object,
+    HOST, command, decode_json, integer, iso, require, timestamp,
 )
 
 
@@ -40,48 +40,6 @@ def _failure(error):
     elif isinstance(error, subprocess.TimeoutExpired):
         result["timeout"] = error.timeout
     return result
-
-
-def _changelog_coverage(result, warn):
-    """Inspect actual native history, rather than declare it absent unconditionally."""
-    captured, missing, incomplete = [], [], []
-    for item in result["issues"]:
-        history = item.get("detail", {}).get("changelog")
-        if history is None:
-            missing.append(item["key"])
-            continue
-        try:
-            require(isinstance(history, dict) and isinstance(history.get("histories"), list)
-                    and integer(history.get("startAt")) and integer(history.get("total")), "Invalid native changelog")
-            ids = [row.get("id") for row in history["histories"] if isinstance(row, dict)]
-            require(len(ids) == len(history["histories"]) and all(isinstance(ident, str) and ident for ident in ids)
-                    and len(set(ids)) == len(ids) and history["startAt"] == 0
-                    and len(ids) == history["total"], "Incomplete native changelog")
-            for row in history["histories"]:
-                timestamp(row.get("created"))
-                require(isinstance(row.get("author"), dict)
-                        and isinstance(row["author"].get("accountId"), str) and row["author"]["accountId"].strip()
-                        and isinstance(row.get("items"), list) and all(isinstance(change, dict)
-                        and isinstance(change.get("field"), str) for change in row["items"]),
-                        "Changelog lacks native field/actor evidence")
-            captured.append(item["key"])
-        except ERRORS:
-            incomplete.append(item["key"])
-    coverage = {"status": "partial" if incomplete or missing and captured else "unavailable" if missing else "ok",
-                "captured_keys": sorted(captured), "unexpanded_keys": sorted(missing),
-                "incomplete_keys": sorted(incomplete),
-                "scope": "Actual top-level native detail.changelog objects; no inferred field events",
-                "required_read": "GET /rest/api/3/issue/{issueIdOrKey}/changelog with complete pagination"}
-    result["metadata"]["coverage"]["changelog"] = coverage
-    # acli detail reads never include changelogs, so "none captured" is a fixed property of
-    # the reader, recorded above, not a per-run gap. Warn when a changelog was partial.
-    if incomplete or missing and captured:
-        message = ("Some tickets' change history came back incomplete; the report does not use it to credit "
-                   "field changes. Deleted comments cannot be recovered.")
-        result["metadata"]["status"] = "partial"
-        if message not in result["metadata"]["warnings"]:
-            result["metadata"]["warnings"].append(message)
-            warn("Jira: " + message)
 
 
 def _source_strings(value, sensitive=False):
@@ -119,41 +77,6 @@ def _auth_context(auth):
     user = user_match.group(1)
     require(re.fullmatch(r"[^\s\x00-\x1f]+@[^\s\x00-\x1f]+", user), "Invalid auth email")
     return parts.netloc.lower(), user
-
-
-def _comment_pages(raw):
-    """Return validated prefix pages and completeness, even after later failure."""
-    def invalid(value):
-        raise ValueError(f"Invalid JSON number: {value}")
-
-    decoder = json.JSONDecoder(object_pairs_hook=unique_object, parse_constant=invalid)
-    pages, offset, expected, total, seen, stable = [], 0, 0, None, set(), True
-    while raw[offset:].strip():
-        try:
-            offset += len(raw[offset:]) - len(raw[offset:].lstrip())
-            page, offset = decoder.raw_decode(raw, offset)
-            require(isinstance(page, dict) and isinstance(page.get("comments"), list), "Invalid comment page")
-            require(integer(page.get("startAt")) and page["startAt"] == expected
-                    and integer(page.get("maxResults"), 1) and integer(page.get("total"))
-                    and type(page.get("isLast")) is bool, "Invalid comment pagination")
-            require(not pages or not pages[-1]["isLast"], "Comment data after terminal page")
-            if total is not None and total != page["total"]:
-                stable = False
-            require(len(page["comments"]) <= page["maxResults"], "Oversized comment page")
-            page_ids = set()
-            for comment in page["comments"]:
-                require(isinstance(comment, dict) and isinstance(comment.get("id"), str)
-                        and comment["id"] and comment["id"] not in seen
-                        and comment["id"] not in page_ids, "Invalid or repeated comment")
-                page_ids.add(comment["id"])
-            if total is None:
-                total = page["total"]
-            seen.update(page_ids)
-            pages.append(page)
-            expected += page["maxResults"]
-        except ERRORS:
-            return pages, False
-    return pages, bool(stable and pages and pages[-1]["isLast"] and len(seen) == total)
 
 
 def _normalize(row, site):
@@ -230,7 +153,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             return None, error
 
     # executor.map preserves input order. No worker normalizes records, emits
-    # warnings, mutates counters, or handles comment pagination.
+    # warnings or mutates counters.
     with ThreadPoolExecutor(max_workers=4) as pool:
         reads = list(pool.map(read_detail, selected))
     for item, (detail, read_error) in zip(selected, reads):
@@ -256,116 +179,42 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             metadata["coverage"]["details"]["status"] = "partial"
             gap("One ticket's details could not be read; the ticket is still listed.")
             continue
+        # Jira embeds every comment in the detail read (195 of 195 real tickets, up to 97
+        # comments each); if it ever returns fewer than its total, say so rather than page.
         native = fields.get("comment")
-        comments, complete, restricted_comments = {}, False, set()
-        try:
-            require(isinstance(native, dict) and isinstance(native.get("comments"), list)
-                    and integer(native.get("total")) and integer(native.get("startAt")),
-                    "Missing native comment page")
-            for comment in native["comments"]:
-                require(isinstance(comment, dict) and isinstance(comment.get("id"), str)
-                        and comment["id"] and comment["id"] not in comments, "Invalid native comment")
-                comments[comment["id"]] = comment
-                if comment.get("visibility"):
-                    restricted_comments.add(comment["id"])
-            # Native detail responses may contain the final page rather than a
-            # prefix. Retain that evidence and request the missing history.
-            consistent = native["startAt"] + len(comments) <= native["total"]
-            complete = consistent and native["startAt"] == 0 and len(comments) == native["total"]
-            if not complete:
-                failed = False
-                try:
-                    raw_pages = cli("workitem", "comment", "list", "--key", item["key"], "--json", "--paginate")
-                except subprocess.CalledProcessError as error:
-                    raw_pages = error.stdout if isinstance(error.stdout, str) else ""
-                    failed = True
-                pages, complete = _comment_pages(raw_pages)
-                item["comment_pages"] = pages
-                if failed or not pages or pages[0]["total"] != native["total"] or not consistent:
-                    complete = False
-                for page in pages:
-                    for comment in page["comments"]:
-                        comments.setdefault(comment["id"], comment)
-                        if comment.get("visibility") or (not isinstance(comment.get("author"), dict) and "visibility" not in comment):
-                            restricted_comments.add(comment["id"])
-                complete = complete and len(comments) == native["total"]
-                require(complete, "Incomplete comment pagination")
-        except ERRORS:
-            gap("One ticket's comments could not all be read; the comments that were read are kept.")
-        native_fidelity = True
-        native_gaps = []
-        for comment in comments.values():
-            missing_fields, invalid_fields = [], []
-            if not (isinstance(comment.get("author"), dict)
-                    and isinstance(comment["author"].get("accountId"), str)
-                    and comment["author"]["accountId"].strip()):
-                missing_fields.append("author.accountId")
-            for field in ("created", "updated"):
-                if not comment.get(field):
-                    missing_fields.append(field)
-                else:
-                    try:
-                        timestamp(comment[field])
-                    except ERRORS:
-                        invalid_fields.append(field)
-            if "body" not in comment:
-                missing_fields.append("body")
-            if not any(field in missing_fields + invalid_fields for field in ("created", "updated")):
-                created, modified = timestamp(comment["created"]), timestamp(comment["updated"])
-                if modified < created:
-                    invalid_fields.append("updated")
-                elif modified != created:
-                    editor = comment.get("updateAuthor")
-                    if not (isinstance(editor, dict) and isinstance(editor.get("accountId"), str)
-                            and editor["accountId"].strip()):
-                        missing_fields.append("updateAuthor.accountId")
-            if missing_fields or invalid_fields:
-                native_fidelity = False
-                recovery = {"comment_id": comment["id"], "missing_fields": missing_fields,
-                            "required_read": "/rest/api/3/issue/" + item["key"] + "/comment/"
-                            + quote(comment["id"], safe="")}
-                if invalid_fields:
-                    recovery["invalid_fields"] = invalid_fields
-                native_gaps.append(recovery)
+        listed = native.get("comments") if isinstance(native, dict) else None
+        listed = listed if isinstance(listed, list) else []
+        by_id = {}
+        for comment in listed:
+            if isinstance(comment, dict) and isinstance(comment.get("id"), str) and comment["id"]:
+                by_id.setdefault(comment["id"], comment)
+        comments = list(by_id.values())
+        # Repeated, id-less or undated comments also count as not read.
+        complete = (integer(native.get("startAt")) and native["startAt"] == 0 and integer(native.get("total"))
+                    and native["total"] == len(comments) == len(listed)) if isinstance(native, dict) else False
+        for comment in comments:
+            author = comment.get("author")
             try:
-                require(isinstance(comment.get("author"), dict)
-                        and isinstance(comment["author"].get("accountId"), str)
-                        and comment["author"]["accountId"].strip() and "body" in comment,
-                        "Comment lacks native actor/body")
-                created = timestamp(comment["created"])
-                events = [("comment_created", comment["author"], created)]
-                if comment.get("updated") and "updated" not in invalid_fields:
-                    modified = timestamp(comment["updated"])
-                    require(modified >= created, "Reversed comment timestamps")
-                    if modified != created:
-                        editor = comment.get("updateAuthor")
-                        if isinstance(editor, dict) and isinstance(editor.get("accountId"), str) and editor["accountId"].strip():
-                            events.append(("comment_edited", editor, modified))
-                        else:
-                            native_fidelity = False
-                for kind, actor, when in events:
-                    if (verified and actor.get("accountId") == account_id
-                            and start <= when <= end):
-                        result["activity"].append({"kind": kind, "key": item["key"], "comment_id": comment["id"],
-                                                   "url": item["url"] + "?focusedCommentId=" + quote(comment["id"], safe=""),
-                                                   "actor_account_id": actor["accountId"], "occurred_at": iso(when),
-                                                   "sensitive": item["sensitive"] or comment["id"] in restricted_comments,
-                                                   "source": comment})
+                created = timestamp(comment.get("created"))
             except ERRORS:
-                native_fidelity = False
-        item["comment_coverage"] = {"complete": complete, "native_fidelity": native_fidelity,
-                                    "captured_count": len(comments), "total": native.get("total") if isinstance(native, dict) else None}
-        if native_gaps:
-            item["comment_native_gaps"] = native_gaps
-        else:
-            item.pop("comment_native_gaps", None)
-        if not native_fidelity:
-            gap("One ticket has comments missing an author, editor, body or valid timestamp; some of that comment activity may not be credited to you.")
+                complete = False
+                continue
+            if (verified and isinstance(author, dict) and author.get("accountId") == account_id
+                    and start <= created <= end):
+                result["activity"].append({"kind": "comment_created", "key": item["key"], "comment_id": comment["id"],
+                                           "url": item["url"] + "?focusedCommentId=" + quote(comment["id"], safe=""),
+                                           "actor_account_id": account_id, "occurred_at": iso(created),
+                                           "sensitive": item["sensitive"] or bool(comment.get("visibility")),
+                                           "source": comment})
+        if not complete:
+            gap("One ticket's comments could not all be read; the comments that were read are kept.")
         sources = [("description", item["url"], fields.get("description"), item["sensitive"]),
                    ("issue_link", item["url"], fields.get("issuelinks"), item["sensitive"])]
+        # A comment without an author object may be a restricted projection: keep its links private.
         sources += [("comment", item["url"] + "?focusedCommentId=" + quote(comment["id"], safe=""),
-                     comment.get("body"), item["sensitive"] or comment["id"] in restricted_comments)
-                    for comment in comments.values()]
+                     comment.get("body"), item["sensitive"] or bool(comment.get("visibility"))
+                     or not isinstance(comment.get("author"), dict))
+                    for comment in comments]
         proofs = set()
         for proof, evidence_url, source, sensitive in sources:
             for text, source_sensitive in _source_strings(source, sensitive):
@@ -537,7 +386,6 @@ def collect_jira(start, end, warn):
     metadata["inventory_count"] = len(assigned_rows)
     metadata["issue_count"] = len(issues)
     result["issues"] = sorted(issues.values(), key=lambda item: item["key"])
-    _changelog_coverage(result, warn)
     result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result
 
@@ -662,6 +510,5 @@ def add_referenced_jira(result, keys, start, end, warn):
     _detail_items(result, selected, start, end, warn, preloaded)
     metadata["issue_count"] = len(result["issues"])
     result["issues"].sort(key=lambda item: item["key"])
-    _changelog_coverage(result, warn)
     result["activity"].sort(key=lambda event: (timestamp(event["occurred_at"]), event["key"], event["comment_id"], event["kind"]))
     return result

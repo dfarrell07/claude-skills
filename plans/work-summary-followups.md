@@ -7,11 +7,7 @@ captures; none should change the digest unless stated. Verify every change by di
 
 ## Simplification (about −750 script and −900 test lines)
 
-1. **Jira comments:** drop comment paging, comment-fidelity bookkeeping and
-   `_changelog_coverage` in `jira_sources.py`. Replace with a small extractor: credit
-   comments whose `author.accountId` is the user and `created` is in the window. This
-   also removes the recurring "comment stream lacks native actor identities" warning.
-   Decide whether Jira `comment_edited` stays (GitHub edits are no longer credited).
+1. **Jira comments:** done. Comment edits are no longer credited anywhere.
 2. **Jira public history:** keep `public_field_events`; remove identity requests,
    `inspect_pages`, `native_bases` and `history_review_links`; read the changelog by
    numeric issue ID. Optionally show field names in the digest ("status→Closed").

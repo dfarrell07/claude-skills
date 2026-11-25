@@ -91,9 +91,9 @@ def native_review_links(issue):
             if re.fullmatch(r'customfield_[1-9][0-9]*', field_id):
                 sources.append(('custom_field', issue['url'], value, issue['sensitive'],
                                 {'field_id': field_id, 'source_kind': source_kind}))
-    comments = list((fields.get('comment') or {}).get('comments', []))
-    for page in issue.get('comment_pages', []):
-        comments.extend(page.get('comments', []))
+    native = fields.get('comment')
+    comments = native.get('comments') if isinstance(native, dict) else None
+    comments = comments if isinstance(comments, list) else []
     for comment in comments:
         if isinstance(comment, dict) and isinstance(comment.get('id'), str):
             sources.append(('comment', issue['url'] + '?focusedCommentId=' + quote(comment['id'], safe=''),

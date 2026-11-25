@@ -21,7 +21,6 @@ from work_links import github_items
 SUBSTANTIVE = {
     'opened': 'opened', 'merged': 'merged', 'closed': 'closed', 'reopened': 'reopened',
     'review': 'reviewed', 'review_comment': 'review comment', 'issue_comment': 'commented',
-    'issue_comment_edited': 'edited comment', 'review_comment_edited': 'edited review comment',
     'head_ref_force_pushed': 'force-pushed', 'ready_for_review': 'marked ready',
     'convert_to_draft': 'converted to draft',
 }
@@ -320,8 +319,7 @@ class Digest:
         events = {}
         notes = {}
         for event in jira.get('activity', []):
-            kind = 'comment' if event['kind'] == 'comment_created' else 'edited comment'
-            events.setdefault(event['key'], []).append((kind, event['occurred_at']))
+            events.setdefault(event['key'], []).append(('comment', event['occurred_at']))
             if not event.get('sensitive') and note((event.get('source') or {}).get('body')):
                 notes[event['key']] = note(event['source']['body'])
         for event in public_field_events(jira, self.start, self.end):
