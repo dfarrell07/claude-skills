@@ -107,7 +107,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     progress("Jira: reading inventories and active tickets")
     jira = phase("Jira", lambda: collect_jira(start, end, warn),
                  lambda: {'metadata': {'status': 'unavailable', 'warnings': [], 'coverage': {}},
-                          'issues': [], 'activity': [], 'linked_prs': []})
+                          'issues': [], 'activity': []})
 
     progress(f"Jira: {len(jira.get('issues', []))} tickets; following links between tickets, PRs and MRs")
     public_cache = {}
@@ -180,7 +180,7 @@ def trusted_gitlab_hosts(local_metadata, jira, github=None, login=''):
     return hosts
 
 
-def validate(data, source=None):
+def validate(data):
     """Check an agent's analysis against the capture it cites.
 
     The capture itself is the collector's own output and is trusted; what needs
@@ -189,11 +189,7 @@ def validate(data, source=None):
     """
     require(isinstance(data, dict) and isinstance(data.get("metadata"), dict), "Capture must be an object with metadata")
     if "analysis" not in data:
-        require(source is None, "Source comparison is only for enriched captures")
         return
-    if source is not None:
-        require({key: value for key, value in data.items() if key != "analysis"} == source,
-                "Enrichment changed capture sections")
     evidence = {item["url"]: item for item in reversed(github_items(data.get("github", {})))}
     jira_items = {item["key"]: item for item in data.get("jira", {}).get("issues", [])}
     commits = data.get("commits", {})
@@ -282,10 +278,6 @@ def markdown(text):
     text = re.sub(r"([\\`*_{}\[\]()#+!|~])", r"\\\1", text)
     # Only a leading ordered-list marker makes a period structural here.
     return re.sub(r"^([0-9]{1,9})\.(?=\s|$)", r"\1\\.", text)
-
-
-def link(item):
-    return f"[{markdown(item['repo'])}#{item['number']}]({item['url']})"
 
 
 def native_https_urls(text):
@@ -549,8 +541,8 @@ def fallback_topics(data, limit=12):
     return [topic for _, topic in sorted(candidates.values(), key=lambda value: value[0])[:limit]]
 
 
-def render(data, source=None):
-    validate(data, source)
+def render(data):
+    validate(data)
     topics = list(data['analysis']['themes']) if 'analysis' in data else fallback_topics(data)
     represented = {url for topic in topic_nodes(topics)
                    for url in direct_urls(topic) + display_urls(data, topic)}
@@ -622,7 +614,6 @@ def main():
     renderer.add_argument("--candidates", action="store_true",
                           help="List cite-ready personal window evidence for writing an analysis")
     renderer.add_argument("capture")
-    renderer.add_argument("source", nargs="?", help="Original capture; required for enriched input")
     args = parser.parse_args()
     try:
         if args.mode == "collect":
@@ -638,20 +629,23 @@ def main():
         elif args.candidates:
             from candidates import candidates
             data = read_json(args.capture)
-            require(args.source is None and not args.analysis and "analysis" not in data,
+            require(not args.analysis and "analysis" not in data,
                     "--candidates takes only the original capture")
             validate(data)
             output = candidates(data)
         elif args.analysis:
-            require(args.source is None, "--analysis takes only the original capture")
             analysis = read_json(args.analysis)
             if isinstance(analysis, dict) and set(analysis) == {"analysis"}:
                 analysis = analysis["analysis"]
-            source = read_json(args.capture)
-            data = {**source, "analysis": analysis}
-            output = render(data, source) + "\n"
+            capture = read_json(args.capture)
+            require(isinstance(capture, dict) and "analysis" not in capture,
+                    "--analysis takes only the original capture")
+            output = render({**capture, "analysis": analysis}) + "\n"
         else:
-            output = render(read_json(args.capture), read_json(args.source) if args.source else None) + "\n"
+            data = read_json(args.capture)
+            require(not isinstance(data, dict) or "analysis" not in data,
+                    "Pass the analysis with --analysis, not inside the capture")
+            output = render(data) + "\n"
     except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
