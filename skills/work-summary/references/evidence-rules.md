@@ -45,10 +45,11 @@ changing the collector. SKILL.md's credit rules are the short version.
   assigned inventory. `updatedBy()` and a role search limited to tickets updated
   in the window (assignee, reporter, creator, watcher, former assignee) find
   active tickets; all-time inventories other than assignment are not searched.
-- Credit comments only from native author account IDs and timestamps. Restricted
-  comments without them, and day-level `updatedBy()` hits, are leads whose exact
-  change is unverified. acli exposes no changelog; public history for publicly
-  visible tickets can confirm individual field changes.
+- Credit a comment only when its native author account ID is the user's and its
+  creation time is in the window; comment edits are not credited. Day-level
+  `updatedBy()` hits are leads whose exact change is unverified. acli exposes no
+  changelog; public history for publicly visible tickets can confirm individual
+  field changes.
 - Keep restricted titles out of the update. A "does not exist or no permission"
   response proves neither.
 

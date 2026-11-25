@@ -484,8 +484,6 @@ def fallback_topics(data, limit=12):
             add(item['url'], 0, timestamp(item['merged_at']), github_topic(item, 'Merged: ' + item['title']))
     actions = {'opened': (1, 'Opened'), 'review': (2, 'Reviewed'),
                'review_comment': (3, 'Discussed'), 'issue_comment': (3, 'Discussed'),
-               'review_comment_edited': (3, 'Updated discussion on'),
-               'issue_comment_edited': (3, 'Updated discussion on'),
                'closed': (4, 'Closed'),
                'reopened': (4, 'Reopened')}
     for event in data['github'].get('activity', []):
@@ -499,9 +497,8 @@ def fallback_topics(data, limit=12):
     for event in data.get('jira', {}).get('activity', []):
         item = jira[event['key']]
         title = 'restricted Jira ticket' if item['sensitive'] else item['title']
-        verb = 'Commented on' if event['kind'] == 'comment_created' else 'Edited a comment on'
         add(item['url'], 3, timestamp(event['occurred_at']),
-            {'description': verb + ': ' + title, 'items': [],
+            {'description': 'Commented on: ' + title, 'items': [],
              'jira': [{key: item[key] for key in ('key', 'url')}]})
     for event in public_field_events(data.get('jira', {}), start, end):
         item = jira[event['key']]

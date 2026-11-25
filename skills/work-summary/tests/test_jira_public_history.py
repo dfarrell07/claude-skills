@@ -27,7 +27,7 @@ def issue(number=1):
               'fields': {'summary': 'Private authenticated title', 'comment': {'total': 159, 'comments': [
                   {'id': '77', 'body': 'Authenticated private comment.'}]}}}
     return {'key': source['key'], 'url': f"{BASE}/browse/{source['key']}", 'source': copy.deepcopy(source),
-            'detail': source, 'comment_pages': [{'values': ['preserved native comments']}]}
+            'detail': source}
 
 
 def identity(number=1):

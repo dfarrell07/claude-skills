@@ -43,12 +43,12 @@ def comment(ident="c1", author=None, created="2026-01-10T12:00:00Z", **extra):
             **extra}
 
 
-def detail(row, comments=(), total=None):
+def detail(row, comments=()):
     result = copy.deepcopy(row)
     result["fields"].update(updated="2026-01-12T12:00:00Z", created="2025-01-01T00:00:00Z",
                             security=None, description={"type": "doc", "content": []}, issuelinks=[],
                             comment={"comments": list(comments), "startAt": 0, "maxResults": 100,
-                                     "total": len(comments) if total is None else total})
+                                     "total": len(comments)})
     return result
 
 
@@ -119,14 +119,6 @@ elif args[:3] == ["jira", "project", "list"]:
     emit(data.get("projects", {"_exit": 1}))
 elif args[:3] == ["jira", "workitem", "view"]:
     emit(data["details"].get(args[3], {"_exit": 1}))
-elif args[:4] == ["jira", "workitem", "comment", "list"]:
-    assert "--paginate" in args
-    value = data.get("comment_pages", {"_exit": 1})
-    if isinstance(value, dict):
-        emit(value)
-    else:
-        for page in value:
-            print(json.dumps(page))
 else:
     sys.exit(99)
 ''')
@@ -165,11 +157,13 @@ else:
         self.assertEqual(result["metadata"]["account_id"], "self-id")
         self.assertEqual(result["metadata"]["site"], "jira.example.test")
         self.assertEqual(result["issues"][0]["source"], issue())
-        self.assertEqual(result["activity"][0]["actor_account_id"], "self-id")
-        self.assertEqual(result["activity"][0]["comment_id"], "c1")
+        event = result["activity"][0]
+        self.assertEqual(event["actor_account_id"], "self-id")
+        self.assertEqual(event["comment_id"], "c1")
+        self.assertEqual(event["kind"], "comment_created")
+        self.assertEqual(event["url"], "https://jira.example.test/browse/TEST-1?focusedCommentId=c1")
+        self.assertEqual(event["source"], comment())
         self.assertEqual(result["metadata"]["coverage"]["assigned"]["count_after"], 1)
-        self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "unavailable")
-        # The reader never exposes changelogs: a recorded scope, not a per-run warning.
         self.assertEqual(result["metadata"]["status"], "ok")
         for call in self.calls():
             self.assertIn(call[:3], [["jira", "auth", "status"], ["jira", "workitem", "search"],
@@ -335,6 +329,9 @@ else:
         self.assertEqual(selected[-1]["detail_status"], "failed")
 
     def test_account_conflict_or_missing_email_never_guesses_activity_actor(self):
+        anonymous = comment("no-account")
+        anonymous["author"] = {}
+        self.data["details"]["TEST-1"] = detail(issue(), [comment(), anonymous])
         for author in [OTHER, {"accountId": "   "}, {"accountId": "self-id", "emailAddress": ""}]:
             with self.subTest(author=author):
                 self.data["searches"]["assigned"] = [issue(author=author)]
@@ -397,7 +394,6 @@ else:
         self.data["details"]["TEST-1"] = detail(issue(), comments)
         result = self.collect()
         self.assertEqual([event["comment_id"] for event in result["activity"]], ["start", "end"])
-        self.assertFalse(result["issues"][0]["comment_coverage"]["native_fidelity"])
 
     def test_native_jira_compact_timezone_offsets_preserve_details_and_activity(self):
         self.data["details"]["TEST-1"]["fields"]["updated"] = "2026-01-12T12:00:00.123+0000"
@@ -409,16 +405,14 @@ else:
         self.assertEqual(len(result["activity"]), 1)
         self.assertEqual(result["activity"][0]["occurred_at"], "2026-01-08T12:00:00.123000Z")
 
-    def test_edits_credit_update_author_and_missing_editor_is_a_gap(self):
+    def test_comment_edits_are_not_credited(self):
         old = "2026-01-01T00:00:00Z"
         comments = [comment("edited-by-me", OTHER, old, updated="2026-01-10T00:00:00Z", updateAuthor=ME),
-                    comment("edited-by-other", ME, old, updated="2026-01-10T00:00:00Z", updateAuthor=OTHER),
-                    comment("editor-missing", ME, old, updated="2026-01-10T00:00:00Z")]
+                    comment("mine-edited-later", ME, old, updated="2026-01-10T00:00:00Z", updateAuthor=ME)]
         self.data["details"]["TEST-1"] = detail(issue(), comments)
         result = self.collect()
-        self.assertEqual([(event["comment_id"], event["kind"]) for event in result["activity"]],
-                         [("edited-by-me", "comment_edited")])
-        self.assertFalse(result["issues"][0]["comment_coverage"]["native_fidelity"])
+        self.assertEqual(result["activity"], [])
+        self.assertEqual(result["metadata"]["status"], "ok")
 
     def test_sensitive_issue_and_comment_visibility_keep_private_link_proofs(self):
         private = comment("private", body="https://github.com/example/private/pull/88", visibility={"type": "group", "value": "private"})
@@ -444,150 +438,30 @@ else:
         self.data["details"]["TEST-1"]["fields"].pop("security")
         self.assertEqual(self.collect()["issues"][0]["detail_status"], "failed")
 
-    def test_paginated_native_comments_add_activity_and_validate_terminal_page(self):
-        first, second = comment(), comment("c2", created="2026-01-11T00:00:00Z")
-        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
-        self.data["comment_pages"] = [
-            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
-            {"comments": [second], "startAt": 1, "maxResults": 1, "total": 2, "isLast": True}]
-        result = self.collect()
-        self.assertEqual(len(result["activity"]), 2)
-        self.assertTrue(result["issues"][0]["comment_coverage"]["complete"])
-        self.assertTrue(result["issues"][0]["comment_coverage"]["native_fidelity"])
-
-    def test_rendered_comment_projection_does_not_invent_timestamps_or_account_ids(self):
-        first = comment()
-        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
-        projection = [{"id": "c1", "author": "Person", "body": "older native comment"},
-                      {"id": "c2", "author": "Person", "body": "2026-01-11: Completed work"}]
-        self.data["comment_pages"] = [{"comments": projection, "startAt": 0, "maxResults": 50,
-                                      "total": 2, "isLast": True}]
-        result = self.collect()
-        self.assertEqual(len(result["activity"]), 1)
-        coverage = result["issues"][0]["comment_coverage"]
-        self.assertTrue(coverage["complete"])
-        self.assertFalse(coverage["native_fidelity"])
-        self.assertTrue(any("may not be credited" in warning for warning in self.warnings))
-
-    def test_native_suffix_page_merges_projected_prefix_without_inventing_activity(self):
-        suffix = comment("c2", body="Native https://github.com/org/repo/pull/2",
-                         visibility={"type": "role", "value": "reviewers"})
-        native = detail(issue(), [suffix], total=2)
-        native["fields"]["comment"].update(startAt=1, maxResults=1)
-        original = copy.deepcopy(native)
-        self.data["details"]["TEST-1"] = native
-        projected = [{"id": "c1", "author": "Person", "body": "Earlier https://github.com/org/repo/pull/1",
-                      "visibility": {"type": "role", "value": "reviewers"}},
-                     {"id": "c2", "author": "Person", "body": "Projected content differs", "visibility": None}]
-        self.data["comment_pages"] = [{"comments": projected, "startAt": 0, "maxResults": 50,
-                                      "total": 2, "isLast": True}]
-        result = self.collect()
-        item = result["issues"][0]
-        self.assertEqual(item["detail"], original)
-        self.assertEqual({pr["url"] for pr in item["pr_links"]},
-                         {"https://github.com/org/repo/pull/1", "https://github.com/org/repo/pull/2"})
-        self.assertTrue(all(pr["sensitive"] for pr in item["pr_links"]))
-        self.assertEqual([event["comment_id"] for event in result["activity"]], ["c2"])
-        self.assertEqual(result["activity"][0]["source"], suffix)
-        self.assertEqual(item["comment_coverage"], {"complete": True, "native_fidelity": False,
-                                                   "captured_count": 2, "total": 2})
-        self.assertTrue(any("comment" in call and "list" in call for call in self.calls()))
-
-    def test_native_suffix_survives_unavailable_comment_pagination(self):
-        suffix = comment("c2", body="Available https://github.com/org/repo/pull/2")
-        native = detail(issue(), [suffix], total=2)
-        native["fields"]["comment"].update(startAt=1, maxResults=1)
-        original = copy.deepcopy(native)
-        self.data["details"]["TEST-1"] = native
-        self.data["comment_pages"] = {"_exit": 1}
-        result = self.collect()
-        item = result["issues"][0]
-        self.assertEqual(item["detail"], original)
-        self.assertEqual([pr["url"] for pr in item["pr_links"]], ["https://github.com/org/repo/pull/2"])
-        self.assertEqual([event["comment_id"] for event in result["activity"]], ["c2"])
-        self.assertEqual(item["comment_coverage"], {"complete": False, "native_fidelity": True,
-                                                   "captured_count": 1, "total": 2})
-        self.assertEqual(result["metadata"]["status"], "partial")
-        self.assertTrue(any("comment" in call and "list" in call for call in self.calls()))
-
-    def test_native_suffix_count_drift_keeps_positive_comment_evidence(self):
-        suffix = comment("c2", body="Retain https://github.com/org/repo/pull/2")
-        native = detail(issue(), [suffix], total=1)
-        native["fields"]["comment"].update(startAt=1, maxResults=1)
-        original = copy.deepcopy(native)
-        self.data["details"]["TEST-1"] = native
-        self.data["comment_pages"] = {"_exit": 1}
-        result = self.collect()
-        item = result["issues"][0]
-        self.assertEqual(item["detail"], original)
-        self.assertEqual([pr["url"] for pr in item["pr_links"]], ["https://github.com/org/repo/pull/2"])
-        self.assertEqual(len(result["activity"]), 1)
-        self.assertEqual(result["activity"][0]["source"], suffix)
-        self.assertEqual(item["comment_coverage"]["captured_count"], 1)
-        self.assertFalse(item["comment_coverage"]["complete"])
-        self.assertEqual(result["metadata"]["status"], "partial")
-        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
-
-    def test_native_suffix_identity_drift_retains_union_without_claiming_completeness(self):
-        suffix = comment("retained", body="Retain https://github.com/org/repo/pull/1")
-        native = detail(issue(), [suffix], total=2)
-        native["fields"]["comment"].update(startAt=1, maxResults=1)
-        self.data["details"]["TEST-1"] = native
-        self.data["comment_pages"] = [{"comments": [
-            comment("new1", body="New https://github.com/org/repo/pull/2"),
-            comment("new2", body="New https://github.com/org/repo/pull/3")],
-            "startAt": 0, "maxResults": 50, "total": 2, "isLast": True}]
-        result = self.collect()
-        item = result["issues"][0]
-        self.assertEqual({pr["url"] for pr in item["pr_links"]},
-                         {f"https://github.com/org/repo/pull/{number}" for number in (1, 2, 3)})
-        self.assertEqual({event["comment_id"] for event in result["activity"]}, {"retained", "new1", "new2"})
-        self.assertEqual(item["comment_coverage"], {"complete": False, "native_fidelity": True,
-                                                   "captured_count": 3, "total": 2})
-        self.assertEqual(result["metadata"]["status"], "partial")
-        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
-
-    def test_duplicate_or_changed_comment_pages_keep_available_native_activity(self):
-        first = comment()
-        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
-        self.data["comment_pages"] = [
-            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
-            {"comments": [first], "startAt": 1, "maxResults": 1, "total": 2, "isLast": True}]
-        result = self.collect()
-        self.assertEqual(len(result["activity"]), 1)
-        self.assertFalse(result["issues"][0]["comment_coverage"]["complete"])
-
-    def test_later_failed_or_malformed_comment_page_retains_prefix_positive(self):
-        original = comment("1", OTHER)
-        positive = comment("2", ME)
-        page = {"comments": [original, positive], "startAt": 0, "maxResults": 2,
-                "total": 3, "isLast": False}
-        for following in [{"_exit": 1, "_stdout": json.dumps(page) + "\n"},
-                          [page, {"malformed": "page"}],
-                          {"_exit": 0, "_stdout": json.dumps(page) + "\n{truncated"}]:
-            with self.subTest(following=following):
+    def test_fewer_embedded_comments_than_total_is_a_gap_without_paging(self):
+        positive = comment("c2", created="2026-01-11T00:00:00Z", body="https://github.com/org/repo/pull/2")
+        for native in ({"startAt": 0, "total": 2}, {"startAt": 1, "total": 1}, {"startAt": 0, "total": 0},
+                       {"startAt": 0, "total": True}, {"startAt": False, "total": 1}):
+            with self.subTest(native=native):
                 self.log.unlink(missing_ok=True)
-                self.data["details"]["TEST-1"] = detail(issue(), [original], total=3)
-                self.data["comment_pages"] = following
+                self.data["details"]["TEST-1"] = detail(issue(), [positive])
+                self.data["details"]["TEST-1"]["fields"]["comment"].update(native)
                 result = self.collect()
-                self.assertEqual([event["comment_id"] for event in result["activity"]], ["2"])
-                coverage = result["issues"][0]["comment_coverage"]
-                self.assertEqual(coverage["captured_count"], 2)
-                self.assertFalse(coverage["complete"])
-                self.assertEqual(len(result["issues"][0]["comment_pages"]), 1)
-
-    def test_changed_comment_total_preserves_valid_page_positive_as_partial(self):
-        first, positive = comment("1", OTHER), comment("2", ME)
-        self.data["details"]["TEST-1"] = detail(issue(), [first], total=2)
-        self.data["comment_pages"] = [
-            {"comments": [first], "startAt": 0, "maxResults": 1, "total": 2, "isLast": False},
-            {"comments": [positive], "startAt": 1, "maxResults": 1, "total": 3, "isLast": True}]
-        result = self.collect()
-        self.assertEqual([event["comment_id"] for event in result["activity"]], ["2"])
-        coverage = result["issues"][0]["comment_coverage"]
-        self.assertEqual(coverage["captured_count"], 2)
-        self.assertFalse(coverage["complete"])
-        self.assertEqual(len(result["issues"][0]["comment_pages"]), 2)
+                self.assertEqual([event["comment_id"] for event in result["activity"]], ["c2"])
+                self.assertEqual(linked_prs(result), ["https://github.com/org/repo/pull/2"])
+                self.assertEqual(result["metadata"]["status"], "partial")
+                self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
+                self.assertFalse(any("comment" in call for call in self.calls()))
+        for missing in ({}, {"comment": None}, {"comment": {"comments": None, "startAt": 0, "total": 1}},
+                        {"comment": "text"}, {"comment": [1]}):
+            with self.subTest(missing=missing):
+                self.data["details"]["TEST-1"] = detail(issue())
+                self.data["details"]["TEST-1"]["fields"].pop("comment")
+                self.data["details"]["TEST-1"]["fields"].update(missing)
+                result = self.collect()
+                self.assertEqual(result["issues"][0]["detail_status"], "ok")
+                self.assertEqual(result["activity"], [])
+                self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
 
     def test_pr_links_come_from_source_not_titles_and_malformed_suffix_is_not_cited(self):
         self.data["details"]["TEST-1"]["fields"]["description"] = {
@@ -720,66 +594,30 @@ else:
         self.assertNotIn("RESTRICTED-2", coverage["failures"])
         self.assertIn("RESTRICTED-2", coverage["returned_keys"])
 
-    def test_native_complete_changelog_is_retained_instead_of_unconditionally_unavailable(self):
-        history = {"startAt": 0, "total": 1, "histories": [{"id": "h1", "author": ME,
-            "created": "2026-01-12T12:00:00Z", "items": [{"field": "status", "toString": "Active"}]}]}
-        self.data["details"]["TEST-1"]["changelog"] = history
-        result = self.collect()
-        self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "ok")
-        self.assertEqual(result["metadata"]["coverage"]["changelog"]["captured_keys"], ["TEST-1"])
-        self.assertEqual(result["issues"][0]["detail"]["changelog"], history)
-        self.assertEqual(result["metadata"]["status"], "ok")
-
-    def test_projected_comment_gaps_name_exact_native_rest_recovery_targets(self):
-        projected = {"id": "opaque/id", "author": "Display name", "body": "Native context"}
-        self.data["details"]["TEST-1"] = detail(issue(), [projected])
-        result = self.collect()
-        item = result["issues"][0]
-        self.assertEqual(item["comment_native_gaps"], [{"comment_id": "opaque/id",
-            "missing_fields": ["author.accountId", "created", "updated"],
-            "required_read": "/rest/api/3/issue/TEST-1/comment/opaque%2Fid"}])
-        self.assertEqual(result["activity"], [])
-        self.assertFalse(item["comment_coverage"]["native_fidelity"])
-
-    def test_native_changelog_requires_complete_pagination_and_actor_time_fidelity(self):
-        native = {"startAt": 0, "total": 1, "histories": [{"id": "h1", "author": ME,
-            "created": "2026-01-12T12:00:00Z", "items": [{"field": "status"}]}]}
-        for bad in ({**native, "startAt": 1}, {**native, "total": 2},
-                    {**native, "histories": [{"id": "h1"}]}):
-            with self.subTest(history=bad):
-                result = {"metadata": {"status": "ok", "coverage": {}, "warnings": []},
-                          "issues": [{"key": "TEST-1", "detail": {"changelog": bad}}]}
-                warnings = []
-                jira._changelog_coverage(result, warnings.append)
-                self.assertEqual(result["metadata"]["coverage"]["changelog"]["status"], "partial")
-                self.assertEqual(result["metadata"]["coverage"]["changelog"]["incomplete_keys"], ["TEST-1"])
-                self.assertEqual(result["issues"][0]["detail"]["changelog"], bad)
-                self.assertTrue(warnings)
-
-    def test_malformed_comments_and_missing_editors_name_recovery_targets_without_losing_creation(self):
-        malformed = comment("invalid-created", created="not-a-time")
-        rows = [malformed, comment("invalid-update", updated="not-a-time"),
-                comment("reversed", updated="2026-01-09T12:00:00Z"),
-                comment("missing-editor", updated="2026-01-11T12:00:00Z")]
-        missing_body = comment("missing-body")
-        missing_body.pop("body")
-        rows.append(missing_body)
+    def test_malformed_comments_are_kept_but_only_well_formed_ones_are_credited(self):
+        rows = [comment("invalid-created", created="not-a-time"),
+                comment("display-author", author="Person", body="https://github.com/org/repo/pull/5"),
+                comment("good"), comment("good"), comment(""), {"author": ME, "created": "2026-01-10T12:00:00Z"},
+                "not a comment"]
         self.data["details"]["TEST-1"] = detail(issue(), rows)
         original = copy.deepcopy(rows)
         result = self.collect()
-        item = result["issues"][0]
-        gaps = {entry["comment_id"]: entry for entry in item["comment_native_gaps"]}
-        self.assertEqual(gaps["invalid-created"]["invalid_fields"], ["created", "updated"])
-        for ident in ("invalid-update", "reversed"):
-            self.assertEqual(gaps[ident]["invalid_fields"], ["updated"])
-        self.assertEqual(gaps["missing-editor"]["missing_fields"], ["updateAuthor.accountId"])
-        self.assertEqual(gaps["missing-body"]["missing_fields"], ["body"])
-        for ident, gap in gaps.items():
-            self.assertEqual(gap["required_read"], "/rest/api/3/issue/TEST-1/comment/" + ident)
-        self.assertEqual({(event["comment_id"], event["kind"]) for event in result["activity"]},
-                         {(ident, "comment_created") for ident in ("invalid-update", "reversed", "missing-editor")})
-        self.assertEqual(item["detail"]["fields"]["comment"]["comments"], original)
-        self.assertFalse(item["comment_coverage"]["native_fidelity"])
+        self.assertEqual([event["comment_id"] for event in result["activity"]], ["good"])
+        self.assertEqual(result["issues"][0]["detail"]["fields"]["comment"]["comments"], original)
+        self.assertEqual([(link["url"], link["sensitive"]) for link in result["issues"][0]["pr_links"]],
+                         [("https://github.com/org/repo/pull/5", True)])
+        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
+
+    def test_each_unreadable_comment_alone_is_a_gap(self):
+        good = comment("good")
+        for rows, total in (([good, "not a comment"], 1), ([good, comment("undated", created=None)], 2),
+                            ([good, good], 1)):
+            with self.subTest(rows=rows):
+                self.data["details"]["TEST-1"] = detail(issue(), rows)
+                self.data["details"]["TEST-1"]["fields"]["comment"]["total"] = total
+                result = self.collect()
+                self.assertEqual([event["comment_id"] for event in result["activity"]], ["good"])
+                self.assertEqual(result["metadata"]["status"], "partial")
 
     def test_referenced_key_failure_and_account_switch_are_named_gaps(self):
         result = self.collect()
