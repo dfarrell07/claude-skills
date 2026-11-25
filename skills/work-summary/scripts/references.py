@@ -54,8 +54,6 @@ def follow_references(jira, github, branches, read_tickets, read_gitlab, read_hi
         progress(f"references: reading public history for {len(tickets)} active tickets")
         read_history(tickets)
     targets = {link['url'] for issue in tickets for link in native_review_links(issue) if link['provider'] == 'gitlab'}
-    targets.update(link['url'] for issue in tickets for link in issue.get('history_review_links', [])
-                   if link['provider'] == 'gitlab')
     targets.update(mr['url'] for branch in branches for mr in branch.get('merge_requests', []))
     targets.update(url for text in texts for provider, url in code_urls(text, github_host) if provider == 'gitlab')
     if targets:
