@@ -465,7 +465,7 @@ class ReviewContextTest(unittest.TestCase):
                 'pull_request_url': 'https://api.github.com/repos/org/repo/pulls/1'}
 
     def test_ordinary_timeline_retains_distinct_review_snapshot_without_actor_credit(self):
-        from extended_evidence import github_reference_comments
+        from work_links import github_reference_comments
         from references import referenced_keys
         listing = self.native_review('Current review body')
         timeline = self.native_review('https://jira.example/browse/CORE-321')

@@ -7,14 +7,93 @@ import json
 import subprocess
 from urllib.parse import urlsplit
 
-from extended_evidence import (same_github_item_url, validate_review_context)
-from evidence import LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp, valid_item
+from evidence import (HOST, LIMIT, PAGE_SIZE, REPO, UTC, decode_json, integer, is_pr_url, iso, require, timestamp,
+                      valid_item)
 
 
 ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError)
 MAX_LIST_PAGES = 100
 ACTIVITY_WORKERS = 4
 MAX_SEARCH_REQUESTS = 128
+
+
+def same_github_item_url(left, right):
+    """GitHub owner/repo casing is equivalent; native route/fragment stay exact."""
+    if (not isinstance(left, str) or not isinstance(right, str)
+            or any(ord(char) < 32 or ord(char) == 127 for char in left + right)):
+        return False
+    try:
+        first, second = urlsplit(left), urlsplit(right)
+    except ValueError:
+        return False
+    a, b = first.path.split('/'), second.path.split('/')
+    return (first.scheme == second.scheme == 'https'
+            and HOST.fullmatch(first.netloc) is not None
+            and first.netloc.casefold() == second.netloc.casefold()
+            and len(a) == len(b) == 5 and a[0] == b[0] == ''
+            and REPO.fullmatch('/'.join(a[1:3])) is not None
+            and [part.casefold() for part in a[1:3]] == [part.casefold() for part in b[1:3]]
+            and a[3:] == b[3:] and a[3] in {'pull', 'issues'}
+            and first.query == second.query and first.fragment == second.fragment)
+
+
+def same_github_api_repo_url(left, right):
+    """Bind an API repository route while retaining exact event/path identity."""
+    if (not isinstance(left, str) or not isinstance(right, str)
+            or any(ord(char) < 32 or ord(char) == 127 for char in left + right)):
+        return False
+    try:
+        first, second = urlsplit(left), urlsplit(right)
+    except ValueError:
+        return False
+    a, b = first.path.split('/'), second.path.split('/')
+    if b[:2] == ['', 'repos']:
+        position = 2
+    elif b[:4] == ['', 'api', 'v3', 'repos']:
+        position = 4
+    else:
+        return False
+    return (first.scheme == second.scheme == 'https'
+            and HOST.fullmatch(first.netloc) is not None
+            and first.netloc.casefold() == second.netloc.casefold()
+            and len(a) == len(b) and len(a) > position + 2
+            and a[:position] == b[:position] and a[position + 2:] == b[position + 2:]
+            and REPO.fullmatch('/'.join(a[position:position + 2])) is not None
+            and [part.casefold() for part in a[position:position + 2]]
+            == [part.casefold() for part in b[position:position + 2]]
+            and first.query == second.query and first.fragment == second.fragment)
+
+
+def validate_review_context(source, item, host='github.com'):
+    """A review's submitted time is native context, not a text-revision timestamp."""
+    require(isinstance(source, dict) and is_pr_url(item['url']) and integer(source.get('id'), 1),
+            'Invalid native review identity')
+    require(same_github_item_url(source.get('html_url'), item['url'] + '#pullrequestreview-' + str(source['id'])),
+            'Native review target mismatch')
+    require('body' in source and (source['body'] is None or isinstance(source['body'], str)),
+            'Invalid native review body')
+    require('user' in source and (source['user'] is None or isinstance(source['user'], dict)
+            and isinstance(source['user'].get('login'), str) and bool(source['user']['login'])),
+            'Invalid native review author')
+    author = source['user']
+    if author is not None:
+        require('id' not in author or integer(author['id'], 1), 'Invalid native review author ID')
+        require(author.get('node_id') is None or isinstance(author['node_id'], str) and bool(author['node_id']),
+                'Invalid native review author node ID')
+    require(source.get('node_id') is None or isinstance(source['node_id'], str) and bool(source['node_id']),
+            'Invalid native review node ID')
+    require(isinstance(source.get('state'), str)
+            and source['state'].upper() in {'APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING'},
+            'Invalid native review state')
+    require('submitted_at' in source, 'Missing native review submission observation')
+    if source['submitted_at'] is not None:
+        timestamp(source['submitted_at'])
+    if source.get('updated_at') is not None:
+        timestamp(source['updated_at'])
+    if 'pull_request_url' in source:
+        api = 'https://api.github.com' if host.casefold() == 'github.com' else f'https://{host}/api/v3'
+        require(same_github_api_repo_url(source['pull_request_url'], f"{api}/repos/{item['repo']}/pulls/{item['number']}"),
+                'Native review API route mismatch')
 
 
 def rest_item(row, kind, host):

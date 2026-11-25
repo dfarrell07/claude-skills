@@ -11,11 +11,8 @@ captures; none should change the digest unless stated. Verify every change by di
 2. **Jira public history:** done, except: optionally show field names in the digest
    ("status→Closed").
 3. **Contextual links:** done.
-4. **Modules:** dissolve `extended_evidence.py` and `provider_references.py` into
-   `github_sources`, `jira_sources`, `gitlab_api`, `work_links` and `references`. Store
-   Jira key aliases as a plain dict and drop the second-view alias proof.
-5. **One URL scanner** for GitHub PR, GitLab MR and Jira browse links, and one Jira
-   text walker shared by `_source_strings` and `native_review_links`.
+4. **Modules:** done.
+5. **One URL scanner:** done.
 6. **Local sources:** keep only own branch
    heads with in-window tips; shrink stale-worktree recovery to reflog parsing.
    Decide whether `gitlab_sources.py` (MR head probe, 0 unique MRs measured) stays.

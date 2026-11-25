@@ -60,18 +60,90 @@ class WorkLinksTest(unittest.TestCase):
                   'fields': {'summary': 'Canonical ticket', 'status': {'name': 'Active',
                              'statusCategory': {'key': 'indeterminate'}}}}
         data['jira']['issues'][0]['source'] = native
-        data['jira']['key_aliases'] = [{'requested_key': 'OLD-7', 'canonical_key': 'TEST-123',
-                                      'requested': copy.deepcopy(native), 'canonical': copy.deepcopy(native)}]
+        data['jira']['key_aliases'] = {'OLD-7': 'TEST-123'}
         data['github']['prs'][0]['title'] = 'OLD-7: repair checks'
         associate_work(data['jira'], data['github'])
         relation = data['github']['prs'][0]['jira_links'][0]
         self.assertEqual(relation['key'], 'TEST-123')
         self.assertEqual(relation['source_key'], 'OLD-7')
         self.assertEqual(relation['jira_source_url'], 'https://jira.example.test/browse/OLD-7')
-        broken = copy.deepcopy(data)
-        broken['jira']['key_aliases'][0]['canonical']['id'] = '999'
-        broken = copy.deepcopy(data)
-        broken['github']['prs'][0]['jira_links'][0]['source_key'] = 'OTHER-8'
+
+    def test_moved_key_in_a_github_comment_links_the_canonical_ticket(self):
+        data = self.capture()
+        data['jira']['key_aliases'] = {'OLD-7': 'TEST-123'}
+        pr = data['github']['prs'][0]
+        pr['title'] = 'Repair checks'
+        comment = {'item_url': pr['url'], 'url': pr['url'] + '#issuecomment-78', 'id': 78,
+                   'body': 'Tracked in OLD-7.', 'author_login': 'another-person'}
+        data['github']['reference_comments'] = [comment]
+        associate_work(data['jira'], data['github'])
+        relation = pr['jira_links'][0]
+        self.assertEqual((relation['key'], relation['proof'], relation['source_key']),
+                         ('TEST-123', 'github_comment_key', 'OLD-7'))
+
+    def test_moved_ticket_in_native_gitlab_description_keeps_original_key_provenance(self):
+        from work_links import associate_gitlab
+        jira = {'metadata': {'site': 'jira.example.test'}, 'issues': [{
+            'key': 'NEW-3', 'url': 'https://jira.example.test/browse/NEW-3', 'sensitive': False}],
+            'key_aliases': {'OLD-2': 'NEW-3'}}
+        gitlab = {'items': [{'url': 'https://gitlab.example.test/team/repo/-/merge_requests/7',
+                            'source': {'description': 'Fixes OLD-2'}}]}
+        associate_gitlab(jira, gitlab)
+        relation = gitlab['items'][0]['jira_links'][0]
+        self.assertEqual(relation['url'], 'https://jira.example.test/browse/NEW-3')
+        self.assertEqual(relation['source_key'], 'OLD-2')
+        self.assertEqual(relation['jira_source_url'], 'https://jira.example.test/browse/OLD-2')
+
+    def test_code_urls_accept_only_https_pr_and_mr_links(self):
+        from work_links import code_urls
+        text = ('See https://GitHub.com/Org/Repo/pull/12/files, https://gitlab.example.test/a/b/-/merge_requests/3. '
+                'http://github.com/org/repo/pull/1 https://user@github.com/org/repo/pull/2 '
+                'https://github.com/org/../pull/3 https://github.com/org/repo/pull/4x '
+                'https://github.com:99999/org/repo/pull/5 https://gitlab.example.test/a/~b/-/merge_requests/6 '
+                'https://other.example/org/repo/pull/7')
+        self.assertEqual([(provider, url) for provider, url, _ in code_urls(text, 'github.com')], [
+            ('github', 'https://github.com/Org/Repo/pull/12'),
+            ('gitlab', 'https://gitlab.example.test/a/b/-/merge_requests/3')])
+        self.assertEqual([provider for provider, _, _ in code_urls(text)], ['gitlab'])
+
+    def test_code_urls_edges_are_pinned(self):
+        from work_links import code_urls, confirmed_keys, discovery_keys, jira_strings
+        def found(text):
+            return [url for _, url, _ in code_urls(text, 'github.com')]
+        self.assertEqual(found('https://github.com/o/r/pull/8: merged'), ['https://github.com/o/r/pull/8'])
+        self.assertEqual(found('https://github.com/o/r/pull/9\\nhttps://github.com/o/r/pull/10'),
+                         ['https://github.com/o/r/pull/9', 'https://github.com/o/r/pull/10'])
+        wiki = [text for text, _ in jira_strings('[https://github.com/o/r/pull/11|label]')]
+        self.assertEqual(found(wiki[0]), ['https://github.com/o/r/pull/11'])
+        for rejected in ('https://github.com/./repo/pull/3', 'https://github.com/o/r/pull/012',
+                         'https://gitlab.example.test/a/b/-/merge_requests/012',
+                         'https://gitlab.example.test/a/b/-/merge_requests/3/diffs',
+                         'https://github.com/o%20x/r/pull/5', 'https://gitlab.example.test/a/b/merge_requests/3',
+                         'https://gitlab.example.test/a/-/merge_requests/3',
+                         'https://bad_host.test/a/b/-/merge_requests/3'):
+            with self.subTest(rejected=rejected):
+                self.assertEqual(found(rejected), [])
+        self.assertEqual(found('https://GitLab.Example.test/a/b/-/merge_requests/3'),
+                         ['https://gitlab.example.test/a/b/-/merge_requests/3'])
+        self.assertEqual(found('see [https://github.com/o/r/pull/7]'), ['https://github.com/o/r/pull/7'])
+        for keys in (confirmed_keys, discovery_keys):
+            for url in ('https://jira.example.test/browse/FOO-1/x', 'https://jira.example.test/FOO-1'):
+                self.assertEqual(keys(url, 'jira.example.test'), set())
+
+    def test_jira_strings_mark_restricted_objects_and_split_wiki_links(self):
+        from work_links import jira_strings
+        value = {'a': '[label|https://x.test/p]', 'restricted': {'visibility': {'type': 'group'}, 'body': 'v'},
+                 'issue': {'fields': {'security': {'id': '1'}, 'summary': 's'}},
+                 'labelled': {'labels': ['CVE-2026-1'], 'text': 'l'}}
+        for labels in (['Security-Embargo'], ['cve-2026-1']):
+            with self.subTest(labels=labels):
+                self.assertEqual(list(jira_strings({'labels': labels, 'text': 't'})), [(labels[0], True), ('t', True)])
+        url = 'https://github.com/o/r/pull/1'
+        self.assertIn((url, True), list(jira_strings({'fields': {'security': {'id': '1'}},
+                                                      'renderedFields': {'description': url}})))
+        self.assertEqual(list(jira_strings(value)), [
+            ('[label https://x.test/p]', False), ('group', True), ('v', True), ('1', True), ('s', True),
+            ('CVE-2026-1', True), ('l', True)])
 
     def test_explicit_native_jira_authority_overrides_non_ticket_prefix_guess(self):
         data = self.capture()
