@@ -210,7 +210,7 @@ def collect_gitlab_refs(branches, repositories, warn):
                 seen.add((url, row['hash']))
     result['status'] = 'ok' if requested and complete == requested and not result['failures'] else 'partial'
     if result['status'] == 'partial':
-        warn('GitLab MR refs: some configured project advertisements remain incomplete; retained native head matches.')
+        warn('GitLab MR refs: could not read some projects; some branches may be missing their MR links.')
     return result
 
 

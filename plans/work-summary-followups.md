@@ -28,7 +28,7 @@ captures; none should change the digest unless stated. Verify every change by di
    Decide whether `gitlab_sources.py` (MR head probe, 0 unique MRs measured) stays.
 7. **Dead code:** done, except: consider replacing the no-analysis fallback renderer
    with the digest.
-8. **Wording:** replace "native" in user-visible warnings with plain language.
+8. **Wording:** done.
 9. **Tests:** one shared capture builder in `tests/`; collapse scanner tests into one
    table-driven test.
 

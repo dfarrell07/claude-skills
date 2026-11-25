@@ -172,7 +172,7 @@ class GithubSourcesTest(unittest.TestCase):
         self.assertEqual(len(client.search('query', 'roles', 'prs')), 1000)
         self.assertLessEqual(len(client.calls), 128)
         self.assertEqual(client.coverage['roles']['status'], 'partial')
-        self.assertTrue(any('1,000-result limit' in warning for warning in client.warnings))
+        self.assertTrue(any('split search could not be finished' in warning for warning in client.warnings))
 
     def test_search_oversized_page_is_not_marked_complete(self):
         client = self.client(lambda args: {'total_count': 101, 'incomplete_results': False,

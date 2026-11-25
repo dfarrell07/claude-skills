@@ -372,7 +372,8 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
     # Private tickets are never publicly readable; only a public ticket whose history
     # could not be fully read is a gap worth reporting.
     if any(record['identity'] is not None and record['status'] != 'ok' for record in records):
-        warn('Jira anonymous history: some public-visible streams remain incomplete; authenticated history coverage stays separate.')
+        warn("Jira public history: some public tickets' change history could not be fully read; your status and "
+             "field changes on them may be missing.")
     return summary
 
 

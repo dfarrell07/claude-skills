@@ -76,8 +76,8 @@ def _changelog_coverage(result, warn):
     # acli detail reads never include changelogs, so "none captured" is a fixed property of
     # the reader, recorded above, not a per-run gap. Warn when a changelog was partial.
     if incomplete or missing and captured:
-        message = ("Native Jira detail responses omit or truncate changelogs; complete field history requires "
-                   "an authenticated changelog REST reader. Deleted comments cannot be reconstructed from present comments.")
+        message = ("Some tickets' change history came back incomplete; the report does not use it to credit "
+                   "field changes. Deleted comments cannot be recovered.")
         result["metadata"]["status"] = "partial"
         if message not in result["metadata"]["warnings"]:
             result["metadata"]["warnings"].append(message)
@@ -254,7 +254,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             item["detail_status"] = "failed"
             item["detail_error"] = _failure(error)
             metadata["coverage"]["details"]["status"] = "partial"
-            gap("One selected Jira detail is inaccessible or malformed; its inventory lead was retained.")
+            gap("One ticket's details could not be read; the ticket is still listed.")
             continue
         native = fields.get("comment")
         comments, complete, restricted_comments = {}, False, set()
@@ -291,7 +291,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                 complete = complete and len(comments) == native["total"]
                 require(complete, "Incomplete comment pagination")
         except ERRORS:
-            gap("One Jira comment capture is missing or incompletely paginated; available native comments were retained.")
+            gap("One ticket's comments could not all be read; the comments that were read are kept.")
         native_fidelity = True
         native_gaps = []
         for comment in comments.values():
@@ -360,7 +360,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
         else:
             item.pop("comment_native_gaps", None)
         if not native_fidelity:
-            gap("One Jira comment stream lacks native actor identities or timestamps; those comments cannot prove exact-window activity.")
+            gap("One ticket has comments missing an author, editor, body or valid timestamp; some of that comment activity may not be credited to you.")
         sources = [("description", item["url"], fields.get("description"), item["sensitive"]),
                    ("issue_link", item["url"], fields.get("issuelinks"), item["sensitive"])]
         sources += [("comment", item["url"] + "?focusedCommentId=" + quote(comment["id"], safe=""),
@@ -449,7 +449,7 @@ def collect_jira(start, end, warn):
                 before = count(query)
             except ERRORS:
                 coverage["status"] = "partial"
-                gap(f"{role} count lookup failed; pagination completeness is unverified.")
+                gap(f"{role} count lookup failed; some results may be missing.")
         raw, rows = "", []
         try:
             raw = cli("workitem", "search", "--jql", query, "--fields", SEARCH_FIELDS, "--json", "--paginate")
@@ -489,7 +489,7 @@ def collect_jira(start, end, warn):
             coverage.update(count_before=before, count_after=after)
             if before is not None and after is not None and not (before == after == len(found)):
                 coverage["status"] = "partial"
-                gap(f"{role} counts changed or disagree with distinct captured issues.")
+                gap(f"{role}: Jira's ticket count changed or did not match the tickets read; some results may be missing.")
         coverage["returned_count"] = len(found)
         return found
 
@@ -511,7 +511,7 @@ def collect_jira(start, end, warn):
         metadata["identity_verified"] = True
         metadata["identity_basis"] = "complete currentUser assigned native assignees; visible emails matched auth; not /myself"
     else:
-        gap("Native Jira account identity could not be corroborated; exact actor attribution is unavailable.")
+        gap("Your Jira account ID could not be confirmed, so your Jira comments and field changes are not credited to you; matching tickets are still listed.")
 
     queries = [
         ("updated_by", f"issuekey IN updatedBy({_quoted(user)}, {_quoted(since)}, {_quoted(until)}) ORDER BY key"),
@@ -564,7 +564,7 @@ def add_referenced_jira(result, keys, start, end, warn):
             requested.add(key)
         else:
             coverage["status"] = "partial"
-            gap("One captured issue-key candidate has invalid syntax; no issue was invented.")
+            gap("One possible key found in your work is not a valid key; it was skipped.")
     requested = sorted(requested)
     for key in requested:
         if key not in coverage["requested_keys"]:
@@ -573,7 +573,7 @@ def add_referenced_jira(result, keys, start, end, warn):
         return result
     if metadata["status"] == "unavailable":
         coverage["status"] = "partial"
-        gap("Captured issue-key candidates could not be checked because Jira is unavailable.")
+        gap("Keys found in your work could not be checked because Jira is unavailable.")
         return result
     try:
         site, user = _auth_context(command(["acli", "jira", "auth", "status"], stdin=""))

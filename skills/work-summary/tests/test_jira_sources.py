@@ -385,7 +385,7 @@ else:
         self.assertEqual(result["issues"][0]["detail_status"], "failed")
         self.assertTrue(result["issues"][0]["sensitive"])
         self.assertEqual(result["activity"], [])
-        self.assertTrue(any("inventory lead" in warning for warning in self.warnings))
+        self.assertTrue(any("details could not be read" in warning for warning in self.warnings))
 
     def test_activity_is_exact_inclusive_utc_window_and_requires_native_actor(self):
         comments = [comment("start", created="2026-01-08T07:00:00-05:00"),
@@ -467,7 +467,7 @@ else:
         coverage = result["issues"][0]["comment_coverage"]
         self.assertTrue(coverage["complete"])
         self.assertFalse(coverage["native_fidelity"])
-        self.assertTrue(any("cannot prove" in warning for warning in self.warnings))
+        self.assertTrue(any("may not be credited" in warning for warning in self.warnings))
 
     def test_native_suffix_page_merges_projected_prefix_without_inventing_activity(self):
         suffix = comment("c2", body="Native https://github.com/org/repo/pull/2",
@@ -526,7 +526,7 @@ else:
         self.assertEqual(item["comment_coverage"]["captured_count"], 1)
         self.assertFalse(item["comment_coverage"]["complete"])
         self.assertEqual(result["metadata"]["status"], "partial")
-        self.assertTrue(any("available native comments were retained" in warning for warning in self.warnings))
+        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
 
     def test_native_suffix_identity_drift_retains_union_without_claiming_completeness(self):
         suffix = comment("retained", body="Retain https://github.com/org/repo/pull/1")
@@ -545,7 +545,7 @@ else:
         self.assertEqual(item["comment_coverage"], {"complete": False, "native_fidelity": True,
                                                    "captured_count": 3, "total": 2})
         self.assertEqual(result["metadata"]["status"], "partial")
-        self.assertTrue(any("available native comments were retained" in warning for warning in self.warnings))
+        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
 
     def test_duplicate_or_changed_comment_pages_keep_available_native_activity(self):
         first = comment()
