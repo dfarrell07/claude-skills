@@ -126,13 +126,12 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         # Only active tickets: all-time role inventories are context, and private tickets
         # are never publicly readable.
         jira['metadata']['public_history'] = collect_public_history(
-            {'metadata': jira['metadata'], 'issues': tickets}, once, reuse=True, github_host=host)
+            {'metadata': jira['metadata'], 'issues': tickets}, once, reuse=True)
 
     def no_references():
         # Expansion only adds counterparts and history; drop its partial results.
         for issue in jira.get('issues', []):
             issue.pop('public_history', None)
-            issue.pop('history_review_links', None)
         jira.get('metadata', {}).pop('public_history', None)
         return collect_gitlab([], warn), {'status': 'failed'}
 

@@ -8,9 +8,8 @@ captures; none should change the digest unless stated. Verify every change by di
 ## Simplification (about −750 script and −900 test lines)
 
 1. **Jira comments:** done. Comment edits are no longer credited anywhere.
-2. **Jira public history:** keep `public_field_events`; remove identity requests,
-   `inspect_pages`, `native_bases` and `history_review_links`; read the changelog by
-   numeric issue ID. Optionally show field names in the digest ("status→Closed").
+2. **Jira public history:** done, except: optionally show field names in the digest
+   ("status→Closed").
 3. **Contextual links:** remove `contextual_jira_links`, `local_context_links`,
    `native_https_urls` and the "state is unverified for contextual links" notes
    (one changed digest line on a real quarter).

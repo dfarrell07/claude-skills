@@ -1,4 +1,9 @@
-"""Supplement authenticated Jira evidence with separately scoped anonymous history."""
+"""Field changes on publicly visible Jira tickets, read anonymously.
+
+acli exposes no changelog. Jira serves a public ticket's changelog without login, by the
+numeric issue ID the authenticated read returned. A private ticket answers 404 (401 or 403
+where the site allows no anonymous reads), which is expected; any other failure is a gap.
+"""
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -6,25 +11,17 @@ import re
 import ssl
 from threading import Lock
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from evidence import HOST, decode_json, integer, require, timestamp
-from jira_sources import BACKEND, KEY
 
 
-SCOPE = 'anonymous_visible_history'
 PAGE_SIZE = 100
 MAX_PAGES = 1000
 MAX_BODY = 16 * 1024 * 1024
 POSITIVE_ID = re.compile(r'[1-9][0-9]*\Z')
-SAFE_HEADERS = {'content-type', 'date', 'location', 'link', 'retry-after',
-                'x-page', 'x-next-page', 'x-total', 'x-total-pages'}
-HISTORY_URL = re.compile(r'https?://[^\s<>"\[\]()|]+')
-
-
-def safe_headers(headers):
-    return {key.lower(): value for key, value in headers.items() if key.lower() in SAFE_HEADERS}
+NOT_PUBLIC = {401, 403, 404}  # private ticket, or a site that allows no anonymous reads
 
 
 class PublicReadError(Exception):
@@ -43,10 +40,10 @@ class SameOriginRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def read_json(url, receipt=None):
+def read_json(url):
     """Anonymous, verified-TLS GET; no cookie jar, netrc, or auth handlers."""
     request = Request(url, headers={'Accept': 'application/json', 'User-Agent': 'work-summary-history/1'}, method='GET')
-    record = {'url': url, 'status': None, 'headers': {}, 'body': ''}
+    status = None
     try:
         context = ssl.create_default_context()
         # Some Python distributions use a separate CA store from the host OS.
@@ -55,197 +52,33 @@ def read_json(url, receipt=None):
                 context.load_verify_locations(cafile=bundle)
         opener = build_opener(SameOriginRedirect(), HTTPSHandler(context=context))
         with opener.open(request, timeout=10) as response:
-            record['status'] = response.status
-            record['headers'] = safe_headers(response.headers)
-            record['final_url'] = response.geturl() if callable(getattr(response, 'geturl', None)) else url
+            status = response.status
             raw = response.read(MAX_BODY + 1)
             if len(raw) > MAX_BODY:
-                raise PublicReadError('response_size_limit', response.status)
-            record['body'] = raw.decode('utf-8')
+                raise PublicReadError('response_size_limit', status)
+            body = raw.decode('utf-8')
     except HTTPError as error:
-        record.update(status=error.code, headers=safe_headers(error.headers), final_url=error.geturl(),
-                      body=error.read(MAX_BODY).decode('utf-8', errors='replace'), error='http_error')
-        if receipt:
-            receipt(record)
         raise PublicReadError('http_error', error.code) from error
     except (OSError, URLError, UnicodeError, PublicReadError) as error:
-        reason = error.reason if isinstance(error, PublicReadError) else 'transport_error'
-        record['error'] = reason
-        if receipt:
-            receipt(record)
-        raise PublicReadError(reason, record['status']) from error
-    if receipt:
-        receipt(record)
+        raise PublicReadError(error.reason if isinstance(error, PublicReadError) else 'transport_error',
+                              status) from error
     try:
-        value = decode_json(record['body'])
+        value = decode_json(body)
         require(isinstance(value, dict), 'Invalid public JSON object')
         return value
     except (ValueError, TypeError) as error:
-        raise PublicReadError('invalid_json', record['status']) from error
+        raise PublicReadError('invalid_json', status) from error
 
 
-def native_basis(issue, site):
-    bases = native_bases(issue, site)
-    require(bool(bases), 'missing_authenticated_issue_identity')
-    return bases[0]
-
-
-def native_bases(issue, site):
-    """Every authenticated identity for an issue, detail first.
-
-    A ticket read only through search can gain a detail read later in the same
-    run; public history bound to its search identity stays valid.
-    """
-    require(isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold(), 'missing_canonical_site')
-    require(isinstance(issue.get('key'), str) and KEY.fullmatch(issue['key'])
-            and issue.get('url') == f"https://{site}/browse/{issue['key']}", 'invalid_authenticated_issue')
-    bases = []
+def issue_id(issue):
+    """The numeric ID the authenticated detail or search read returned for this key."""
     for name in ('detail', 'source'):
         value = issue.get(name)
-        if not isinstance(value, dict) or value.get('key') != issue['key']:
-            continue
-        issue_id = value.get('id')
-        if isinstance(issue_id, bool) or not POSITIVE_ID.fullmatch(str(issue_id)):
-            continue
-        if value.get('self') is not None:
-            require(isinstance(value['self'], str), 'invalid_authenticated_issue_route')
-            parts = urlsplit(value['self'])
-            backend = site.endswith('.atlassian.net') and BACKEND.fullmatch(parts.hostname or '')
-            require(parts.scheme == 'https' and parts.username is None and parts.password is None
-                    and not parts.query and not parts.fragment and parts.port in {None, 443}
-                    and (parts.netloc.casefold() == site or backend)
-                    and re.fullmatch(r'/rest/api/(?:2|3)/issue/' + re.escape(str(issue_id)), parts.path),
-                    'invalid_authenticated_issue_route')
-        bases.append((name, str(issue_id)))
-    return bases
-
-
-def public_identity(identity, issue, site, issue_id):
-    require(isinstance(identity, dict) and not isinstance(identity.get('id'), bool)
-            and str(identity.get('id')) == issue_id and identity.get('key') == issue['key']
-            and identity.get('self') == f'https://{site}/rest/api/3/issue/{issue_id}'
-            and isinstance(identity.get('fields'), dict) and isinstance(identity['fields'].get('summary'), str),
-            'public_identity_mismatch')
-
-
-def page_issue_route(page, issue, site, issue_id):
-    require(isinstance(page, dict) and isinstance(page.get('self'), str), 'invalid_history_page_route')
-    parts = urlsplit(page['self'])
-    require(parts.scheme == 'https' and parts.netloc.casefold() == site and parts.username is None
-            and parts.password is None and not parts.fragment
-            and parts.path in {f'/rest/api/3/issue/{issue_id}/changelog',
-                               f"/rest/api/3/issue/{issue['key']}/changelog"}
-            and set(parse_qs(parts.query)) <= {'maxResults', 'startAt'}, 'invalid_history_page_route')
-
-
-def inspect_pages(pages, requests, issue, site, issue_id):
-    """Describe malformed native rows without dropping independently readable pages."""
-    errors, seen, offset, total, ended = [], set(), 0, None, False
-    require(len(pages) == len(requests), 'Public history request/page mismatch')
-    for index, (page, request) in enumerate(zip(pages, requests)):
-        page_issue_route(page, issue, site, issue_id)
-        expected_url = f'https://{site}/rest/api/3/issue/{issue_id}/changelog?' + urlencode(
-            {'maxResults': PAGE_SIZE, 'startAt': offset})
-        if request != expected_url or ended:
-            errors.append({'stage': 'pagination', 'reason': 'request_offset_mismatch', 'page': index})
-        valid_shape = (integer(page.get('startAt')) and integer(page.get('maxResults'), 1)
-                       and page['maxResults'] <= PAGE_SIZE and integer(page.get('total'))
-                       and type(page.get('isLast')) is bool and isinstance(page.get('values'), list)
-                       and len(page['values']) <= page['maxResults'])
-        if not valid_shape:
-            errors.append({'stage': 'pagination', 'reason': 'invalid_page_shape', 'page': index})
-            continue
-        query = parse_qs(urlsplit(page['self']).query)
-        if (page['startAt'] != offset or query.get('startAt') != [str(page['startAt'])]
-                or query.get('maxResults') not in ([str(page['maxResults'])], [str(PAGE_SIZE)])):
-            errors.append({'stage': 'pagination', 'reason': 'page_offset_mismatch', 'page': index})
-        if total is None:
-            total = page['total']
-        elif page['total'] != total:
-            errors.append({'stage': 'pagination', 'reason': 'total_changed', 'page': index})
-        span = page['startAt'] + len(page['values'])
-        if span > page['total']:
-            errors.append({'stage': 'pagination', 'reason': 'page_span_exceeds_total', 'page': index})
-        if not page['isLast'] and len(page['values']) < page['maxResults']:
-            errors.append({'stage': 'pagination', 'reason': 'nonterminal_short_page', 'page': index})
-        if page['isLast'] != (span == page['total']):
-            errors.append({'stage': 'pagination', 'reason': 'terminal_count_mismatch', 'page': index})
-        for row_index, row in enumerate(page['values']):
-            try:
-                require(isinstance(row, dict) and not isinstance(row.get('id'), bool)
-                        and POSITIVE_ID.fullmatch(str(row.get('id'))) and isinstance(row.get('items'), list)
-                        and all(isinstance(item, dict) for item in row['items'])
-                        and (row.get('author') is None or isinstance(row['author'], dict)), 'invalid_history_row')
-                timestamp(row.get('created'))
-                identity = str(row['id'])
-                if identity in seen:
-                    errors.append({'stage': 'history', 'reason': 'duplicate_history_id', 'page': index, 'row': row_index})
-                seen.add(identity)
-            except (ValueError, TypeError):
-                errors.append({'stage': 'history', 'reason': 'invalid_history_row', 'page': index, 'row': row_index})
-        offset = page['startAt'] + page['maxResults']
-        ended = page['isLast']
-    if pages and ended and len(seen) != total:
-        errors.append({'stage': 'pagination', 'reason': 'total_row_count_mismatch'})
-    return errors, bool(pages and ended and not errors), len(seen)
-
-
-def public_history_review_links(issue, github_host='github.com'):
-    """Historical read targets only: a removed reference is not a current relation."""
-    record = issue.get('public_history')
-    if record is None or record.get('identity') is None:
-        return []
-    result, seen = [], set()
-    for page in record['pages']:
-        values = page.get('values')
-        if not isinstance(values, list):
-            continue
-        for history in values:
-            try:
-                require(isinstance(history, dict) and not isinstance(history.get('id'), bool)
-                        and POSITIVE_ID.fullmatch(str(history.get('id')))
-                        and isinstance(history.get('items'), list)
-                        and all(isinstance(item, dict) for item in history['items'])
-                        and (history.get('author') is None or isinstance(history['author'], dict)),
-                        'invalid_history_row')
-                timestamp(history.get('created'))
-            except (ValueError, TypeError):
-                continue
-            for index, item in enumerate(history['items']):
-                if not isinstance(item.get('field'), str):
-                    continue
-                for side in ('fromString', 'toString'):
-                    text = item.get(side)
-                    if not isinstance(text, str):
-                        continue
-                    for match in HISTORY_URL.finditer(text):
-                        try:
-                            parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
-                            require(parts.scheme == 'https' and HOST.fullmatch(parts.netloc)
-                                    and parts.username is None and parts.password is None
-                                    and (parts.port is None or 1 <= parts.port <= 65535)
-                                    and all(part not in {'.', '..'} for part in parts.path.split('/')),
-                                    'unsafe_history_review_url')
-                        except ValueError:
-                            continue
-                        if (parts.netloc.casefold() == github_host.casefold() and re.fullmatch(
-                                r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)):
-                            provider = 'github'
-                        elif re.fullmatch(r'/(?:[A-Za-z0-9_.-]+/){2,}-/merge_requests/[1-9][0-9]*', parts.path):
-                            provider = 'gitlab'
-                        else:
-                            continue
-                        url = 'https://' + parts.netloc.lower() + parts.path
-                        key = str(history['id']), index, side, url
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        result.append({'url': url, 'source_url': url, 'provider': provider,
-                                       'proof': 'public_changelog', 'evidence_url': issue['url'],
-                                       'history_id': str(history['id']), 'history_created': history['created'],
-                                       'history_field': item['field'], 'history_item_index': index,
-                                       'history_side': side, 'sensitive': bool(issue.get('sensitive', True))})
-    return result
+        if isinstance(value, dict) and value.get('key') == issue.get('key'):
+            ident = value.get('id')
+            if not isinstance(ident, bool) and POSITIVE_ID.fullmatch(str(ident)):
+                return str(ident)
+    return None
 
 
 def public_field_events(jira, start, end):
@@ -258,9 +91,9 @@ def public_field_events(jira, start, end):
     seen = set()
     for issue in jira.get('issues', []):
         record = issue.get('public_history')
-        if not isinstance(record, dict) or record.get('identity') is None:
+        if not isinstance(record, dict):
             continue
-        for page in record['pages']:
+        for page in record.get('pages', []):
             values = page.get('values')
             if not isinstance(values, list):
                 continue
@@ -286,8 +119,8 @@ def public_field_events(jira, start, end):
                        'actor_account_id': principal}
 
 
-def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reuse=False, github_host='github.com'):
-    """Preserve public history separately; never replace authenticated details/comments."""
+def collect_public_history(jira, warn, workers=4, reader=None, reuse=False):
+    """Attach each ticket's public changelog pages; never replace authenticated evidence."""
     site = jira['metadata'].get('site')
     valid_site = isinstance(site, str) and HOST.fullmatch(site) and site == site.casefold()
     reader = reader or read_json
@@ -298,7 +131,7 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
             if transport['failures'] >= 3 and not transport['responses']:
                 raise PublicReadError('shared_transport_unavailable')
         try:
-            value = reader(url, receipt=receipt)
+            value = reader(url)
         except PublicReadError as error:
             with lock:
                 if error.reason == 'transport_error':
@@ -311,45 +144,34 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
         return value
 
     def collect(issue):
-        record = {'scope': SCOPE, 'status': 'unavailable', 'identity_basis': None, 'identity_url': None,
-                  'identity': None, 'pages': [], 'page_requests': [], 'errors': [],
-                  'authenticated_history': 'unverified'}
-        stage, request = 'identity', None
+        record = {'status': 'unavailable', 'pages': [], 'errors': []}
+        request = None
         try:
             require(valid_site, 'missing_canonical_site')
-            basis, issue_id = native_basis(issue, site)
-            record['identity_basis'] = basis
-            request = f'https://{site}/rest/api/3/issue/{issue_id}?fields=summary'
-            record['identity_url'] = request
-            identity = read(request)
-            public_identity(identity, issue, site, issue_id)
-            record['identity'], record['status'] = identity, 'partial'
-            stage, offset = 'page', 0
+            ident = issue_id(issue)
+            require(ident is not None, 'missing_issue_id')
+            offset = 0
             for _ in range(MAX_PAGES):
-                request = f'https://{site}/rest/api/3/issue/{issue_id}/changelog?' + urlencode(
+                request = f'https://{site}/rest/api/3/issue/{ident}/changelog?' + urlencode(
                     {'maxResults': PAGE_SIZE, 'startAt': offset})
                 page = read(request)
-                page_issue_route(page, issue, site, issue_id)
+                record['status'] = 'partial'  # Jira answered, so the ticket is public
+                require(isinstance(page, dict) and integer(page.get('startAt')) and page['startAt'] == offset
+                        and integer(page.get('maxResults'), 1) and type(page.get('isLast')) is bool
+                        and isinstance(page.get('values'), list), 'invalid_history_page')
                 record['pages'].append(page)
-                record['page_requests'].append(request)
-                if not (integer(page.get('startAt')) and integer(page.get('maxResults'), 1)
-                        and page['maxResults'] <= PAGE_SIZE and type(page.get('isLast')) is bool):
+                if page['isLast']:
+                    record['status'] = 'ok'
                     break
-                if page['isLast'] or page['startAt'] != offset:
-                    break
-                offset = page['startAt'] + page['maxResults']
-            errors, complete, _ = inspect_pages(record['pages'], record['page_requests'], issue, site, issue_id)
-            record['errors'].extend(errors)
-            if complete:
-                record['status'] = 'ok'
-            elif not errors:
-                record['errors'].append({'stage': 'pagination', 'reason': 'page_limit_reached'})
+                offset += page['maxResults']
+            else:
+                record['errors'].append({'reason': 'page_limit_reached'})
         except PublicReadError as error:
-            record['errors'].append({'stage': stage, 'reason': error.reason, 'http_status': error.status,
-                                     'request_url': request})
-        except (ValueError, TypeError, KeyError, OSError) as error:
-            record['errors'].append({'stage': stage, 'reason': str(error) if type(error) is ValueError else type(error).__name__,
-                                     'request_url': request})
+            record['errors'].append({'reason': error.reason, 'http_status': error.status, 'request_url': request})
+            if record['status'] == 'unavailable' and error.status not in NOT_PUBLIC:
+                record['status'] = 'failed'  # not known to be private: rate limit, outage, bad response
+        except (ValueError, TypeError) as error:
+            record['errors'].append({'reason': str(error), 'request_url': request})
         return record
 
     issues = jira.get('issues', [])
@@ -359,21 +181,13 @@ def collect_public_history(jira, warn, workers=4, receipt=None, reader=None, reu
     for issue, record in zip(pending, collected):
         issue['public_history'] = record
     records = [issue['public_history'] for issue in issues]
-    for issue in issues:
-        issue['history_review_links'] = public_history_review_links(issue, github_host)
     complete = sum(record['status'] == 'ok' for record in records)
     status = ('unavailable' if not valid_site else 'ok' if complete == len(issues) else
-              'unavailable' if all(record['status'] == 'unavailable' for record in records) else 'partial')
-    summary = {'scope': SCOPE, 'status': status,
-               'issues_attempted': len(issues), 'issues_complete': complete,
-               'history_rows': sum(len(page.get('values', [])) for record in records for page in record['pages']
-                                   if isinstance(page.get('values'), list)),
-               'authenticated_history': 'unverified'}
-    # Private tickets are never publicly readable; only a public ticket whose history
-    # could not be fully read is a gap worth reporting.
-    if any(record['identity'] is not None and record['status'] != 'ok' for record in records):
-        warn("Jira public history: some public tickets' change history could not be fully read; your status and "
-             "field changes on them may be missing.")
+              'partial' if any(record['pages'] for record in records) else 'unavailable')
+    summary = {'status': status, 'issues_attempted': len(issues), 'issues_complete': complete,
+               'history_rows': sum(len(page['values']) for record in records for page in record['pages'])}
+    # A private ticket's 404 is expected; any other failure may hide your field changes.
+    if any(record['status'] in ('partial', 'failed') for record in records):
+        warn("Jira public history: some tickets' change history could not be fully read; your status and "
+             "field changes on public tickets may be missing.")
     return summary
-
-

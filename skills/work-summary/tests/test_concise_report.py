@@ -31,11 +31,9 @@ class ConciseReportTest(unittest.TestCase):
                 'status_category': 'indeterminate', 'source': native}
         jira = {'metadata': {'status': 'ok', 'site': site, 'account_id': 'native-person',
                             'identity_verified': True}, 'issues': [item], 'activity': []}
-        def read(url, receipt=None):
-            if '?fields=summary' in url:
-                return native
-            return {'self': f'https://{site}/rest/api/3/issue/123/changelog?maxResults=100&startAt=0',
-                    'startAt': 0, 'maxResults': 100, 'isLast': True, 'total': 1, 'values': [{
+        def read(url):
+            self.assertEqual(url, f'https://{site}/rest/api/3/issue/123/changelog?maxResults=100&startAt=0')
+            return {'startAt': 0, 'maxResults': 100, 'isLast': True, 'total': 1, 'values': [{
                         'id': '77', 'created': '2026-01-12T12:00:00Z',
                         'author': {'accountId': 'native-person'},
                         'items': [{'field': 'status', 'fromString': 'New', 'toString': 'Active'}]}]}
