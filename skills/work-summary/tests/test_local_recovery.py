@@ -36,10 +36,10 @@ class LocalRecoveryTest(unittest.TestCase):
         return subprocess.run(['git', '--no-optional-locks', '-C', str(repo), *args],
                               env=self.env, check=True, capture_output=True, text=True).stdout.strip()
 
-    def stale(self):
+    def stale(self, ref_format=None):
         repo, tree = self.root / 'repo', self.root / 'gone'
         repo.mkdir()
-        self.git(repo, 'init', '-q', '--initial-branch=main')
+        self.git(repo, 'init', '-q', '--initial-branch=main', *(['--ref-format=' + ref_format] if ref_format else []))
         self.git(repo, 'config', 'user.name', 'Fixture Author')
         self.git(repo, 'config', 'user.email', 'fixture@example.test')
         self.git(repo, 'commit', '--allow-empty', '-qm', 'Shared history')
@@ -64,16 +64,10 @@ class LocalRecoveryTest(unittest.TestCase):
         data, warnings = self.capture(repo)
         self.assertEqual(warnings, [])
         self.assertFalse(tree.exists())
-        recovery = next(row for row in data['metadata']['repositories'][0]['worktrees']
-                        if row['path'] == str(tree))['recovery']
-        self.assertEqual(recovery['status'], 'ok')
-        self.assertIn(former, recovery['reflog_heads'])
-        self.assertEqual(set(recovery['reflog_output'].splitlines()), set(recovery['reflog_heads']))
-        self.assertEqual(recovery['configured_author_email'], 'fixture@example.test')
+        record = next(row for row in data['metadata']['repositories'][0]['worktrees'] if row['path'] == str(tree))
+        self.assertIn(former, record['recovered_heads'])
         self.assertIn(former, data['metadata']['repositories'][0]['tips'])
-        snapshot = next(row for row in data['branches'] if row['hash'] == former)
-        self.assertIn('worktree-reflog:' + str(tree) + ':' + former, snapshot['refs'])
-        self.assertEqual(snapshot['author_email'], 'fixture@example.test')
+        self.assertIn(former, {row['hash'] for row in data['commits'][str(repo)]})
         self.assertEqual(before, {name: (admin / name).read_bytes() for name in before})
 
     def test_missing_reflog_object_retains_available_data_and_a_genuine_gap(self):
@@ -82,11 +76,10 @@ class LocalRecoveryTest(unittest.TestCase):
         data, warnings = self.capture(repo)
         record = next(row for row in data['metadata']['repositories'][0]['worktrees']
                       if row['path'] == str(tree))
-        self.assertEqual(record['recovery']['status'], 'partial')
-        self.assertIn(former, record['recovery']['reflog_heads'])
-        self.assertNotIn(former, record['recovery']['available_heads'])
+        self.assertNotIn(former, record['recovered_heads'])
+        self.assertTrue(record['recovered_heads'])
         self.assertEqual(data['metadata']['repositories'][0]['status'], 'ok')
-        self.assertTrue(any('admin data is incomplete' in warning for warning in warnings))
+        self.assertTrue(any('retained history is unavailable' in warning for warning in warnings))
 
     def test_missing_stale_head_does_not_drop_healthy_reflog_or_shared_history(self):
         repo, tree, former = self.stale()
@@ -94,46 +87,132 @@ class LocalRecoveryTest(unittest.TestCase):
         (admin / 'HEAD').write_text('f' * 40 + '\n')
         data, warnings = self.capture(repo)
         entry = data['metadata']['repositories'][0]
-        recovery = next(row for row in entry['worktrees'] if row['path'] == str(tree))['recovery']
+        record = next(row for row in entry['worktrees'] if row['path'] == str(tree))
         self.assertEqual(entry['status'], 'ok')
-        self.assertEqual(recovery['status'], 'partial')
-        self.assertIn(former, recovery['available_heads'])
+        self.assertIn(former, record['recovered_heads'])
         self.assertTrue(any(row['hash'] == former for row in data['commits'][str(repo)]))
-        self.assertTrue(any(row['hash'] == former for row in data['branches']))
         self.assertTrue(any('HEADs are unavailable' in warning for warning in warnings))
 
-    def test_malformed_native_tail_preserves_valid_reflog_rows_with_exact_parse_gap(self):
+    def test_malformed_reflog_lines_are_skipped_and_valid_rows_kept(self):
         repo, tree, former = self.stale()
         log = repo / '.git' / 'worktrees' / 'gone' / 'logs' / 'HEAD'
         with log.open('a') as stream:
             stream.write('malformed native tail\n')
-        expected_line = len(log.read_text().splitlines())
         data, warnings = self.capture(repo)
-        recovery = next(row for row in data['metadata']['repositories'][0]['worktrees']
-                        if row['path'] == str(tree))['recovery']
-        self.assertEqual(recovery['status'], 'partial')
-        self.assertEqual(recovery['reflog_parse_errors'], [
-            {'line': expected_line, 'reason': 'invalid_object_ids_or_record_shape'}])
-        self.assertTrue(recovery['reflog_file'].endswith('malformed native tail\n'))
-        self.assertIn(former, recovery['available_heads'])
+        record = next(row for row in data['metadata']['repositories'][0]['worktrees'] if row['path'] == str(tree))
+        self.assertIn(former, record['recovered_heads'])
         self.assertTrue(any(row['hash'] == former for row in data['commits'][str(repo)]))
-        self.assertTrue(warnings)
+        self.assertEqual(warnings, [])
 
-    def test_foreign_common_directory_cannot_supply_original_repository_identity(self):
+    def test_missing_reflog_is_a_gap(self):
         repo, tree, _ = self.stale()
+        (repo / '.git' / 'worktrees' / 'gone' / 'logs' / 'HEAD').unlink()
+        data, warnings = self.capture(repo)
+        record = next(row for row in data['metadata']['repositories'][0]['worktrees'] if row['path'] == str(tree))
+        self.assertEqual(record['recovered_heads'], [])
+        self.assertTrue(any('retained history is unavailable' in warning for warning in warnings))
+
+    def test_foreign_common_directory_adds_no_identity(self):
+        repo, tree, former = self.stale()
         foreign = self.root / 'foreign'
         shutil.copytree(repo, foreign)
         self.git(foreign, 'config', 'user.email', 'foreign@example.test')
         admin = repo / '.git' / 'worktrees' / 'gone'
         (admin / 'commondir').write_text(str(foreign / '.git') + '\n')
-        data, warnings = self.capture(repo)
+        data, _ = self.capture(repo)
         entry = data['metadata']['repositories'][0]
-        recovery = next(row for row in entry['worktrees'] if row['path'] == str(tree))['recovery']
-        self.assertEqual(recovery['status'], 'partial')
         self.assertNotIn('foreign@example.test', entry['identities'])
-        self.assertNotIn('configured_author_email', recovery)
-        self.assertEqual(recovery['common_dir'], str(foreign / '.git'))
+        record = next(row for row in entry['worktrees'] if row['path'] == str(tree))
+        self.assertIn(former, record['recovered_heads'])  # read from this repository's own objects
+
+    def admin(self, repo):
+        return repo / '.git' / 'worktrees' / 'gone'
+
+    def recovered(self, data, tree):
+        return next(row for row in data['metadata']['repositories'][0]['worktrees']
+                    if row['path'] == str(tree))['recovered_heads']
+
+    def reflog_line(self, old, new):
+        return f'{old} {new} Fixture Author <fixture@example.test> 1700000000 +0000\tentry\n'
+
+    def test_reftable_stale_worktree_reflog_is_read_through_git(self):
+        try:
+            repo, tree, former = self.stale('reftable')
+        except subprocess.CalledProcessError:
+            self.skipTest('Git cannot create reftable repositories')
+        self.assertFalse((self.admin(repo) / 'logs' / 'HEAD').exists())
+        data, warnings = self.capture(repo)
+        self.assertIn(former, self.recovered(data, tree))
+        self.assertIn(former, {row['hash'] for row in data['commits'][str(repo)]})
+        self.assertEqual(warnings, [])
+
+    def test_failed_reftable_reflog_read_is_a_gap(self):
+        try:
+            repo, tree, former = self.stale('reftable')
+        except subprocess.CalledProcessError:
+            self.skipTest('Git cannot create reftable repositories')
+        real = local_sources.git
+
+        def git(path, *args, **kwargs):
+            if 'reflog' in args:
+                raise subprocess.CalledProcessError(1, 'git reflog')
+            return real(path, *args, **kwargs)
+        with patch.object(local_sources, 'git', git):
+            _, warnings = self.capture(repo)
         self.assertTrue(warnings)
+
+    def test_lost_commit_named_only_as_old_or_only_as_new_hash_is_recovered(self):
+        repo, tree, former = self.stale()
+        initial = self.git(repo, 'rev-parse', 'main')
+        for line in (self.reflog_line(former, initial), self.reflog_line('0' * 40, former)):
+            with self.subTest(line=line):
+                (self.admin(repo) / 'logs' / 'HEAD').write_text(line)
+                data, _ = self.capture(repo)
+                self.assertIn(former, self.recovered(data, tree))
+                self.assertIn(former, {row['hash'] for row in data['commits'][str(repo)]})
+
+    def test_admin_head_missing_from_a_truncated_reflog_is_recovered(self):
+        repo, tree, former = self.stale()
+        initial = self.git(repo, 'rev-parse', 'main')
+        (self.admin(repo) / 'HEAD').write_text(former + '\n')
+        (self.admin(repo) / 'logs' / 'HEAD').write_text(self.reflog_line('0' * 40, initial))
+        data, warnings = self.capture(repo)
+        self.assertEqual(sorted(self.recovered(data, tree)), sorted({former, initial}))
+        self.assertEqual(warnings, [])
+
+    def test_empty_reflog_keeps_the_registered_head(self):
+        repo, tree, _ = self.stale()
+        initial = self.git(repo, 'rev-parse', 'main')
+        (self.admin(repo) / 'logs' / 'HEAD').write_text('')
+        data, warnings = self.capture(repo)
+        self.assertEqual(self.recovered(data, tree), [initial])
+        self.assertEqual(warnings, [])
+
+    def test_stale_worktree_recovers_only_its_own_reflog(self):
+        repo, tree, former = self.stale()
+        live = self.root / 'live'
+        self.git(repo, 'worktree', 'add', '--detach', str(live))
+        self.git(live, 'commit', '--allow-empty', '-qm', 'Live work')
+        unique = self.git(live, 'rev-parse', 'HEAD')
+        data, _ = self.capture(repo)
+        self.assertIn(former, self.recovered(data, tree))
+        self.assertNotIn(unique, self.recovered(data, tree))
+        live_record = next(row for row in data['metadata']['repositories'][0]['worktrees'] if row['path'] == str(live))
+        self.assertNotIn('recovered_heads', live_record)
+        self.assertIn(unique, {row['hash'] for row in data['commits'][str(repo)]})
+
+    def test_failed_ref_listing_keeps_a_live_detached_worktree_commit(self):
+        repo, tree, former = self.stale()
+        live = self.root / 'live'
+        self.git(repo, 'worktree', 'add', '--detach', str(live))
+        self.git(live, 'commit', '--allow-empty', '-qm', 'Live detached work')
+        unique = self.git(live, 'rev-parse', 'HEAD')
+        (self.admin(repo) / 'HEAD').write_text('f' * 40 + '\n')
+        data, warnings = self.capture(repo)
+        self.assertTrue(any('HEADs are unavailable' in warning for warning in warnings))
+        hashes = {row['hash'] for row in data['commits'][str(repo)]}
+        self.assertIn(unique, hashes)
+        self.assertIn(former, hashes)
 
     def test_configless_bare_repository_is_discovered(self):
         repo, _, former = self.stale()
@@ -147,6 +226,19 @@ class LocalRecoveryTest(unittest.TestCase):
         self.assertTrue(entry['bare'])
         self.assertEqual(entry['status'], 'ok')
 
+
+class SafeGitTest(unittest.TestCase):
+    def test_git_runs_without_prompts_lazy_fetches_protocols_or_inherited_repository(self):
+        self.assertEqual({key: evidence.GIT_ENV[key] for key in ('GIT_TERMINAL_PROMPT', 'GIT_NO_LAZY_FETCH',
+                                                                  'GIT_ALLOW_PROTOCOL')},
+                         {'GIT_TERMINAL_PROMPT': '0', 'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''})
+        for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+                    'GIT_ALTERNATE_OBJECT_DIRECTORIES'):
+            self.assertNotIn(key, evidence.GIT_ENV)
+        with patch.object(evidence, 'command', return_value='') as command:
+            evidence.git('/some/repo', 'status')
+        self.assertEqual(command.call_args.args[0], ['git', '--no-optional-locks', '-C', '/some/repo', 'status'])
+        self.assertIs(command.call_args.kwargs['env'], evidence.GIT_ENV)
 
 if __name__ == '__main__':
     unittest.main()

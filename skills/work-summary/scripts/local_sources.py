@@ -16,7 +16,6 @@ STATE_DIRS = {'.cache', '.local', '.config', '.ssh', '.gnupg', '.npm', '.cargo',
               '.android', '.gradle', '.m2', '.sdkman', '.vscode'}
 # Home-level application data (macOS Library and Trash) holds no clones and can prompt for access.
 HOME_STATE_DIRS = {'Library', '.Trash'}
-BACKUP = re.compile(r'(backup|(?:^|[/_-])bak\d*(?:$|[/_-])|archive|rescue|preserv|saved)', re.I)
 REF_FORMAT = '%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)'
 FULL_HASH = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
 
@@ -39,7 +38,7 @@ def remote_info(name, url, host):
             'kind': 'github' if hostname == host and project is not None and REPO.fullmatch(path) else 'other'}
 
 
-def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, limit=None, no_walk=False):
+def log_records(repo, tips, start=None, end=None, no_walk=False):
     if not tips:
         return []
     args = ['log', '--stdin', '--fixed-strings', '--no-use-mailmap', '--no-show-signature',
@@ -50,14 +49,7 @@ def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, lim
         args.append('--since-as-filter=' + iso(start))
     if end:
         args.append('--until=' + iso(end))
-    if emails:
-        args.extend('--author=<' + email + '>' for email in emails)
-    if limit:
-        args.append('--max-count=' + str(limit))
-    revisions = '\n'.join(tips) + '\n'
-    if exclude:
-        revisions += '^' + exclude + '\n'
-    raw = git(repo, *args, stdin=revisions)
+    raw = git(repo, *args, stdin='\n'.join(tips) + '\n')
     fields = raw.split('\0')
     require(fields.pop() == '' and len(fields) % 6 == 0, 'Malformed Git log output')
     result = []
@@ -70,95 +62,45 @@ def log_records(repo, tips, start=None, end=None, emails=None, exclude=None, lim
     return result
 
 
-def recover_stale_worktree(repo, common, record):
-    """Read retained admin data without repairing or pruning a missing worktree."""
-    recovery = {'status': 'partial', 'method': 'retained_worktree_admin', 'reflog_heads': [],
-                'available_heads': []}
+def stale_worktree_heads(repo, common, record):
+    """Commits a missing worktree's retained HEAD reflog names, read without repairing or pruning it.
+
+    Returns the available commits and whether every commit the reflog names is still present.
+    """
     try:
         for admin in (Path(common) / 'worktrees').iterdir():
-            if not admin.is_dir():
-                continue
             try:
-                gitdir = (admin / 'gitdir').read_text(encoding='utf-8')
+                gitdir = (admin / 'gitdir').read_text(encoding='utf-8').removesuffix('\n')
+                if Path(gitdir).resolve() != (Path(record['path']) / '.git').resolve():
+                    continue
             except OSError:
                 continue
-            if Path(gitdir.removesuffix('\n')).resolve() != (Path(record['path']) / '.git').resolve():
-                continue
-            recovery.update(admin_dir=str(admin), gitdir=gitdir)
-            options = ('--git-dir=' + str(admin),)
-            native_common = git(repo, *options, 'rev-parse', '--git-common-dir')
-            native_path = Path(native_common.removesuffix('\n'))
-            native_path = (native_path if native_path.is_absolute() else Path(repo) / native_path).resolve()
-            recovery.update(common_dir_output=native_common, common_dir=str(native_path))
-            require(native_path == Path(common).resolve(), 'Retained admin belongs to a different common repository')
-            errors = []
-            head = None
+            failed = False
             try:
-                head = git(repo, *options, 'rev-parse', '--verify', 'HEAD').removesuffix('\n')
-                require(HASH.fullmatch(head), 'Invalid retained worktree HEAD')
-                recovery['head'] = head
-            except (OSError, ValueError, subprocess.SubprocessError):
-                head = None
-                errors.append('head')
-            for key, variable in (('configured_author_email', 'user.email'), ('configured_author_name', 'user.name')):
-                try:
-                    value = git(repo, *options, 'config', '--get', variable).removesuffix('\n')
-                    require(value and '\n' not in value, 'Invalid retained worktree identity')
-                    recovery[key] = value
-                except subprocess.CalledProcessError as error:
-                    if error.returncode != 1:
-                        errors.append('identity:' + variable)
-                    recovery[key] = None
-                except (OSError, ValueError, subprocess.SubprocessError):
-                    errors.append('identity:' + variable)
-                    recovery[key] = None
-            args = (*options, 'reflog', 'show', '--no-use-mailmap', '--no-show-signature',
-                    '--encoding=UTF-8', '--no-color', '--format=%H', 'HEAD')
-            try:
-                raw = git(repo, *args)
-            except subprocess.CalledProcessError as error:
-                raw = error.stdout if isinstance(error.stdout, str) else ''
-                errors.append('reflog_command')
-            except (OSError, ValueError, subprocess.SubprocessError):
-                raw = ''
-                errors.append('reflog_command')
-            file_path = admin / 'logs' / 'HEAD'
-            try:
-                file_raw = file_path.read_text(encoding='utf-8')
+                lines = (admin / 'logs' / 'HEAD').read_text(encoding='utf-8').splitlines()
+                # Each reflog line starts "<old> <new> "; a malformed line names nothing.
+                named = {sha for line in lines for sha in line.split(' ', 2)[:2]
+                         if HASH.fullmatch(sha) and set(sha) != {'0'}}
             except FileNotFoundError:
-                file_raw = ''
-            except (OSError, ValueError):
-                file_raw = ''
-                errors.append('reflog_file')
-            file_heads = set()
-            parse_errors = []
-            for number, line in enumerate(file_raw.splitlines(), 1):
+                if not (admin / 'reftable').is_dir():
+                    return [], False  # a files-backend reflog that is gone
+                # A reftable repository keeps the reflog in admin/reftable; only Git reads it
+                # (and it omits entries whose objects are gone).
                 try:
-                    before, after, _ = line.split(' ', 2)
-                    require(HASH.fullmatch(before) and HASH.fullmatch(after), 'Invalid retained reflog record')
-                    file_heads.update(sha for sha in (before, after) if set(sha) != {'0'})
-                except ValueError:
-                    parse_errors.append({'line': number, 'reason': 'invalid_object_ids_or_record_shape'})
-            # `git reflog show` silently omits entries whose objects are gone.
-            # The retained native file preserves those identities and old OIDs.
-            if any(not HASH.fullmatch(sha) for sha in raw.splitlines()):
-                errors.append('reflog_output')
-            heads = sorted({sha for sha in raw.splitlines() if HASH.fullmatch(sha)} | file_heads)
-            recovery.update(reflog_heads=heads, reflog_output=raw, reflog_command=list(args),
-                            reflog_file=file_raw, reflog_file_path=str(file_path), reflog_parse_errors=parse_errors,
-                            errors=errors)
-            candidates = sorted(set(heads + ([head] if head else []) + ([record['head']] if record.get('head') else [])))
-            require(all(HASH.fullmatch(sha) for sha in candidates), 'Invalid registered HEAD')
+                    raw = git(repo, '--git-dir=' + str(admin), 'reflog', 'show', '--no-color', '--format=%H', 'HEAD')
+                except subprocess.SubprocessError:
+                    raw, failed = '', True
+                named = {sha for sha in raw.split() if HASH.fullmatch(sha)}
+            if isinstance(record.get('head'), str) and HASH.fullmatch(record['head']):
+                named.add(record['head'])
+            candidates = sorted(named)
             checked = git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
-                          stdin='\n'.join(candidates) + '\n').splitlines()
+                          stdin='\n'.join(candidates) + '\n').splitlines() if candidates else []
             available = [sha for sha, line in zip(candidates, checked) if line == sha + ' commit']
-            recovery['available_heads'] = available
-            if not errors and not parse_errors and len(available) == len(candidates) == len(checked):
-                recovery['status'] = 'ok'
-            return recovery
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return available, not failed and bool(candidates) and len(available) == len(candidates)
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
-    return recovery
+    return [], False
 
 
 def collect_local(roots, start, end, warn, api=None, identity=None, author_emails=()):
@@ -215,13 +157,10 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                         if record['exists'] and 'bare' not in fields:
                             queue.append(path)
                         elif not record['exists']:
-                            recovered = record['recovery'] = recover_stale_worktree(canonical, common, record)
-                            if recovered.get('configured_author_email'):
-                                entry['identities'].add(recovered['configured_author_email'])
-                            if recovered.get('configured_author_name'):
-                                configured_names.add(' '.join(recovered['configured_author_name'].casefold().split()))
-                            if recovered['status'] != 'ok':
-                                warn(f'Registered worktree is missing: {path}; retained Git admin data is incomplete.')
+                            record['recovered_heads'], complete = stale_worktree_heads(canonical, common, record)
+                            if not complete:
+                                warn(f'Registered worktree is missing: {path}; some of its retained history is '
+                                     'unavailable.')
                 except (subprocess.SubprocessError, OSError, ValueError):
                     warn(f'Cannot enumerate registered worktrees for {canonical}.')
         except (subprocess.SubprocessError, OSError, UnicodeError):
@@ -376,18 +315,9 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                 for tree in entry['worktrees']:
                     tree['head_available'] = tree.get('head') in available
                 warn(f'Some registered HEADs are unavailable for {entry["path"]}; healthy refs and admin histories were retained.')
-            recovered_tips = {sha for tree in entry['worktrees']
-                              for sha in tree.get('recovery', {}).get('available_heads', [])}
+            recovered_tips = {sha for tree in entry['worktrees'] for sha in tree.get('recovered_heads', [])}
             entry['tips'] = sorted(set(ordinary_tips) | recovered_tips)
             require(all(HASH.fullmatch(tip) for tip in entry['tips']), 'Invalid reference tip')
-            if recovered_tips:
-                revisions = '\n'.join(sorted(recovered_tips)) + '\n' + ''.join('^' + sha + '\n' for sha in ordinary_tips)
-                unreferenced = set(git(entry['path'], 'rev-list', '--stdin', stdin=revisions).splitlines())
-                for tree in entry['worktrees']:
-                    recovery = tree.get('recovery')
-                    if recovery is not None:
-                        recovery['unreferenced_reflog_heads'] = sorted(
-                            unreferenced & set(recovery['reflog_heads']) & set(recovery['available_heads']))
             raw = git(entry['path'], 'for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)')
             entry['refs'] = []
             for line in raw.splitlines():
@@ -406,15 +336,6 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                         if direction not in record['directions']:
                             record['directions'].append(direction)
                 entry['remotes'].extend(routing.values())
-            entry['default_ref'] = None
-            for candidate in ('refs/remotes/upstream/HEAD', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main',
-                              'refs/remotes/origin/master', 'refs/remotes/origin/devel', 'refs/heads/main', 'refs/heads/master', 'refs/heads/devel'):
-                try:
-                    sha = git(entry['path'], 'rev-parse', '--verify', candidate + '^{commit}').strip()
-                    entry['default_ref'] = {'name': candidate, 'hash': sha, 'source': 'cached_local_ref'}
-                    break
-                except subprocess.SubprocessError:
-                    continue
             recent_records = log_records(entry['path'], entry['tips'], start, end)
             heads = sorted({ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
                             for ref in entry['refs']
@@ -462,89 +383,20 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         found = [record for record in records.get(entry['path'], []) if record['author_email'] in entry['identities']]
         if found:
             commits[entry['path']] = found
-        snapshot_refs = list(entry.get('refs', [])) + [
-            {'name': 'worktree:' + tree['path'], 'hash': tree['head'],
-             'object_type': 'commit', 'peeled_type': None}
-            for tree in entry['worktrees']
-            if tree['detached'] and tree.get('head_available', True)
-            and isinstance(tree['head'], str) and HASH.fullmatch(tree['head'])]
-        snapshot_refs += [
-            {'name': 'worktree-reflog:' + tree['path'] + ':' + sha, 'hash': sha,
-             'object_type': 'commit', 'peeled_type': None}
-            for tree in entry['worktrees']
-            for sha in tree.get('recovery', {}).get('unreferenced_reflog_heads', [])]
         if entry.get('status') != 'ok':
             continue
-        try:
-            info = {record['hash']: record for record in tip_records.get(entry['path'], [])}
-            grouped = {}
-            base = entry.get('default_ref')
-            for ref in snapshot_refs:
-                if ref['object_type'] != 'commit' and ref['peeled_type'] != 'commit':
-                    if ref['object_type'] != 'tag':
-                        branches.append({'repo': entry['path'], 'refs': [ref['name']], 'hash': ref['hash'],
-                                         'object_type': ref['object_type'], 'attribution': 'undated_noncommit_snapshot',
-                                         'pr_status': 'not_applicable', 'prs': []})
-                    continue
-                sha = ref['hash'] if ref['object_type'] == 'commit' else ref['peeled_hash']
-                if ref['name'].startswith('refs/tags/') and not BACKUP.search(ref['name']):
-                    continue
-                grouped.setdefault(sha, []).append(ref)
-            # One listing answers containment for every ordinary ref; per-commit checks
-            # remain for worktree HEADs and private namespaces that it cannot see.
-            merged = None
-            if base:
-                listing = git(entry['path'], 'for-each-ref', '--merged=' + base['hash'],
-                              '--format=%(objectname)%00%(*objectname)')
-                merged = {value for line in listing.splitlines() for value in line.split('\0') if value}
-            for sha, refs in grouped.items():
-                tip = info[sha]
-                owner = tip['author_email'] in entry['identities']
-                backup = any(bool(BACKUP.search(ref['name'])) or not ref['name'].startswith(
-                    ('refs/heads/', 'refs/remotes/', 'refs/tags/')) for ref in refs)
-                history_candidate = bool(base and entry['identities'] and
-                                         (backup or any(ref['name'].startswith('refs/heads/') for ref in refs)))
-                # Unrelated remote refs cannot gain attribution through this
-                # path. Avoid walking their histories merely to discard them.
-                if not owner and not history_candidate:
-                    continue
-                contained = None
-                if merged is not None and sha in merged:
-                    contained = True
-                elif merged is not None and any(ref['name'].startswith('refs/') for ref in refs):
-                    contained = False
-                elif base:
-                    try:
-                        git(entry['path'], 'merge-base', '--is-ancestor', sha, base['hash'])
-                        contained = True
-                    except subprocess.CalledProcessError as error:
-                        if error.returncode == 1:
-                            contained = False
-                        else:
-                            raise
-                proof = None
-                if not owner and history_candidate and contained is False:
-                    matches = log_records(entry['path'], [sha], emails=entry['identities'],
-                                          exclude=base['hash'], limit=1)
-                    proof = next((record for record in matches if record['author_email'] in entry['identities']), None)
-                    owner = proof is not None
-                recent = start <= datetime.fromisoformat(tip['committed_at'].replace('Z', '+00:00')) <= end
-                if not owner or (contained is True and not backup and not recent):
-                    continue
-                record = {'repo': entry['path'], **tip, 'object_type': 'commit',
-                          'refs': [ref['name'] for ref in refs], 'backup': backup,
-                          'contained_in_cached_default': contained, 'recent_tip': recent,
-                          'attribution': ('contains_configured_or_verified_author' if proof
-                                          else 'configured_or_verified_author'),
-                          'pr_status': 'unchecked', 'prs': []}
-                if any(ref['name'].startswith('worktree:') for ref in refs):
-                    record['detached'] = True
-                    record['snapshot_reason'] = 'detached_worktree_head'
-                if proof:
-                    record['attribution_commit'] = proof
-                branches.append(record)
-        except (subprocess.SubprocessError, OSError, ValueError, KeyError, OverflowError):
-            warn(f'Cannot classify ref snapshots for {entry["path"]}; branch coverage is incomplete.')
+        # Branch leads: the user's own local branches whose tip falls in the window. Commits on
+        # every other ref (remote, backup, detached, stale worktree) are already in commits.
+        info = {record['hash']: record for record in tip_records.get(entry['path'], [])}
+        grouped = {}
+        for ref in entry['refs']:
+            if ref['name'].startswith('refs/heads/') and ref['object_type'] == 'commit':
+                grouped.setdefault(ref['hash'], []).append(ref['name'])
+        for sha, names in grouped.items():
+            tip = info.get(sha)
+            if (tip and tip['author_email'] in entry['identities']
+                    and start <= datetime.fromisoformat(tip['committed_at'].replace('Z', '+00:00')) <= end):
+                branches.append({'repo': entry['path'], **tip, 'refs': names})
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
                          'scan_unreadable': sorted(set(unreadable)),

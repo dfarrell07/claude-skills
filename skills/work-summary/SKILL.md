@@ -219,7 +219,7 @@ bullets, in order; `in_progress` may be omitted or `[]`.
 | `items` | GitHub citations `{"repo", "number", "url"}`. |
 | `jira` | Jira citations `{"key", "url"}`. |
 | `commits` | Local citations `{"repo": PATH, "hash": FULL_HASH}` from the digest. |
-| `branches` | Branch tips `{"repo", "hash"}` from `data.json` `branches[]`; rarely needed. |
+| `branches` | Your local branch tips in the window, `{"repo", "hash"}` from `data.json` `branches[]`; rarely needed. |
 | `merge_requests` | GitLab citations `{"url"}`. |
 | `links` | URLs to display, in order: this node's citations or their related links. `[]` shows none; omit for the citations. |
 | `subtopics` | Child themes with the same fields. A parent may rely on its children's citations. |

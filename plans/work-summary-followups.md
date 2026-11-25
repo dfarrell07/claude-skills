@@ -13,9 +13,7 @@ captures; none should change the digest unless stated. Verify every change by di
 3. **Contextual links:** done.
 4. **Modules:** done.
 5. **One URL scanner:** done.
-6. **Local sources:** keep only own branch
-   heads with in-window tips; shrink stale-worktree recovery to reflog parsing.
-   Decide whether `gitlab_sources.py` (MR head probe, 0 unique MRs measured) stays.
+6. **Local sources:** done. The GitLab MR head probe is removed.
 7. **Dead code:** done, except: consider replacing the no-analysis fallback renderer
    with the digest.
 8. **Wording:** done.

@@ -113,8 +113,9 @@ refs or scan unreachable objects.
   hand, explicit Jira URLs in PR bodies can stand as unverified context if Jira
   is unavailable, and PR URLs from Jira if GitHub is; the renderer accepts only
   links the collector captured.
-- **GitLab:** API authentication and Git SSH access are independent. For a known
-  project, a bounded `git ls-remote --refs REMOTE 'refs/merge-requests/*/head'`
+- **GitLab:** API authentication and Git SSH access are independent. When
+  collecting by hand (the collector does not do this) for a known project, a
+  bounded `git ls-remote --refs REMOTE 'refs/merge-requests/*/head'`
   can match MR heads to local commits without fetching. Run it with the remote's
   URL from an empty directory rather than inside the checkout, so the checkout's
   own config (credential helpers, proxies, SSH commands) cannot take part. A match

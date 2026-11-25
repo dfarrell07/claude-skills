@@ -40,7 +40,7 @@ def active_tickets(jira):
     return [issue for issue in jira.get('issues', []) if issue['key'] in commented or roles & set(issue.get('roles', []))]
 
 
-def follow_references(jira, github, branches, read_tickets, read_gitlab, read_history=None):
+def follow_references(jira, github, read_tickets, read_gitlab, read_history=None):
     site = jira.get('metadata', {}).get('site')
     items = active_items(github)
     texts = item_texts(github, items)
@@ -53,7 +53,6 @@ def follow_references(jira, github, branches, read_tickets, read_gitlab, read_hi
         progress(f"references: reading public history for {len(tickets)} active tickets")
         read_history(tickets)
     targets = {link['url'] for issue in tickets for link in native_review_links(issue) if link['provider'] == 'gitlab'}
-    targets.update(mr['url'] for branch in branches for mr in branch.get('merge_requests', []))
     targets.update(url for text in texts for provider, url, _ in code_urls(text) if provider == 'gitlab')
     if targets:
         progress(f"references: reading {len(targets)} GitLab MRs")
