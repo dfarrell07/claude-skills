@@ -26,6 +26,9 @@ ME = {"accountId": "self-id", "emailAddress": "person@example.test"}
 OTHER = {"accountId": "other-id", "emailAddress": "other@example.test"}
 
 
+def linked_prs(result):
+    return sorted({link["url"] for item in result["issues"] for link in item.get("pr_links", [])})
+
 def issue(key="TEST-1", category="indeterminate", author=None):
     return {"key": key, "id": key.split("-")[1],
             "self": "https://jira.example.test/rest/api/3/issue/" + key.split("-")[1],
@@ -155,7 +158,6 @@ else:
             'url': 'https://github.com/org/repo/pull/4051', 'proof': 'custom_field',
             'field_id': 'customfield_10875', 'source_kind': 'detail',
             'evidence_url': 'https://jira.example.test/browse/TEST-1', 'sensitive': False}])
-        self.assertIn('https://github.com/org/repo/pull/4051', result['linked_prs'])
 
     def test_read_only_identity_and_native_activity_with_explicit_scope_gap(self):
         result = self.collect()
@@ -292,7 +294,7 @@ else:
         metadata = {"site": "jira.example.test", "status": "ok", "account_id": "self-id",
                     "identity_verified": True, "warnings": [], "coverage": {
                         "details": {"status": "ok", "requested_count": 8, "returned_count": 0}}}
-        result = {"metadata": metadata, "issues": selected, "activity": [], "linked_prs": []}
+        result = {"metadata": metadata, "issues": selected, "activity": []}
         barrier, lock = threading.Barrier(4), threading.Lock()
         active, peak, completed = 0, 0, 0
         main_thread = threading.get_ident()
@@ -423,7 +425,7 @@ else:
         public = comment("public", body="https://github.com/example/public/pull/22")
         self.data["details"]["TEST-1"] = detail(issue(), [private, public])
         result = self.collect()
-        self.assertEqual(result["linked_prs"], ["https://github.com/example/private/pull/88",
+        self.assertEqual(linked_prs(result), ["https://github.com/example/private/pull/88",
                                               "https://github.com/example/public/pull/22"])
         self.assertEqual([event["sensitive"] for event in result["activity"]], [True, False])
         self.assertEqual([relation["sensitive"] for relation in result["issues"][0]["pr_links"]], [True, False])
@@ -431,7 +433,7 @@ else:
         self.data["details"]["TEST-1"]["fields"]["security"] = {"id": "1", "name": "Private"}
         result = self.collect()
         self.assertTrue(all(event["sensitive"] for event in result["activity"]))
-        self.assertEqual(len(result["linked_prs"]), 2)
+        self.assertEqual(len(linked_prs(result)), 2)
         self.assertTrue(all(relation["sensitive"] for relation in result["issues"][0]["pr_links"]))
 
     def test_security_labels_and_unknown_sensitivity_never_become_public(self):
@@ -592,7 +594,7 @@ else:
             "type": "doc", "content": [{"text": "https://github.com/org/repo/pull/12evil"},
             {"attrs": {"href": "https://github.com/org/repo/pull/13?tab=files"}}]}
         self.data["details"]["TEST-1"]["fields"]["summary"] = "https://github.com/org/title/pull/99"
-        self.assertEqual(self.collect()["linked_prs"], ["https://github.com/org/repo/pull/13"])
+        self.assertEqual(linked_prs(self.collect()), ["https://github.com/org/repo/pull/13"])
 
     def test_per_issue_pr_proofs_preserve_description_comment_and_issue_link_sources(self):
         fields = self.data["details"]["TEST-1"]["fields"]
@@ -604,7 +606,7 @@ else:
                                               comment("8", body="https://github.com/org/private/pull/4", visibility={"type": "group"})],
                              "total": 2, "startAt": 0, "maxResults": 100}
         result = self.collect()
-        self.assertEqual(result["linked_prs"], ["https://github.com/org/private/pull/4", "https://github.com/org/private/pull/66"]
+        self.assertEqual(linked_prs(result), ["https://github.com/org/private/pull/4", "https://github.com/org/private/pull/66"]
                          + [f"https://github.com/org/repo/pull/{n}" for n in (1, 2, 3)])
         self.assertEqual(result["issues"][0]["pr_links"], [
             {"url": "https://github.com/org/private/pull/4", "proof": "comment", "evidence_url": "https://jira.example.test/browse/TEST-1?focusedCommentId=8", "sensitive": True},
@@ -619,7 +621,7 @@ else:
                     "https://evil.example/team/repo/pull/9 https://git.example.test/../repo/pull/10"}
         with patch.dict(os.environ, {"GH_HOST": "git.example.test"}):
             result = self.collect()
-        self.assertEqual(result["linked_prs"], ["https://git.example.test/team/repo/pull/7"])
+        self.assertEqual(linked_prs(result), ["https://git.example.test/team/repo/pull/7"])
         self.assertEqual(result["issues"][0]["pr_links"][0]["proof"], "description")
 
     def test_collection_and_referenced_activity_sort_mixed_precision_chronologically(self):
@@ -681,7 +683,7 @@ else:
         self.assertEqual((proof['requested_key'], proof['canonical_key']), ('OLD-2', 'NEW-3'))
         self.assertEqual(proof['requested'], native)
         self.assertEqual(proof['canonical'], native)
-        self.assertEqual(result['linked_prs'], ['https://github.com/org/repo/pull/15'])
+        self.assertEqual(linked_prs(result), ['https://github.com/org/repo/pull/15'])
         self.assertIn('OLD-2', result['metadata']['coverage']['referenced_by_github']['returned_keys'])
         before = len(self.calls())
         jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)

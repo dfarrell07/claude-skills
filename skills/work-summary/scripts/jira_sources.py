@@ -233,7 +233,6 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
     # warnings, mutates counters, or handles comment pagination.
     with ThreadPoolExecutor(max_workers=4) as pool:
         reads = list(pool.map(read_detail, selected))
-    linked_prs = set(result["linked_prs"])
     for item, (detail, read_error) in zip(selected, reads):
         try:
             if read_error is not None:
@@ -374,14 +373,11 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                     parts = urlsplit(url)
                     if (parts.netloc == metadata.get("github_host", "github.com")
                             and all(part not in {".", ".."} for part in parts.path.split("/")[1:3])):
-                        linked_prs.add(url)
                         proofs.add((url, proof, evidence_url, source_sensitive))
         item["pr_links"] = [{"url": url, "proof": proof, "evidence_url": evidence_url, "sensitive": sensitive}
                             for url, proof, evidence_url, sensitive in sorted(proofs)]
         custom = _custom_pr_links(item, fields, 'detail', metadata.get('github_host', 'github.com'))
         item['pr_links'].extend(custom)
-        linked_prs.update(row['url'] for row in custom)
-    result["linked_prs"] = sorted(linked_prs)
 
 
 def collect_jira(start, end, warn):
@@ -393,7 +389,7 @@ def collect_jira(start, end, warn):
     """
     metadata = {"status": "ok", "site": "", "user": "", "account_id": None,
                 "identity_verified": False, "coverage": {}, "warnings": []}
-    result = {"metadata": metadata, "issues": [], "activity": [], "linked_prs": []}
+    result = {"metadata": metadata, "issues": [], "activity": []}
 
     def gap(message):
         metadata["status"] = "partial"

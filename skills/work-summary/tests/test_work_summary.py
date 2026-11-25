@@ -269,14 +269,15 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
 
-    def render_result(self, data, source=None):
+    def render_result(self, data):
+        """Render data's analysis, if any, the documented way: --analysis beside the capture."""
         capture = self.root / "candidate.json"
-        capture.write_text(json.dumps(data))
+        capture.write_text(json.dumps({key: value for key, value in data.items() if key != "analysis"}))
         args = [capture]
-        if source is not None:
-            original = self.root / "original.json"
-            original.write_text(json.dumps(source))
-            args.append(original)
+        if "analysis" in data:
+            analysis = self.root / "analysis.json"
+            analysis.write_text(json.dumps(data["analysis"]))
+            args[:0] = ["--analysis", analysis]
         return self.run_script(RENDER, *args, check=False)
 
     def test_server_incompleteness_and_bad_rows_are_visible(self):
@@ -391,19 +392,19 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data = json.loads(result.stdout)
         self.assertEqual({item["message"] for item in data["commits"][str(repo)]}, {"At start", "At end"})
 
-    def test_enrichment_requires_original_and_preserves_it(self):
-        source = self.capture()
-        data = copy.deepcopy(source)
+    def test_analysis_is_applied_beside_the_capture_never_inside_it(self):
+        data = self.capture()
         data["analysis"] = {"themes": [], "in_progress": []}
         self.assertEqual(self.render_result(data).returncode, 0)
-        self.assertEqual(self.render_result(data, source).returncode, 0)
-        changed = copy.deepcopy(source)
-        changed["metadata"]["warnings"] = ["changed after analysis"]
-        self.assertNotEqual(self.render_result(data, changed).returncode, 0)
-        data["metadata"]["github_user"] = "invented"
-        result = self.render_result(data, source)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "")
+        enriched = self.root / "enriched.json"
+        enriched.write_text(json.dumps(data))
+        analysis = self.root / "analysis.json"
+        analysis.write_text(json.dumps(data["analysis"]))
+        for args in ([enriched], ["--analysis", analysis, enriched]):
+            result = self.run_script(RENDER, *args, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--analysis", result.stderr)
+            self.assertEqual(result.stdout, "")
 
     def test_analysis_rejects_forged_and_closed_in_progress_citations(self):
         source = self.capture()
@@ -411,11 +412,11 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         for invalid in [dict(ref, repo="invented/repo"), dict(ref, number=999), dict(ref, url="javascript:alert(1)")]:
             data = {**source, "analysis": {"themes": [{"name": "Claim", "description": "Result", "items": [invalid]}],
                                          "in_progress": []}}
-            result = self.render_result(data, source)
+            result = self.render_result(data)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
         data = {**source, "analysis": {"themes": [], "in_progress": [{**ref, "description": "Ongoing"}]}}
-        self.assertNotEqual(self.render_result(data, source).returncode, 0)
+        self.assertNotEqual(self.render_result(data).returncode, 0)
 
     def test_analysis_commit_citations_are_verified(self):
         repo = self.repo("local")
@@ -423,17 +424,17 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         commit = source["commits"][str(repo)][0]
         data = {**source, "analysis": {"themes": [{"name": "Local", "description": "Prepared change",
                  "items": [], "commits": [{"repo": str(repo), "hash": commit["hash"]}]}], "in_progress": []}}
-        result = self.render_result(data, source)
+        result = self.render_result(data)
         self.assertEqual(result.returncode, 0, result.stderr)
         data["analysis"]["themes"][0]["commits"][0]["hash"] = "0" * 40
-        self.assertNotEqual(self.render_result(data, source).returncode, 0)
+        self.assertNotEqual(self.render_result(data).returncode, 0)
 
     def test_empty_or_malformed_themes_do_not_invent_accomplishments(self):
         source = self.capture()
         for theme in [{"name": "CI", "description": "Uncited", "items": []}, None,
                       {"name": "CI", "description": None, "items": []}]:
             data = {**source, "analysis": {"themes": [theme], "in_progress": []}}
-            result = self.render_result(data, source)
+            result = self.render_result(data)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
         data = {**source, "analysis": {"themes": [], "in_progress": []}}
@@ -460,7 +461,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         data = {**source, "analysis": {"themes": [{"name": "~~not~~", "description": text,
                  "items": [ref], "commits": [{"repo": str(repo), "hash": source["commits"][str(repo)][0]["hash"]}]}],
                  "in_progress": []}}
-        result = self.render_result(data, source)
+        result = self.render_result(data)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("~~not~~", result.stdout)
 
@@ -697,15 +698,9 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         enriched = copy.deepcopy(data)
         enriched["analysis"] = {"themes": [], "in_progress": [{"repo":item["repo"], "number":77,
                                     "url":item["url"], "description":"Older work under review"}]}
-        source = self.root / "source.json"
-        source.write_text(json.dumps(data))
-        report = self.root / "enriched.json"
-        report.write_text(json.dumps(enriched))
-        output = self.run_script(RENDER, report, source).stdout
-        self.assertIn("Older work under review", output)
-        enriched["github"]["context_prs"][0]["title"] = "Altered"
-        report.write_text(json.dumps(enriched))
-        self.assertNotEqual(self.run_script(RENDER, report, source, check=False).returncode, 0)
+        result = self.render_result(enriched)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Older work under review", result.stdout)
 
     def test_jira_citations_and_restricted_details(self):
         data = self.capture()
@@ -723,14 +718,9 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         enriched["analysis"] = {"themes":[{"name":"Investigation", "description":"Investigated reported behavior",
                                           "items":[], "jira":[citation]}],
                                "in_progress":[{**citation, "description":"Investigation continues"}]}
-        source = self.root / "jira-source.json"
-        source.write_text(json.dumps(data))
-        capture = self.root / "jira-enriched.json"
-        capture.write_text(json.dumps(enriched))
-        self.assertIn("Investigated reported behavior", self.run_script(RENDER, capture, source).stdout)
+        self.assertIn("Investigated reported behavior", self.render_result(enriched).stdout)
         enriched["analysis"]["themes"][0]["jira"][0]["key"] = "EXAMPLE-999"
-        capture.write_text(json.dumps(enriched))
-        self.assertNotEqual(self.run_script(RENDER, capture, source, check=False).returncode, 0)
+        self.assertNotEqual(self.render_result(enriched).returncode, 0)
 
     def test_idless_native_cross_reference_renders_target_without_inventing_event_id(self):
         data = self.capture()

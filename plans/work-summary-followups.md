@@ -26,9 +26,8 @@ captures; none should change the digest unless stated. Verify every change by di
 6. **Local sources:** drop `unattributed_commits` (no consumer); keep only own branch
    heads with in-window tips; shrink stale-worktree recovery to reflog parsing.
    Decide whether `gitlab_sources.py` (MR head probe, 0 unique MRs measured) stays.
-7. **Dead code:** `link()`, `work_links.strings`, `include_numeric_fragments`,
-   `jira.linked_prs`, the enriched-capture source comparison. Consider replacing the
-   no-analysis fallback renderer with the digest.
+7. **Dead code:** done, except: consider replacing the no-analysis fallback renderer
+   with the digest.
 8. **Wording:** replace "native" in user-visible warnings with plain language.
 9. **Tests:** one shared capture builder in `tests/`; collapse scanner tests into one
    table-driven test.

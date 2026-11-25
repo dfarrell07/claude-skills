@@ -72,7 +72,7 @@ class ConciseReportTest(unittest.TestCase):
         enriched['analysis'] = {'themes': [{'name': 'Catalog', 'description': 'Prepared the catalog pipeline.',
                                            'items': [], 'merge_requests': [{'url': url}], 'links': [url]}],
                                 'in_progress': []}
-        self.assertIn('  - ' + url, ws.render(enriched, data))
+        self.assertIn('  - ' + url, ws.render(enriched))
 
     def test_native_gitlab_heads_supply_selectable_links_without_mr_state(self):
         data = self.capture()
@@ -101,7 +101,7 @@ class ConciseReportTest(unittest.TestCase):
         enriched['analysis'] = {'themes': [{'name': 'Pipeline', 'description': 'Prepared the catalog pipeline.',
                                            'items': [], 'branches': [{'repo': repo, 'hash': head}], 'links': [url]}],
                                 'in_progress': []}
-        self.assertIn('  - ' + url, ws.render(enriched, data))
+        self.assertIn('  - ' + url, ws.render(enriched))
         self.assertNotIn('state', data['branches'][0]['merge_requests'][0])
         forged = copy.deepcopy(data)
         forged['branches'][0]['merge_requests'][0]['number'] = 999
@@ -148,7 +148,7 @@ class ConciseReportTest(unittest.TestCase):
         for theme in enriched['analysis']['themes']:
             theme['links'] = [issue['url'], source['github']['prs'][0]['url']]
         original = copy.deepcopy(enriched)
-        report = ws.render(enriched,source)
+        report = ws.render(enriched)
         self.assertEqual(report,
             '- Most important result\n  - '+issue['url']+'\n  - '+source['github']['prs'][0]['url']+
             '\n- Less important follow-up\n  - '+issue['url']+'\n  - '+source['github']['prs'][0]['url'])
@@ -174,7 +174,7 @@ class ConciseReportTest(unittest.TestCase):
         source['jira'] = {'metadata':{'status':'unavailable','site':''},'issues':[],'activity':[]}
         enriched = self.enrich(source)
         enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
-        report = ws.render(enriched, source)
+        report = ws.render(enriched)
         self.assertIn('  - https://other-jira.example/browse/CONTEXT-9',report)
         self.assertIn('Jira state is unverified',report)
         self.assertNotIn('Coverage is incomplete',report)
@@ -214,7 +214,7 @@ class ConciseReportTest(unittest.TestCase):
         source['jira'] = {'metadata': {'status': 'unavailable', 'site': ''}, 'issues': [], 'activity': []}
         enriched = self.enrich(source)
         enriched['analysis']['themes'][0]['links'] = [ticket, pr['url']]
-        report = ws.render(enriched, source)
+        report = ws.render(enriched)
         self.assertIn('  - ' + ticket, report)
         self.assertIn('Jira state is unverified', report)
         proof = ws.contextual_jira_links(pr, [comment])[0]
@@ -230,7 +230,7 @@ class ConciseReportTest(unittest.TestCase):
         source['github']['prs'][0]['body']='https://foreign.example/browse/TEST-123'
         enriched = self.enrich(source)
         enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
-        report = ws.render(enriched, source)
+        report = ws.render(enriched)
         self.assertIn('  - '+issue['url'],report)
         self.assertIn('  - https://foreign.example/browse/TEST-123',report)
         self.assertIn('Jira state is unverified',report)
@@ -244,7 +244,7 @@ class ConciseReportTest(unittest.TestCase):
         pr['body']=original
         enriched=self.enrich(source)
         enriched['analysis']['themes'][0]['links']=ws.work_urls(source,enriched['analysis']['themes'][0])
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertEqual(report.count('  - '+issue['url']),1)
         self.assertNotIn('state is unverified',report)
         proof=ws.contextual_jira_links(pr)[0]
@@ -254,7 +254,7 @@ class ConciseReportTest(unittest.TestCase):
     def test_untrusted_descriptions_cannot_create_work_rows_html_or_formatting(self):
         source = self.capture()
         payload='Shipped ~~not~~\n# Forged\n  - https://evil.example <img src=x> [label](javascript:evil)\u202e'
-        report=ws.render(self.enrich(source,(payload,)),source)
+        report=ws.render(self.enrich(source,(payload,)))
         self.assertEqual(len([line for line in report.splitlines() if line.startswith('- ')]),1)
         self.assertNotIn('\n#',report)
         self.assertNotIn(' <img',report)
@@ -267,25 +267,20 @@ class ConciseReportTest(unittest.TestCase):
     def test_authored_descriptions_stay_pasteable(self):
         source=self.capture()
         description='Tuned lease_duration (default 15s) for C++ clients and #123 follow-ups; 3 < 5.'
-        report=ws.render(self.enrich(source,(description,)),source)
+        report=ws.render(self.enrich(source,(description,)))
         self.assertEqual(report.splitlines()[0],'- '+description)
 
     def test_sentence_periods_and_versions_remain_plain_in_the_work_list(self):
         source=self.capture()
         description='Updated Kubernetes 1.37.1. Release 0.23.4 remains pending.'
         enriched=self.enrich(source,(description,))
-        self.assertEqual(ws.render(enriched,source).splitlines()[0],'- '+description)
+        self.assertEqual(ws.render(enriched).splitlines()[0],'- '+description)
 
-    def test_forged_citations_and_source_tampering_still_fail_before_output(self):
-        source=self.capture()
-        enriched=self.enrich(source)
+    def test_forged_citations_fail_before_output(self):
+        enriched=self.enrich(self.capture())
         enriched['analysis']['themes'][0]['items'][0]['number']=99
         with self.assertRaises(ValueError):
-            ws.render(enriched,source)
-        enriched=self.enrich(source)
-        enriched['github']['prs'][0]['title']='Changed source'
-        with self.assertRaises(ValueError):
-            ws.render(enriched,source)
+            ws.render(enriched)
 
     def test_fallback_uses_native_merge_time_and_events_not_backlog_roles(self):
         source=self.capture()
@@ -330,10 +325,10 @@ class ConciseReportTest(unittest.TestCase):
         pr.update(state='open',merged_at=None,closed_at=None)
         enriched=copy.deepcopy(source)
         enriched['analysis']={'themes':[],'in_progress':[{**self.reference(pr),'description':'Continue the proposal'}]}
-        self.assertTrue(ws.render(enriched,source).startswith('- Ongoing: Continue the proposal'))
+        self.assertTrue(ws.render(enriched).startswith('- Ongoing: Continue the proposal'))
         enriched=self.enrich(source)
         enriched['analysis']['in_progress']=[{**self.reference(pr),'description':'Same proposal'}]
-        self.assertEqual(len([line for line in ws.render(enriched,source).splitlines() if line.startswith('- ')]),1)
+        self.assertEqual(len([line for line in ws.render(enriched).splitlines() if line.startswith('- ')]),1)
 
     def test_ongoing_links_are_validated_selected_and_deduplicated(self):
         source=self.capture()
@@ -344,9 +339,9 @@ class ConciseReportTest(unittest.TestCase):
         enriched=copy.deepcopy(source)
         ongoing={**self.reference(pr),'description':'Continue work','links':[]}
         enriched['analysis']={'themes':[],'in_progress':[ongoing]}
-        self.assertEqual(ws.render(enriched,source),'- Ongoing: Continue work')
+        self.assertEqual(ws.render(enriched),'- Ongoing: Continue work')
         ongoing['links']=[context,pr['url'],context]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('- Ongoing: Continue work\n  - '+context+'\n  - '+pr['url'],report)
         self.assertEqual(report.count(context),1)
         self.assertIn('Jira state is unverified',report)
@@ -354,7 +349,7 @@ class ConciseReportTest(unittest.TestCase):
             with self.subTest(selected=selected):
                 ongoing['links']=selected
                 with self.assertRaises(ValueError):
-                    ws.render(enriched,source)
+                    ws.render(enriched)
 
     def test_local_only_fallback_is_grounded_and_keeps_private_proof_out_of_primary_output(self):
         source=self.capture()
@@ -402,7 +397,7 @@ class ConciseReportTest(unittest.TestCase):
         enriched=copy.deepcopy(source)
         topic.update(name='Local work',links=ws.work_urls(source,topic))
         enriched['analysis']={'themes':[topic],'in_progress':[]}
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('  - https://jira.example/browse/TEST-123',report)
         self.assertIn('  - https://github.com/org/repo/pull/8',report)
         self.assertIn('Jira state is unverified',report)
@@ -454,7 +449,7 @@ class ConciseReportTest(unittest.TestCase):
         associate_work(source['jira'],source['github'])
         enriched=self.enrich(source)
         enriched['analysis']['themes'][0]['links']=[url]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('  - <'+url+'>',report)
         self.assertNotIn('MR merged',report)
         self.assertEqual(issue['review_links'][0]['proof'],'description')
@@ -467,14 +462,14 @@ class ConciseReportTest(unittest.TestCase):
         associate_work(source['jira'],source['github'])
         enriched=self.enrich(source)
         enriched['analysis']['themes'][0]['links']=[url]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('  - '+url,report)
         self.assertNotIn('<'+url+'>',report)
 
     def test_agent_analysis_gets_no_automatic_coverage_note(self):
         source=self.capture()
         source['metadata'].update(github_status='partial',local_status='unavailable',warnings=['gap'])
-        report=ws.render(self.enrich(source),source)
+        report=ws.render(self.enrich(source))
         self.assertNotIn('Coverage is incomplete',report)
         self.assertNotIn('partly read',report)
 
@@ -535,7 +530,7 @@ class ConciseReportTest(unittest.TestCase):
         candidates=ws.work_urls(source,theme)
         self.assertIn(mr,candidates)
         self.assertEqual(len(candidates),5)
-        brief=ws.render(enriched,source)
+        brief=ws.render(enriched)
         for url in candidates:
             self.assertEqual(url in brief,url in theme['links'])
         self.assertEqual(enriched,original)
@@ -544,13 +539,13 @@ class ConciseReportTest(unittest.TestCase):
         source,issue,mr=self.selective_capture()
         enriched=self.enrich(source)
         theme=enriched['analysis']['themes'][0]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertEqual(ws.display_urls(source,theme),[theme['items'][0]['url']])
         self.assertNotIn(issue['url'],report)
         self.assertNotIn(mr,report)
         theme['items']=[]
         theme['jira']=[{key:issue[key] for key in ('key','url')}]
-        self.assertEqual(ws.render(enriched,source),'- Fix the important behavior\n  - '+issue['url'])
+        self.assertEqual(ws.render(enriched),'- Fix the important behavior\n  - '+issue['url'])
 
     def test_explicit_empty_suppresses_links_and_duplicate_ongoing_citation(self):
         source=self.capture()
@@ -560,7 +555,7 @@ class ConciseReportTest(unittest.TestCase):
         enriched=self.enrich(source)
         enriched['analysis']['themes'][0]['links']=[]
         enriched['analysis']['in_progress']=[{**self.reference(pr),'description':'Same work'}]
-        self.assertEqual(ws.render(enriched,source),'- Fix the important behavior')
+        self.assertEqual(ws.render(enriched),'- Fix the important behavior')
 
     def test_omitted_candidate_does_not_hide_distinct_ongoing_work(self):
         source,issue,_=self.selective_capture()
@@ -571,7 +566,7 @@ class ConciseReportTest(unittest.TestCase):
         theme['jira']=[{key:issue[key] for key in ('key','url')}]
         theme['links']=[]
         enriched['analysis']['in_progress']=[{**self.reference(other),'description':'Distinct work'}]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('- Ongoing: Distinct work',report)
         self.assertIn('  - '+other['url'],report)
 
@@ -589,7 +584,7 @@ class ConciseReportTest(unittest.TestCase):
             with self.subTest(selected=selected):
                 theme['links']=selected
                 with self.assertRaises(ValueError):
-                    ws.render(enriched,source)
+                    ws.render(enriched)
 
     def test_nested_topics_have_independent_links_and_valid_markdown_nesting(self):
         try:
@@ -605,7 +600,7 @@ class ConciseReportTest(unittest.TestCase):
                 'subtopics':[{'name':'Further','description':'Further detail',
                     'items':[self.reference(pr)],'links':[pr['url']]}]}]}], 'in_progress':[]}
         original=copy.deepcopy(enriched)
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertEqual(report,'- Main result\n  - Substantive detail\n    - '+pr['url']+
             '\n    - Further detail\n      - '+pr['url'])
         tokens=MarkdownIt().parse(report)
@@ -615,14 +610,14 @@ class ConciseReportTest(unittest.TestCase):
         self.assertEqual(enriched,original)
         for description in ('1. Main result.','1.'):
             enriched['analysis']['themes'][0]['description']=description
-            numbered=MarkdownIt().parse(ws.render(enriched,source))
+            numbered=MarkdownIt().parse(ws.render(enriched))
             self.assertNotIn('ordered_list_open',[token.type for token in numbered])
             self.assertEqual(sum(token.type=='bullet_list_open' for token in numbered),
                              sum(token.type=='bullet_list_open' for token in tokens))
         group=enriched['analysis']['themes'][0]
         group['links']=[pr['url']]
         with self.assertRaises(ValueError):
-            ws.render(enriched,source)
+            ws.render(enriched)
 
     def test_child_cannot_select_parent_or_sibling_artifacts_without_own_citation(self):
         source=self.capture()
@@ -636,10 +631,10 @@ class ConciseReportTest(unittest.TestCase):
             'items':[self.reference(first)]}]
         child['links']=[first['url']]
         with self.assertRaises(ValueError):
-            ws.render(enriched,source)
+            ws.render(enriched)
         child['links']=[second['url']]
         parent['links']=[]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertIn('  - Child work\n    - '+second['url'],report)
         self.assertIn('  - Sibling work\n    - '+first['url'],report)
 
@@ -650,7 +645,7 @@ class ConciseReportTest(unittest.TestCase):
         url=source['github']['prs'][0]['url']
         theme['links']=[url,url]
         theme['subtopics']=[{**copy.deepcopy(theme),'description':'Child work'}]
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertEqual(report.count(url),2)
         self.assertIn('  - Child work\n    - '+url,report)
 
@@ -663,12 +658,12 @@ class ConciseReportTest(unittest.TestCase):
         theme=enriched['analysis']['themes'][0]
         candidates=ws.work_urls(source,theme)
         self.assertTrue(set(urls)<=set(candidates))
-        for capture,original in ((source,None),(enriched,source)):
-            report=ws.render(capture,original)
+        for capture in (source,enriched):
+            report=ws.render(capture)
             self.assertNotIn('unknown.example',report)
             self.assertNotIn('Jira state is unverified',report)
         theme['links']=list(reversed(urls))
-        report=ws.render(enriched,source)
+        report=ws.render(enriched)
         self.assertEqual([line.strip()[2:] for line in report.splitlines() if line.startswith('  - ')],
                          list(reversed(urls)))
         self.assertIn('Jira state is unverified',report)
@@ -682,10 +677,10 @@ class ConciseReportTest(unittest.TestCase):
             with self.subTest(children=children):
                 group['subtopics']=children
                 with self.assertRaises(ValueError):
-                    ws.render(enriched,source)
+                    ws.render(enriched)
 
     def test_bad_github_configuration_does_not_block_other_capable_sources(self):
-        jira={'metadata':{'status':'ok','site':'jira.example.test'},'issues':[],'activity':[],'linked_prs':[]}
+        jira={'metadata':{'status':'ok','site':'jira.example.test'},'issues':[],'activity':[]}
         with patch.dict(os.environ,{'GH_HOST':'invalid@host'}), \
              patch.object(ws,'collect_local_safely',return_value=(empty_local(),'ok',{'status':'ok'})), \
              patch.object(ws,'collect_jira',return_value=jira), \
@@ -698,7 +693,7 @@ class ConciseReportTest(unittest.TestCase):
         self.assertIn('GitHub unavailable',ws.render(source))
 
     def test_reference_expansion_failure_keeps_primary_evidence_renderable(self):
-        jira={'metadata':{'status':'ok','site':'jira.example.test','warnings':[]},'issues':[],'activity':[],'linked_prs':[]}
+        jira={'metadata':{'status':'ok','site':'jira.example.test','warnings':[]},'issues':[],'activity':[]}
         with patch.dict(os.environ,{'GH_HOST':'invalid@host'}), \
              patch.object(ws,'collect_local_safely',return_value=(empty_local(),'ok',{'status':'ok'})), \
              patch.object(ws,'collect_jira',return_value=jira), \
