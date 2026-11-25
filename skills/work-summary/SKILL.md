@@ -49,9 +49,9 @@ different accounts or sites, keep their evidence separate.
 `SKILL_DIR` is the directory containing this file.
 
 1. **Collect.** Collection is read-only. With `gh` and `acli` signed in it takes
-   a few minutes (about 5 for a busy week on a large home directory; a busy
-   quarter takes much longer); without them, seconds to a couple of minutes. Run
-   it in the background or with a long timeout, never under a 2-minute limit:
+   about 4 minutes for a week on a large home directory and about 13 for a busy
+   quarter; without them, seconds to a couple of minutes. Run it in the
+   background (always for a quarter) or with a timeout well above those times:
 
    ```bash
    DAYS=7   # or the requested positive integer

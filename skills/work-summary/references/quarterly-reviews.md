@@ -68,7 +68,7 @@ describe each. Small clusters are supporting detail, not bullets. When reading:
 - Ticket titles are current and may name a later release than the work.
 - Long periods hit search caps and incomplete history; read the coverage section.
 
-A busy quarter takes much longer to collect than a week.
+A busy quarter takes about 13 minutes to collect, against about 4 for a week.
 
 Earlier reviews, weekly summaries and 1:1 notes are leads for continuity, not an
 inventory or separate accomplishments: one continuing effort is one theme with
