@@ -76,7 +76,7 @@ class QuarterSearchTest(unittest.TestCase):
         self.assertEqual(len(found), 1000)
         self.assertEqual(client.coverage['quarter']['status'], 'partial')
         self.assertLessEqual(len(calls), MAX_SEARCH_REQUESTS)
-        self.assertTrue(any('one creation second' in warning for warning in warnings))
+        self.assertTrue(any('same second' in warning for warning in warnings))
 
     def test_incomplete_search_recovers_even_below_result_cap(self):
         rows = [item(1, '2000-01-01T00:00:00Z'), item(2, '2020-01-01T00:00:00Z')]
@@ -103,7 +103,7 @@ class QuarterSearchTest(unittest.TestCase):
         self.assertEqual(client.search('is:pr author:me', 'quarter', 'prs'), [])
         self.assertEqual(len(calls), MAX_SEARCH_REQUESTS)
         self.assertEqual(client.coverage['quarter']['status'], 'partial')
-        self.assertTrue(any('request budget' in warning for warning in warnings))
+        self.assertTrue(any('request cap' in warning for warning in warnings))
 
     def test_source_ignoring_partition_is_bounded_and_retains_positive_rows(self):
         rows = [item(i, '2020-01-01T00:00:00Z') for i in range(1, 1002)]
@@ -117,7 +117,7 @@ class QuarterSearchTest(unittest.TestCase):
         self.assertEqual(len(found), 1000)
         self.assertEqual(client.coverage['quarter']['status'], 'partial')
         self.assertLessEqual(len(calls), MAX_SEARCH_REQUESTS)
-        self.assertTrue(any('outside its creation-time partition' in warning for warning in warnings))
+        self.assertTrue(any('ignored a creation-date filter' in warning for warning in warnings))
 
 
 if __name__ == '__main__':

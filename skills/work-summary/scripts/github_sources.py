@@ -135,7 +135,7 @@ class Github:
             for page in range(1, LIMIT // PAGE_SIZE + 1):
                 if requests >= MAX_SEARCH_REQUESTS:
                     record['status'] = 'partial'
-                    self.problem(key, 'creation-time recovery reached its request budget; retained successful pages')
+                    self.problem(key, 'search stopped at its request cap; results may be incomplete')
                     return record, True, False
                 requests += 1
                 try:
@@ -195,7 +195,7 @@ class Github:
                     self.problem(key, 'search failed; retained earlier pages')
                     break
             if not in_bounds:
-                self.problem(key, 'native search returned rows outside its creation-time partition')
+                self.problem(key, 'GitHub ignored a creation-date filter used to split the search; results may be incomplete')
             return record, capped, in_bounds
 
         root, capped, _ = read(query)
@@ -205,7 +205,7 @@ class Github:
         while pending and requests < MAX_SEARCH_REQUESTS:
             lower, upper = pending.popleft()
             if lower == upper:
-                self.problem(key, 'search is incomplete or exceeds the 1,000-result limit within one creation second')
+                self.problem(key, 'GitHub reported incomplete results or more than 1,000 results, even for items created within the same second; results may be incomplete')
                 continue
             middle = lower + timedelta(seconds=int((upper - lower).total_seconds()) // 2)
             for lo, hi in ((lower, middle), (middle + timedelta(seconds=1), upper)):
@@ -215,11 +215,11 @@ class Github:
                     record['partitioned'] = True
                     pending.append((lo, hi))
                 elif overflow:
-                    self.problem(key, 'search is incomplete or exceeds the 1,000-result limit; partition could not be verified')
+                    self.problem(key, 'part of the split search could not be finished; results may be incomplete')
         if pending:
-            self.problem(key, 'creation-time recovery reached its request budget; retained successful pages')
+            self.problem(key, 'search stopped at its request cap; results may be incomplete')
         if len(found) != root.get('total_count', 0):
-            self.problem(key, 'partitioned search count disagrees with its original inventory')
+            self.problem(key, 'split search found a different number of results than the full search; results may be incomplete')
         return found
 
     def own(self, item):
@@ -300,7 +300,7 @@ class Github:
                 'id': event['id'], 'node_id': node_id, 'url': url, 'body': '' if body is None else body,
                 'author_login': author, 'author_node_id': author_node_id, 'created_at': created, 'updated_at': updated})
         except ERRORS:
-            self.problem(key, 'invalid native comment reference skipped; discussion coverage is incomplete')
+            self.problem(key, 'a comment GitHub returned was malformed and skipped; discussion coverage is incomplete')
 
     def _retain_review(self, github, item, source, key):
         """Preserve all readable review bodies before any personal-actor filtering."""
@@ -312,7 +312,7 @@ class Github:
                 github.setdefault('reference_reviews', []).append({
                     'item_url': item['url'], 'repo': item['repo'], 'number': item['number'], 'source': source})
         except ERRORS:
-            self.problem(key, 'invalid native review context skipped; discussion coverage is incomplete')
+            self.problem(key, 'a review GitHub returned was malformed and skipped; discussion coverage is incomplete')
 
     def _inspect_activity(self, github, items):
         seen, jobs = self._activity_seen, []

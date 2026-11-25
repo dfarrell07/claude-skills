@@ -428,7 +428,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         except (subprocess.SubprocessError, OSError, ValueError, OverflowError):
             skipped += 1
             entry['status'] = 'skipped'
-            warn(f'Git inventory failed for {entry["path"]}; local evidence is incomplete.')
+            warn(f'Could not read Git data for {entry["path"]}; local work there may be missing.')
 
     # Names select verification leads only. They never establish ownership.
     unknown = {}
