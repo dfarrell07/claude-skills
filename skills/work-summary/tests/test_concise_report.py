@@ -165,89 +165,41 @@ class ConciseReportTest(unittest.TestCase):
             self.assertTrue(brief.startswith('- Merged: '))
             self.assertNotIn('##',brief)
 
-    def test_native_context_urls_survive_no_jira_auth_without_becoming_verified_relations(self):
-        source = self.capture()
-        pr = source['github']['prs'][0]
-        pr['body'] = 'Context https://other-jira.example/browse/CONTEXT-9?focusedCommentId=17#note'
-        source['jira'] = {'metadata':{'status':'unavailable','site':''},'issues':[],'activity':[]}
-        enriched = self.enrich(source)
-        enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
-        report = ws.render(enriched)
-        self.assertIn('  - https://other-jira.example/browse/CONTEXT-9',report)
-        self.assertIn('Jira state is unverified',report)
-        self.assertNotIn('Coverage is incomplete',report)
-        self.assertNotIn('jira_links',pr)
-        self.assertEqual(source['jira']['issues'],[])
-        proof = ws.contextual_jira_links(pr)[0]
-        self.assertEqual(proof['proof'],'github_body_url')
-        self.assertEqual(proof['evidence_url'],pr['url'])
-        self.assertTrue(proof['source_url'].endswith('#note'))
-
-    def test_context_url_rejects_unsafe_authority_paths_suffixes_and_bare_keys(self):
-        source = self.capture()
-        pr = source['github']['prs'][0]
-        invalid = ['http://jira.example/browse/TEST-1', 'https://user:secret@jira.example/browse/TEST-1',
-                   'https://jira.example/browse/TEST-1oops', 'https://jira.example/browse/TEST-1.20',
-                   'https://jira.example/browse/TEST-1/extra', 'https://jira.example/../browse/TEST-1',
-                   'https://jira.example/browse/%54EST-1', 'https://jira.example:999999/browse/TEST-1',
-                   'https://jira.example／evil/browse/TEST-1',
-                   'https://jira.example：443/browse/TEST-1',
-                   'TEST-1', 'release-4.20']
-        for body in invalid:
-            with self.subTest(body=body):
-                pr['body']=body
-                self.assertEqual(ws.contextual_jira_links(pr),[])
-                self.assertNotIn('Jira state is unverified',ws.render(source))
-
-    def test_comment_only_context_is_selectable_without_jira_access(self):
+    def test_ticket_urls_in_pr_text_or_comments_are_not_selectable_links(self):
         source = self.capture()
         pr = source['github']['prs'][0]
         ticket = 'https://jira.example.test/browse/CONTEXT-9'
-        comment = {'item_url': pr['url'], 'repo': pr['repo'], 'number': pr['number'],
-                   'kind': 'issue_comment', 'id': 42, 'node_id': None,
-                   'url': pr['url'] + '#issuecomment-42', 'body': 'Core context: ' + ticket,
-                   'author_login': 'another-author', 'created_at': '2025-01-01T00:00:00Z',
-                   'updated_at': '2025-01-02T00:00:00Z'}
-        source['github']['reference_comments'] = [comment]
+        pr['title'] = 'Fix https://jira.example.test/browse/TITLE-3'
+        pr['body'] = 'Context ' + ticket
+        source['github']['reference_comments'] = [{
+            'item_url': pr['url'], 'repo': pr['repo'], 'number': pr['number'], 'kind': 'issue_comment', 'id': 42,
+            'node_id': None, 'url': pr['url'] + '#issuecomment-42', 'body': 'See https://jira.example.test/browse/OTHER-1',
+            'author_login': 'another-author', 'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-02T00:00:00Z'}]
         source['jira'] = {'metadata': {'status': 'unavailable', 'site': ''}, 'issues': [], 'activity': []}
+        original = copy.deepcopy(source)
         enriched = self.enrich(source)
-        enriched['analysis']['themes'][0]['links'] = [ticket, pr['url']]
-        report = ws.render(enriched)
-        self.assertIn('  - ' + ticket, report)
-        self.assertIn('Jira state is unverified', report)
-        proof = ws.contextual_jira_links(pr, [comment])[0]
-        self.assertEqual(proof['proof'], 'github_comment_url')
-        self.assertEqual(proof['evidence_url'], comment['url'])
-        self.assertNotIn('activity', source['github'])
-        self.assertNotIn('jira_links', pr)
-        self.assertEqual(ws.contextual_jira_links({**pr, 'url': pr['url'] + '9'}, [comment]), [])
+        theme = enriched['analysis']['themes'][0]
+        self.assertEqual(ws.work_urls(source, theme), [pr['url']])
+        self.assertEqual(source, original)
+        for selected in (ticket, 'https://jira.example.test/browse/TITLE-3', 'https://jira.example.test/browse/OTHER-1'):
+            with self.subTest(selected=selected):
+                theme['links'] = [selected, pr['url']]
+                with self.assertRaisesRegex(ValueError, 'not among this topic'):
+                    ws.render(enriched)
 
-    def test_foreign_site_context_never_joins_a_same_key_native_ticket(self):
+    def test_foreign_site_url_never_joins_a_same_key_native_ticket(self):
         source = self.capture()
         issue = self.add_jira(source)
-        source['github']['prs'][0]['body']='https://foreign.example/browse/TEST-123'
+        source['github']['prs'][0]['body'] = 'https://foreign.example/browse/TEST-123'
         enriched = self.enrich(source)
-        enriched['analysis']['themes'][0]['links'] = ws.work_urls(source, enriched['analysis']['themes'][0])
-        report = ws.render(enriched)
-        self.assertIn('  - '+issue['url'],report)
-        self.assertIn('  - https://foreign.example/browse/TEST-123',report)
-        self.assertIn('Jira state is unverified',report)
-        self.assertEqual(len(source['jira']['issues']),1)
-
-    def test_context_url_case_normalization_deduplicates_a_known_native_ticket(self):
-        source=self.capture()
-        issue=self.add_jira(source)
-        original='https://JIRA.EXAMPLE.TEST/browse/test-123'
-        pr=source['github']['prs'][0]
-        pr['body']=original
-        enriched=self.enrich(source)
-        enriched['analysis']['themes'][0]['links']=ws.work_urls(source,enriched['analysis']['themes'][0])
-        report=ws.render(enriched)
-        self.assertEqual(report.count('  - '+issue['url']),1)
-        self.assertNotIn('state is unverified',report)
-        proof=ws.contextual_jira_links(pr)[0]
-        self.assertEqual(proof['url'],issue['url'])
-        self.assertEqual(proof['source_url'],original)
+        theme = enriched['analysis']['themes'][0]
+        urls = ws.work_urls(source, theme)
+        self.assertIn(issue['url'], urls)
+        self.assertNotIn('https://foreign.example/browse/TEST-123', urls)
+        self.assertEqual(len(source['jira']['issues']), 1)
+        pr_url = source['github']['prs'][0]['url']
+        theme['links'] = [pr_url, issue['url']]  # the chosen order, not candidate order
+        self.assertIn('  - ' + pr_url + '\n  - ' + issue['url'], ws.render(enriched))
 
     def test_untrusted_descriptions_cannot_create_work_rows_html_or_formatting(self):
         source = self.capture()
@@ -333,17 +285,13 @@ class ConciseReportTest(unittest.TestCase):
         pr=source['github']['prs'][0]
         pr.update(state='open',merged_at=None,closed_at=None,
                   body='https://unknown.example/browse/TEST-1')
-        context='https://unknown.example/browse/TEST-1'
         enriched=copy.deepcopy(source)
         ongoing={**self.reference(pr),'description':'Continue work','links':[]}
         enriched['analysis']={'themes':[],'in_progress':[ongoing]}
         self.assertEqual(ws.render(enriched),'- Ongoing: Continue work')
-        ongoing['links']=[context,pr['url'],context]
-        report=ws.render(enriched)
-        self.assertIn('- Ongoing: Continue work\n  - '+context+'\n  - '+pr['url'],report)
-        self.assertEqual(report.count(context),1)
-        self.assertIn('Jira state is unverified',report)
-        for selected in (['https://forged.example/browse/TEST-1'],None,'invalid'):
+        ongoing['links']=[pr['url'],pr['url']]
+        self.assertEqual(ws.render(enriched),'- Ongoing: Continue work\n  - '+pr['url'])
+        for selected in (['https://unknown.example/browse/TEST-1'],['https://forged.example/browse/TEST-1'],None,'invalid'):
             with self.subTest(selected=selected):
                 ongoing['links']=selected
                 with self.assertRaises(ValueError):
@@ -386,58 +334,15 @@ class ConciseReportTest(unittest.TestCase):
             'author_email':'me@example.test','committed_at':'2026-01-12T12:00:00Z'}]}
         return source
 
-    def test_local_native_subject_retains_explicit_links_without_remote_auth_or_join(self):
-        source=self.local_capture()
-        entry=source['commits']['/private/checker'][0]
-        entry['message']='Fix https://JIRA.EXAMPLE/browse/test-123 and https://github.com/org/repo/pull/8#note'
-        original=copy.deepcopy(source)
-        topic=ws.fallback_topics(source)[0]
-        enriched=copy.deepcopy(source)
-        topic.update(name='Local work',links=ws.work_urls(source,topic))
-        enriched['analysis']={'themes':[topic],'in_progress':[]}
-        report=ws.render(enriched)
-        self.assertIn('  - https://jira.example/browse/TEST-123',report)
-        self.assertIn('  - https://github.com/org/repo/pull/8',report)
-        self.assertIn('Jira state is unverified',report)
-        self.assertIn('GitHub state is unverified',report)
-        self.assertNotIn('Coverage is incomplete',report)
-        self.assertEqual(source,original)
-        proofs=ws.local_context_links(source,topic)
-        self.assertEqual({proof['hash'] for proof in proofs},{entry['hash']})
-        self.assertTrue(all(proof['proof']=='local_commit_subject_url' for proof in proofs))
-        self.assertTrue(any(proof['source_url'].endswith('#note') for proof in proofs))
-
-    def test_local_context_requires_exact_selected_author_verified_subject(self):
-        source=self.local_capture()
-        entry=source['commits']['/private/checker'][0]
-        entry['message']='Context https://jira.example/browse/TEST-1'
-        topic={'commits':[{'repo':'/private/checker','hash':'c'*40}]}
-        self.assertEqual(ws.local_context_links(source,topic),[])
-        topic['commits'][0]['hash']=entry['hash']
-        source['metadata']['repositories'][0]['identities']=[]
-        self.assertEqual(ws.local_context_links(source,topic),[])
-
-    def test_local_context_rejects_unsafe_or_unsupported_urls_and_honors_enterprise_host(self):
-        source=self.local_capture()
-        source['metadata']['github_host']='git.example:8443'
-        entry=source['commits']['/private/checker'][0]
-        topic={'commits':[{'repo':'/private/checker','hash':entry['hash']}]}
-        invalid=['https://git.example:8443/../repo/pull/1',
-            'https://other.example/org/repo/pull/1','https://github.com/org/repo/pull/1',
-            'https://git.example:8443/org/repo/pull/1/extra',
-            'https://git.example:8443/org/repo/pull/1oops',
-            'https://user:secret@git.example:8443/org/repo/pull/1',
-            'https://git.example:999999/org/repo/pull/1',
-            'https://git.example／evil/org/repo/pull/1',
-            'https://git.example：8443/org/repo/pull/1',
-            'http://jira.example/browse/TEST-1','https://jira.example/browse/TEST-1.20',
-            'https://jira.example/browse/%54EST-1','TEST-1']
-        for value in invalid:
-            with self.subTest(value=value):
-                entry['message']=value
-                self.assertEqual(ws.local_context_links(source,topic),[])
-        entry['message']='https://GIT.EXAMPLE:8443/org/repo/pull/8'
-        self.assertEqual(ws.work_urls(source,topic),['https://git.example:8443/org/repo/pull/8'])
+    def test_urls_in_local_commit_subjects_are_not_selectable_links(self):
+        source = self.local_capture()
+        entry = source['commits']['/private/checker'][0]
+        entry['message'] = 'Fix https://jira.example/browse/TEST-123 and https://github.com/org/repo/pull/8'
+        original = copy.deepcopy(source)
+        topic = ws.fallback_topics(source)[0]
+        self.assertEqual(ws.work_urls(source, topic), [])
+        self.assertNotIn('unverified', ws.render(source))
+        self.assertEqual(source, original)
 
     def test_native_mr_context_is_raw_and_markdown_sensitive_url_stays_literal(self):
         source=self.capture()
@@ -646,25 +551,6 @@ class ConciseReportTest(unittest.TestCase):
         report=ws.render(enriched)
         self.assertEqual(report.count(url),2)
         self.assertIn('  - Child work\n    - '+url,report)
-
-    def test_no_auth_context_is_selectable_but_never_automatic_or_noted_if_omitted(self):
-        source=self.capture()
-        pr=source['github']['prs'][0]
-        urls=[f'https://unknown.example/browse/TEST-{number}' for number in range(1,15)]
-        pr['body']=' '.join(urls)
-        enriched=self.enrich(source)
-        theme=enriched['analysis']['themes'][0]
-        candidates=ws.work_urls(source,theme)
-        self.assertTrue(set(urls)<=set(candidates))
-        for capture in (source,enriched):
-            report=ws.render(capture)
-            self.assertNotIn('unknown.example',report)
-            self.assertNotIn('Jira state is unverified',report)
-        theme['links']=list(reversed(urls))
-        report=ws.render(enriched)
-        self.assertEqual([line.strip()[2:] for line in report.splitlines() if line.startswith('  - ')],
-                         list(reversed(urls)))
-        self.assertIn('Jira state is unverified',report)
 
     def test_grouping_nodes_require_evidenced_children(self):
         source=self.capture()

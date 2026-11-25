@@ -18,14 +18,13 @@ sys.dont_write_bytecode = True
 
 from evidence import (  # noqa: E402
     HOST, command, decode_json, integer, iso, network_calls, progress, read_json, require,
-    reset_network_state, timestamp, is_pr_url,
+    reset_network_state, timestamp,
 )
 from local_sources import collect_local  # noqa: E402
 from capabilities import collect_local_safely, empty_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, github_items, native_review_links  # noqa: E402
-from extended_evidence import github_reference_comments  # noqa: E402
 from gitlab_sources import SCOPE as GITLAB_REF_SCOPE, collect_gitlab_refs  # noqa: E402
 from gitlab_api import collect_gitlab, public_get  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
@@ -278,64 +277,6 @@ def markdown(text):
     return re.sub(r"^([0-9]{1,9})\.(?=\s|$)", r"\1\\.", text)
 
 
-def native_https_urls(text):
-    """Parse complete native URLs without trusting malformed authorities."""
-    for match in re.finditer(r'https://[^\s<>"\[\]()]+', text):
-        original = match.group().rstrip('.,;:!?`\'’”')
-        try:
-            parts = urlsplit(original)
-            if parts.port is not None and not 1 <= parts.port <= 65535:
-                continue
-        except ValueError:
-            continue
-        if HOST.fullmatch(parts.netloc) and parts.username is None and parts.password is None:
-            yield original, parts
-
-
-def contextual_jira_links(item, comments=()):
-    """Retain explicit native browse URLs without inventing a Jira identity."""
-    if not is_pr_url(item['url']):
-        return []
-    result = {}
-    sources = [(field, item['url'], item.get(field, '')) for field in ('title', 'body')]
-    sources.extend(('comment', comment['url'], comment['body']) for comment in comments
-                   if comment['item_url'] == item['url'])
-    for field, evidence_url, text in sources:
-        for original, parts in native_https_urls(text):
-            if re.fullmatch(r'/browse/[A-Z][A-Z0-9_]*-[1-9][0-9]*', parts.path, re.I):
-                url = 'https://' + parts.netloc.lower() + '/browse/' + parts.path.rsplit('/', 1)[1].upper()
-                result[url] = {'url': url, 'source_url': original, 'proof': 'github_' + field + '_url',
-                               'evidence_url': evidence_url}
-    return [result[url] for url in sorted(result)]
-
-
-def local_context_links(data, topic):
-    """Retain explicit URLs only from selected, native author-verified subjects."""
-    refs = {(item['repo'], item['hash']) for item in topic.get('commits', [])}
-    identities = {item['path']: item['identities'] for item in data['metadata'].get('repositories', [])}
-    host = data['metadata'].get('github_host', 'github.com').casefold()
-    result = {}
-    for repo, entries in data['commits'].items():
-        for entry in entries:
-            if ((repo, entry['hash']) not in refs
-                    or entry.get('author_email') not in identities.get(repo, [])):
-                continue
-            for original, parts in native_https_urls(entry['message']):
-                if re.fullmatch(r'/browse/[A-Z][A-Z0-9_]*-[1-9][0-9]*', parts.path, re.I):
-                    provider = 'jira'
-                    path = '/browse/' + parts.path.rsplit('/', 1)[1].upper()
-                elif (parts.netloc.casefold() == host
-                      and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*', parts.path)
-                      and not any(part in {'.', '..'} for part in parts.path.split('/'))):
-                    provider, path = 'github', parts.path
-                else:
-                    continue
-                url = 'https://' + parts.netloc.lower() + path
-                result[url] = {'url': url, 'source_url': original, 'provider': provider,
-                               'proof': 'local_commit_subject_url', 'repo': repo, 'hash': entry['hash']}
-    return [result[url] for url in sorted(result)]
-
-
 def topic_github_items(data, topic):
     by_url = {item['url']: item for item in reversed(github_items(data['github']))}
     return list({item['url']: by_url[item['url']] for item in topic.get('items', [])}.values())
@@ -366,8 +307,6 @@ def work_urls(data, topic):
 
     def github(item):
         change_urls.add(item['url'])
-        ticket_urls.update(relation['url'] for relation in contextual_jira_links(
-            item, github_reference_comments(data['github'])))
         for relation in item.get('jira_links', []):
             if relation['key'] in jira:
                 ticket(jira[relation['key']], False)
@@ -376,8 +315,6 @@ def work_urls(data, topic):
         github(item)
     for reference in topic.get('jira', []):
         ticket(jira[reference['key']], True)
-    for relation in local_context_links(data, topic):
-        (ticket_urls if relation['provider'] == 'jira' else change_urls).add(relation['url'])
     for mr in topic_merge_requests(data, topic):
         change_urls.add(mr['url'])
         for relation in mr.get('jira_links', []):
@@ -552,24 +489,7 @@ def render(data):
         lines.extend(render_topic_lines(data, topic, authored='analysis' in data))
     if not topics:
         lines.append('No supported work found in the available evidence.')
-    known_jira_urls = {item['url'] for item in data.get('jira', {}).get('issues', [])}
-    contextual = set()
-    local_github_context = set()
-    for topic in topic_nodes(topics):
-        displayed = set(display_urls(data, topic))
-        for item in topic_github_items(data, topic):
-            contextual.update(link['url'] for link in contextual_jira_links(
-                item, github_reference_comments(data['github']))
-                              if link['url'] in displayed)
-        for relation in local_context_links(data, topic):
-            if relation['url'] in displayed:
-                (contextual if relation['provider'] == 'jira' else local_github_context).add(relation['url'])
     notes = []
-    if contextual - known_jira_urls:
-        notes.append('Jira state is unverified for contextual links.')
-    known_github_urls = {item['url'].casefold() for item in github_items(data['github'])}
-    if {url.casefold() for url in local_github_context} - known_github_urls:
-        notes.append('GitHub state is unverified for contextual links.')
     states = [('GitHub', data['metadata'].get('github_status')),
               ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
               ('local Git', data['metadata'].get('local_status')),

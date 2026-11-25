@@ -109,9 +109,10 @@ refs or scan unreachable objects.
   branches do not exist.
 - **Jira:** credit activity only from native comment author account IDs and
   timestamps. Display names, bodies or projected rows without actors cannot prove
-  who acted or when. Keep restricted titles private. If Jira is unavailable,
-  explicit Jira URLs in PR bodies remain unverified context. Likewise PR URLs from
-  Jira when GitHub is unavailable.
+  who acted or when. Keep restricted titles private. When writing the list by
+  hand, explicit Jira URLs in PR bodies can stand as unverified context if Jira
+  is unavailable, and PR URLs from Jira if GitHub is; the renderer accepts only
+  links the collector captured.
 - **GitLab:** API authentication and Git SSH access are independent. For a known
   project, a bounded `git ls-remote --refs REMOTE 'refs/merge-requests/*/head'`
   can match MR heads to local commits without fetching. Run it with the remote's

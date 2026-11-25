@@ -10,9 +10,7 @@ captures; none should change the digest unless stated. Verify every change by di
 1. **Jira comments:** done. Comment edits are no longer credited anywhere.
 2. **Jira public history:** done, except: optionally show field names in the digest
    ("status→Closed").
-3. **Contextual links:** remove `contextual_jira_links`, `local_context_links`,
-   `native_https_urls` and the "state is unverified for contextual links" notes
-   (one changed digest line on a real quarter).
+3. **Contextual links:** done.
 4. **Modules:** dissolve `extended_evidence.py` and `provider_references.py` into
    `github_sources`, `jira_sources`, `gitlab_api`, `work_links` and `references`. Store
    Jira key aliases as a plain dict and drop the second-view alias proof.

@@ -63,7 +63,6 @@ changing the collector. SKILL.md's credit rules are the short version.
 - Follow references from the user's own work: the tickets its PRs name and the
   PRs and MRs those tickets list. A reference never credits its author to the
   user or turns old discussion into new work.
-- A removed link in ticket history is context, not a current pairing.
 
 ## GitLab
 
