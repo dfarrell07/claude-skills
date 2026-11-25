@@ -201,13 +201,11 @@ Not this, which is an inventory the manager would have to sort:
 - 412 commits across 9 repositories
 ```
 
-Never construct a Jira URL from a bare key or fabricate a counterpart. Explicit
-URLs found in PR bodies, commit subjects or Jira fields can be shown as unverified
-context when the other provider is unavailable. If source gaps could hide
-important work, add one short final sentence naming the missing sources, e.g.
-"Jira was unavailable, so ticket comments are not included." Distinguish
-unavailable access from incomplete verification; keep detailed diagnostics in
-the run directory.
+Never construct a Jira URL from a bare key or fabricate a counterpart. If source
+gaps could hide important work, add one short final sentence naming the missing
+sources, e.g. "Jira was unavailable, so ticket comments are not included."
+Distinguish unavailable access from incomplete verification; keep detailed
+diagnostics in the run directory.
 
 ## Analysis schema
 
