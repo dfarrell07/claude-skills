@@ -17,6 +17,17 @@ MAX_REDIRECTS, MAX_BYTES = 5, 20 * 1024 * 1024
 ERRORS = (OSError, URLError, ValueError, TypeError, KeyError, AttributeError)
 
 
+def verified_aliases(metadata, jira=None):
+    """Emails proven to be the user's: GitHub account addresses and a verified Jira login."""
+    native = {'authenticated_github_profile', 'authenticated_github_noreply', 'github_commit_account'}
+    result = {row['email'] for row in metadata.get('author_aliases', [])
+              if isinstance(row, dict) and row.get('source') in native and isinstance(row.get('email'), str)}
+    identity = (jira or {}).get('metadata', {})
+    if identity.get('identity_verified') is True and identity.get('account_id') and isinstance(identity.get('user'), str):
+        result.add(identity['user'])
+    return sorted(result)
+
+
 def mr_route(url):
     require(isinstance(url, str), 'Invalid MR URL')
     p = urlsplit(url)

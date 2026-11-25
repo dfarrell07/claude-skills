@@ -6,9 +6,8 @@ references in old or unrelated items are context, not reasons to crawl further.
 """
 
 from evidence import progress
-from extended_evidence import github_reference_comments
-from provider_references import associate_gitlab, code_urls, gitlab_texts
-from work_links import discovery_keys, github_items, native_review_links
+from work_links import (associate_gitlab, code_urls, discovery_keys, github_items, github_reference_comments,
+                        gitlab_texts, native_review_links)
 
 
 def active_items(github):
@@ -41,7 +40,7 @@ def active_tickets(jira):
     return [issue for issue in jira.get('issues', []) if issue['key'] in commented or roles & set(issue.get('roles', []))]
 
 
-def follow_references(jira, github, branches, read_tickets, read_gitlab, read_history=None, github_host='github.com'):
+def follow_references(jira, github, branches, read_tickets, read_gitlab, read_history=None):
     site = jira.get('metadata', {}).get('site')
     items = active_items(github)
     texts = item_texts(github, items)
@@ -55,12 +54,12 @@ def follow_references(jira, github, branches, read_tickets, read_gitlab, read_hi
         read_history(tickets)
     targets = {link['url'] for issue in tickets for link in native_review_links(issue) if link['provider'] == 'gitlab'}
     targets.update(mr['url'] for branch in branches for mr in branch.get('merge_requests', []))
-    targets.update(url for text in texts for provider, url in code_urls(text, github_host) if provider == 'gitlab')
+    targets.update(url for text in texts for provider, url, _ in code_urls(text) if provider == 'gitlab')
     if targets:
         progress(f"references: reading {len(targets)} GitLab MRs")
     gitlab = read_gitlab(sorted(targets))
     known = {issue['key'] for issue in jira.get('issues', [])}
-    mr_keys = sorted({key for _, _, _, text, _ in gitlab_texts(gitlab)
+    mr_keys = sorted({key for _, _, _, text in gitlab_texts(gitlab)
                       for key in discovery_keys(text, site)} - known - set(keys))
     if mr_keys:
         read_tickets(mr_keys)

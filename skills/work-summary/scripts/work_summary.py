@@ -24,11 +24,10 @@ from local_sources import collect_local  # noqa: E402
 from capabilities import collect_local_safely, empty_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
-from work_links import associate_work, github_items, native_review_links  # noqa: E402
+from work_links import associate_work, code_urls, github_items, native_review_links  # noqa: E402
 from gitlab_sources import SCOPE as GITLAB_REF_SCOPE, collect_gitlab_refs  # noqa: E402
-from gitlab_api import collect_gitlab, public_get  # noqa: E402
+from gitlab_api import collect_gitlab, public_get, verified_aliases  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
-from provider_references import code_urls, verified_aliases  # noqa: E402
 from references import follow_references  # noqa: E402
 from reporting_window import resolve_window  # noqa: E402
 
@@ -140,7 +139,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
                                     read=read_public,
                                     trusted_hosts=trusted_gitlab_hosts(local['metadata'], jira, github, github_user)),
-        read_history, host), no_references)
+        read_history), no_references)
     phase("Linking tickets and PRs", lambda: associate_work(jira, github), lambda: None)
     if {"Jira", "Reference expansion"} & failed and jira.get('metadata', {}).get('status') == 'ok':
         jira['metadata']['status'] = 'partial'
@@ -167,7 +166,7 @@ def trusted_gitlab_hosts(local_metadata, jira, github=None, login=''):
     for item in (github or {}).get('prs', []):
         if login and (item.get('author_login') or '').casefold() == login.casefold():
             hosts.update(urlsplit(url).hostname or '' for text in (item.get('title'), item.get('body'))
-                         for provider, url in code_urls(text or '') if provider == 'gitlab')
+                         for provider, url, _ in code_urls(text or '') if provider == 'gitlab')
     hosts.update(remote['host'].casefold() for entry in local_metadata.get('repositories', [])
                  for remote in entry.get('remotes', []) if isinstance(remote.get('host'), str))
     for issue in jira.get('issues', []):

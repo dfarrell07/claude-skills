@@ -28,6 +28,14 @@ def response(url, source, status=200, redirects=None):
 
 
 class GitLabApiTest(unittest.TestCase):
+    def test_only_native_account_aliases_can_supply_public_identity_bridge(self):
+        from gitlab_api import verified_aliases
+        self.assertEqual(verified_aliases({'author_aliases': [
+            {'email': 'own@example.test', 'source': 'authenticated_github_profile'},
+            {'email': 'guessed@example.test', 'source': 'configured_git_email'},
+            {'email': 'historical@example.test', 'source': 'github_commit_account'}]}),
+            ['historical@example.test', 'own@example.test'])
+
     def collect(self, read, urls=(WEB,), emails=('own@example.test',), trusted=None):
         calls, warnings = [], []
 

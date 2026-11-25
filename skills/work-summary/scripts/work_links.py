@@ -3,27 +3,83 @@
 import re
 from urllib.parse import quote, urlsplit
 
-from evidence import is_pr_url
-from extended_evidence import github_reference_comments, jira_key_aliases
+from evidence import HOST, is_pr_url
 
 KEY = re.compile(r'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Za-z0-9_]|\.[0-9])', re.I)
 NON_JIRA = {'CVE', 'GHSA', 'RFC', 'ISO'}
-URL = re.compile(r'https?://[^\s<>"\[\]()]+')
+# A backslash never appears unescaped in a URL; JSON-escaped text ("\\n") would otherwise join two.
+URL = re.compile(r'https?://[^\s<>"\[\]()\\]+')
 MARKDOWN_LINK = re.compile(r'\[[^\]\n]*\]\((https?://[^\s<>"()]+)\)')
 UUID = re.compile(r'(?<![0-9a-f])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}(?![0-9a-f])', re.I)
+# A PR link may point into the PR (/files, /commits/...); GitLab project paths allow only [A-Za-z0-9_.-].
+GITHUB_PR = re.compile(r'(/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*)(?:/.*)?')
+GITLAB_MR = re.compile(r'/(?:[A-Za-z0-9_.-]+/){2,}-/merge_requests/[1-9][0-9]*')
 
 
-def _url_keys(text, site, confirmed=False):
-    """An explicit authority is stronger evidence than a project-name heuristic."""
-    explicit = set()
+def urls(text):
+    """Each URL in text with trailing punctuation stripped, as (original, parts); bad authorities skipped."""
     for match in URL.finditer(text or ''):
+        original = match.group().rstrip('.,;:!?`\'’”')
         try:
-            parts = urlsplit(match.group().rstrip('.,;:!?`\'’”'))
+            parts = urlsplit(original)
             # Accessing port also rejects invalid and out-of-range authorities.
             if parts.port is not None and not 1 <= parts.port <= 65535:
                 continue
         except ValueError:
             continue
+        yield original, parts
+
+
+def code_urls(text, github_host=None):
+    """HTTPS GitHub PR (on the configured host) and GitLab MR links: (provider, url, original)."""
+    for original, parts in urls(text):
+        if (parts.scheme != 'https' or not HOST.fullmatch(parts.netloc) or parts.username or parts.password
+                or any(part in {'.', '..'} for part in parts.path.split('/'))):
+            continue
+        pull = GITHUB_PR.fullmatch(parts.path)
+        if github_host and parts.netloc.casefold() == github_host.casefold() and pull:
+            yield 'github', 'https://' + parts.netloc.lower() + pull.group(1), original
+        elif GITLAB_MR.fullmatch(parts.path):
+            yield 'gitlab', 'https://' + parts.netloc.lower() + parts.path, original
+
+
+def jira_strings(value, sensitive=False):
+    """Every string in a Jira value as (text, sensitive); a restricted object marks what it contains.
+
+    Wiki markup separates link text from the URL with '|', so it becomes a space.
+    """
+    if isinstance(value, str):
+        yield value.replace('|', ' '), sensitive
+    elif isinstance(value, dict):
+        fields = value.get('fields')
+        for scope in [value] + ([fields] if isinstance(fields, dict) else []):
+            labels = scope.get('labels')
+            sensitive = sensitive or bool(scope.get('security') or scope.get('visibility')) or (
+                isinstance(labels, list) and any(isinstance(label, str) and (
+                    'security' in label.casefold() or label.upper().startswith('CVE-')) for label in labels))
+        for child in value.values():
+            yield from jira_strings(child, sensitive)
+    elif isinstance(value, list):
+        for child in value:
+            yield from jira_strings(child, sensitive)
+
+
+def github_reference_comments(github):
+    """Yield saved discussion bodies and identity-bound current native bodies."""
+    yield from github.get('reference_comments', [])
+    for record in github.get('reference_reviews', []):
+        source = record['source']
+        yield {'item_url': record['item_url'], 'repo': record['repo'], 'number': record['number'],
+               'kind': 'review', 'id': source['id'], 'node_id': source.get('node_id'),
+               'url': source['html_url'], 'body': source['body'] or '',
+               'author_login': (source['user'] or {}).get('login'),
+               'author_node_id': (source['user'] or {}).get('node_id'), 'submitted_at': source['submitted_at']}
+
+
+def _url_keys(text, site, confirmed=False):
+    """An explicit authority is stronger evidence than a project-name heuristic."""
+    explicit = set()
+    for _, parts in urls(text):
         key = parts.path.removeprefix('/browse/')
         if (site and parts.netloc.casefold() == site.casefold()
                 and (not confirmed or parts.scheme == 'https')
@@ -69,20 +125,6 @@ def pr_identity(url):
 
 def native_review_links(issue):
     """Keep explicit GitLab MR references as context without querying that host."""
-    def values(value, sensitive):
-        if isinstance(value, str):
-            yield value, sensitive
-        elif isinstance(value, dict):
-            labels = value.get('labels')
-            private = sensitive or bool(value.get('security') or value.get('visibility')) or (
-                isinstance(labels, list) and any(isinstance(label, str) and (
-                    'security' in label.casefold() or label.upper().startswith('CVE-')) for label in labels))
-            for child in value.values():
-                yield from values(child, private)
-        elif isinstance(value, list):
-            for child in value:
-                yield from values(child, sensitive)
-
     fields = (issue.get('detail') or {}).get('fields', {})
     sources = [('description', issue['url'], fields.get('description'), issue['sensitive'], {}),
                ('issue_link', issue['url'], fields.get('issuelinks'), issue['sensitive'], {})]
@@ -101,24 +143,18 @@ def native_review_links(issue):
                             or not isinstance(comment.get('author'), dict), {}))
     result = {}
     for proof, evidence_url, value, sensitive, extra in sources:
-        for text, private in values(value, sensitive):
-            for match in URL.finditer(text.replace('|', ' ')):
-                original = match.group().rstrip('.,;:!?`\'’”')
-                try:
-                    parts = urlsplit(original)
-                    if parts.port is not None and not 1 <= parts.port <= 65535:
-                        continue
-                except ValueError:
-                    continue
-                if (parts.scheme != 'https' or not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', parts.netloc)
-                        or not re.fullmatch(r'/(?:[A-Za-z0-9_.~-]+/){2,}-/merge_requests/[1-9][0-9]*', parts.path)
-                        or any(part in {'.', '..'} for part in parts.path.split('/'))):
-                    continue
-                url = 'https://' + parts.netloc + parts.path
-                relation = {'url': url, 'source_url': original, 'provider': 'gitlab', 'proof': proof,
+        for text, private in jira_strings(value, sensitive):
+            for provider, url, original in code_urls(text):
+                relation = {'url': url, 'source_url': original, 'provider': provider, 'proof': proof,
                             'evidence_url': evidence_url, 'sensitive': private, **extra}
                 result[(url, proof, evidence_url, private, tuple(sorted(extra.items())))] = relation
     return [result[key] for key in sorted(result)]
+
+
+def gitlab_texts(gitlab):
+    for item in gitlab.get('items', []):
+        for field in ('title', 'description'):
+            yield item, field, item['url'], item['source'].get(field) or ''
 
 
 def github_items(github):
@@ -130,7 +166,7 @@ def associate_work(jira, github):
     """Add symmetric links, retaining provenance of each explicit mention."""
     issues = {issue['key']: issue for issue in jira['issues']}
     site = jira.get('metadata', {}).get('site')
-    ticket_aliases = jira_key_aliases(jira)
+    ticket_aliases = jira.get('key_aliases', {})
     items = github_items(github)
     canonical = {pr_identity(item['url']): item['url'] for item in reversed(items) if is_pr_url(item['url'])}
     relations = {}
@@ -186,3 +222,19 @@ def associate_work(jira, github):
         issue['review_links'] = native_review_links(issue)
 
 
+def associate_gitlab(jira, gitlab):
+    issues = {issue['key']: issue for issue in jira.get('issues', [])}
+    site = jira.get('metadata', {}).get('site')
+    aliases = jira.get('key_aliases', {})
+    relations = {item['url']: {} for item in gitlab.get('items', [])}
+    for item, field, url, text in gitlab_texts(gitlab):
+        for source_key in confirmed_keys(text, site):
+            key = aliases.get(source_key, source_key)
+            if key in issues:
+                relation = {'key': key, 'url': issues[key]['url'], 'proof': 'gitlab_' + field + '_key',
+                            'evidence_url': url, 'sensitive': issues[key]['sensitive']}
+                if key != source_key:
+                    relation.update(source_key=source_key, jira_source_url=f'https://{site}/browse/{source_key}')
+                relations[item['url']].setdefault(key, relation)
+    for item in gitlab.get('items', []):
+        item['jira_links'] = [relations[item['url']][key] for key in sorted(relations[item['url']])]

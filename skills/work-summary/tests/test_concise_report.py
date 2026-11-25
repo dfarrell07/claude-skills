@@ -347,7 +347,7 @@ class ConciseReportTest(unittest.TestCase):
     def test_native_mr_context_is_raw_and_markdown_sensitive_url_stays_literal(self):
         source=self.capture()
         issue=self.add_jira(source)
-        url='https://git.example.test/group/project~~not~~/-/merge_requests/17'
+        url='https://git.example.test/group/_project_/-/merge_requests/17'
         issue['detail']['fields']['description'] += '\nContext '+url
         associate_work(source['jira'],source['github'])
         enriched=self.enrich(source)

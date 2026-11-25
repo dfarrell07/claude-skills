@@ -546,34 +546,60 @@ else:
         self.assertEqual(len(self.warnings) - warnings_before, 1)
         self.assertIn("1 referenced ticket(s) could not be read", self.warnings[-1])
 
-    def test_moved_key_retains_canonical_ticket_and_two_native_identity_proofs(self):
+    def test_moved_key_retains_canonical_ticket_and_records_the_move(self):
         native = detail(issue('NEW-3'), [comment('moved-comment', ME)])
         native['fields']['description'] = {'text': 'https://github.com/org/repo/pull/15'}
         self.data['details'].update({'OLD-2': native, 'NEW-3': copy.deepcopy(native)})
         result = self.collect()
         jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
         self.assertEqual({item['key'] for item in result['issues']}, {'TEST-1', 'NEW-3'})
-        proof = result['key_aliases'][0]
-        self.assertEqual((proof['requested_key'], proof['canonical_key']), ('OLD-2', 'NEW-3'))
-        self.assertEqual(proof['requested'], native)
-        self.assertEqual(proof['canonical'], native)
+        self.assertEqual(result['key_aliases'], {'OLD-2': 'NEW-3'})
         self.assertEqual(linked_prs(result), ['https://github.com/org/repo/pull/15'])
         self.assertIn('OLD-2', result['metadata']['coverage']['referenced_by_github']['returned_keys'])
-        before = len(self.calls())
+        before, warned = len(self.calls()), len(self.warnings)
         jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
         self.assertEqual(self.calls()[before:], [['jira', 'auth', 'status']])
+        self.assertEqual(len(self.warnings), warned)
+        self.assertEqual(result['metadata']['coverage']['referenced_by_github']['failures'], {})
 
-    def test_unverified_key_redirect_does_not_discard_readable_canonical_native_issue(self):
+    def test_moved_key_to_a_captured_ticket_keeps_one_ticket(self):
+        self.data['details']['OLD-2'] = copy.deepcopy(self.data['details']['TEST-1'])
+        result = self.collect()
+        jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
+        self.assertEqual([item['key'] for item in result['issues']], ['TEST-1'])
+        self.assertEqual(result['key_aliases'], {'OLD-2': 'TEST-1'})
+        self.assertIn('referenced_by_github', result['issues'][0]['roles'])
+
+    def test_moved_keys_from_unlisted_projects_are_skipped_unless_already_known(self):
+        self.data['projects'] = [{'key': 'TEST'}, {'key': 'NEW'}]
+        self.data['details']['OLD-2'] = detail(issue('NEW-3'))
+        result = self.collect()
+        before = len(self.calls())
+        jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
+        self.assertFalse(any(call[:3] == ['jira', 'workitem', 'view'] for call in self.calls()[before:]))
+        coverage = result['metadata']['coverage']['referenced_by_github']
+        self.assertEqual(coverage['not_a_project'], ['OLD-2'])
+        self.data['details']['NEW-3'] = detail(issue('NEW-3'))
+        self.fixture.write_text(json.dumps(self.data))
+        jira.add_referenced_jira(result, ['NEW-3'], START, END, self.warnings.append)
+        result['key_aliases']['OLD-2'] = 'NEW-3'
+        jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
+        self.assertIn('OLD-2', coverage['returned_keys'])
+
+    def test_key_redirect_is_read_once(self):
         native = detail(issue('NEW-3'))
         self.data['details']['OLD-2'] = native
         result = self.collect()
+        before = len(self.calls())
         jira.add_referenced_jira(result, ['OLD-2'], START, END, self.warnings.append)
+        views = [call[3] for call in self.calls()[before:] if call[:3] == ['jira', 'workitem', 'view']]
+        self.assertEqual(views, ['OLD-2'])
         retained = next(item for item in result['issues'] if item['key'] == 'NEW-3')
         self.assertEqual(retained['source'], native)
         self.assertEqual(retained['detail_status'], 'ok')
-        self.assertFalse(result.get('key_aliases'))
-        self.assertIn('OLD-2', result['metadata']['coverage']['referenced_by_github']['failures'])
-        self.assertEqual(len(result["activity"]), 1)
+        self.assertEqual(result['key_aliases'], {'OLD-2': 'NEW-3'})
+        self.assertIn('OLD-2', result['metadata']['coverage']['referenced_by_github']['returned_keys'])
+        self.assertNotIn('OLD-2', result['metadata']['coverage']['referenced_by_github']['failures'])
 
     def test_referenced_failure_retains_native_diagnostic_and_successful_retry_clears_it(self):
         result = self.collect()

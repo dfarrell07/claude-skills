@@ -20,11 +20,11 @@ sys.dont_write_bytecode = True
 from evidence import (  # noqa: E402
     HOST, command, decode_json, integer, iso, require, timestamp,
 )
+from work_links import code_urls, jira_strings  # noqa: E402
 
 
 KEY = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*\Z")
 BACKEND = re.compile(r"jira-prod-[a-z0-9]+(?:-[a-z0-9]+)*\.prod\.atl-paas\.net\Z")
-PR_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*(?=$|[\s/?#\"<>),.;\]])")
 SEARCH_FIELDS = "key,summary,status,assignee,reporter,labels"
 DETAIL_FIELDS = "*all"
 ERRORS = (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError)
@@ -40,24 +40,6 @@ def _failure(error):
     elif isinstance(error, subprocess.TimeoutExpired):
         result["timeout"] = error.timeout
     return result
-
-
-def _source_strings(value, sensitive=False):
-    if isinstance(value, str):
-        yield value, sensitive
-    elif isinstance(value, dict):
-        fields = value.get("fields", value)
-        labels = fields.get("labels", []) if isinstance(fields, dict) else []
-        restricted_labels = isinstance(labels, list) and any(
-            isinstance(label, str) and ("security" in label.casefold() or label.upper().startswith("CVE-"))
-            for label in labels)
-        sensitive = sensitive or bool(value.get("visibility")) or bool(
-            isinstance(fields, dict) and fields.get("security")) or restricted_labels
-        for child in value.values():
-            yield from _source_strings(child, sensitive)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _source_strings(child, sensitive)
 
 
 def _quoted(value):
@@ -114,13 +96,10 @@ def _custom_pr_links(item, fields, source_kind, github_host):
     for field_id, value in fields.items():
         if not re.fullmatch(r'customfield_[1-9][0-9]*', field_id):
             continue
-        for text, private in _source_strings(value, item.get('sensitive', True)):
-            for url in PR_URL.findall(text.replace('|', ' ')):
-                parts = urlsplit(url)
-                if (parts.netloc.casefold() != github_host.casefold()
-                        or any(part in {'.', '..'} for part in parts.path.split('/')[1:3])):
+        for text, private in jira_strings(value, item.get('sensitive', True)):
+            for provider, url, _ in code_urls(text, github_host):
+                if provider != 'github':
                     continue
-                url = 'https://' + parts.netloc.lower() + parts.path
                 row = {'url': url, 'proof': 'custom_field', 'field_id': field_id,
                        'source_kind': source_kind, 'evidence_url': item['url'], 'sensitive': private}
                 result[url, field_id, private] = row
@@ -217,11 +196,9 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                     for comment in comments]
         proofs = set()
         for proof, evidence_url, source, sensitive in sources:
-            for text, source_sensitive in _source_strings(source, sensitive):
-                for url in PR_URL.findall(text):
-                    parts = urlsplit(url)
-                    if (parts.netloc == metadata.get("github_host", "github.com")
-                            and all(part not in {".", ".."} for part in parts.path.split("/")[1:3])):
+            for text, source_sensitive in jira_strings(source, sensitive):
+                for provider, url, _ in code_urls(text, metadata.get("github_host", "github.com")):
+                    if provider == "github":
                         proofs.add((url, proof, evidence_url, source_sensitive))
         item["pr_links"] = [{"url": url, "proof": proof, "evidence_url": evidence_url, "sensitive": sensitive}
                             for url, proof, evidence_url, sensitive in sorted(proofs)]
@@ -432,7 +409,7 @@ def add_referenced_jira(result, keys, start, end, warn):
         gap("Jira site/account changed or became unavailable; referenced tickets were not read.")
         return result
     by_key = {item["key"]: item for item in result["issues"]}
-    key_aliases = {row['requested_key']: row['canonical_key'] for row in result.get('key_aliases', [])}
+    key_aliases = result.setdefault('key_aliases', {})
     selected, preloaded = [], {}
     projects = set(metadata.get("project_keys") or ())
     known = set(by_key) | set(key_aliases)
@@ -461,7 +438,6 @@ def add_referenced_jira(result, keys, start, end, warn):
         try:
             require(isinstance(key, str) and KEY.fullmatch(key), "Invalid referenced issue key")
             item = by_key.get(key_aliases.get(key, key))
-            alias_error = None
             if item is None:
                 raw = fetched[key]
                 if isinstance(raw, Exception):
@@ -476,26 +452,12 @@ def add_referenced_jira(result, keys, start, end, warn):
                     item = existing
                 preloaded[canonical_key] = raw
                 if canonical_key != key:
-                    try:
-                        canonical = decode_json(command(['acli', 'jira', 'workitem', 'view', canonical_key,
-                                                         '--fields', DETAIL_FIELDS, '--json'], stdin=''))
-                        normalized = _normalize(canonical, site)
-                        require(normalized['key'] == canonical_key
-                                and re.fullmatch(r'[1-9][0-9]*', str(raw.get('id')))
-                                and not isinstance(raw.get('id'), bool)
-                                and str(raw['id']) == str(canonical.get('id')), 'Jira key alias identity mismatch')
-                        result.setdefault('key_aliases', []).append({'requested_key': key,
-                            'canonical_key': canonical_key, 'requested': raw, 'canonical': canonical})
-                        key_aliases[key] = canonical_key
-                        preloaded[canonical_key] = canonical
-                    except ERRORS as error:
-                        alias_error = error
+                    # Jira answered the old key with the moved ticket: remember the move.
+                    key_aliases[key] = canonical_key
             if "referenced_by_github" not in item["roles"]:
                 item["roles"].append("referenced_by_github")
             if item["detail_status"] != "ok" and item not in selected:
                 selected.append(item)
-            if alias_error is not None:
-                raise alias_error
             if key not in coverage["returned_keys"]:
                 coverage["returned_keys"].append(key)
             failures.pop(key, None)
