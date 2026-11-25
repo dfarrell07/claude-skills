@@ -25,7 +25,6 @@ from capabilities import collect_local_safely, empty_local  # noqa: E402
 from github_sources import Github  # noqa: E402
 from jira_sources import collect_jira, add_referenced_jira  # noqa: E402
 from work_links import associate_work, code_urls, github_items, native_review_links  # noqa: E402
-from gitlab_sources import SCOPE as GITLAB_REF_SCOPE, collect_gitlab_refs  # noqa: E402
 from gitlab_api import collect_gitlab, public_get, verified_aliases  # noqa: E402
 from jira_public_history import collect_public_history, public_field_events  # noqa: E402
 from references import follow_references  # noqa: E402
@@ -95,9 +94,6 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
     local['metadata']['repos_with_commits'] = len(local['commits'])
     progress(f"local: {local['metadata']['repos_searched']} repositories, "
              f"{local['metadata']['repos_with_commits']} with commits in the window")
-    gitlab_discovery = phase(
-        "GitLab MR refs", lambda: collect_gitlab_refs(local['branches'], local['metadata']['repositories'], warn),
-        lambda: {'status': 'unavailable', 'scope': GITLAB_REF_SCOPE, 'queries': [], 'routes': [], 'failures': []})
     for entry in local['metadata'].get('repositories', []):
         # Full ref listings and tips (most of a large capture) only serve local collection.
         entry.pop('refs', None)
@@ -134,7 +130,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         return collect_gitlab([], warn), {'status': 'failed'}
 
     gitlab, expansion = phase("Reference expansion", lambda: follow_references(
-        jira, github, local['branches'],
+        jira, github,
         lambda keys: add_referenced_jira(jira, keys, start, end, warn),
         lambda urls: collect_gitlab(urls, warn, verified_emails=verified_aliases(local['metadata'], jira),
                                     read=read_public,
@@ -152,7 +148,6 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
         "metadata": {**window, **local["metadata"], "network_requests": network_calls(),
                      "local_status": local_status, "capabilities": {"local_git": local_capability},
                      "github_discovery": discovery, "reference_expansion": expansion,
-                     "gitlab_discovery": gitlab_discovery,
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "warnings": warnings},
         "github": github, "jira": jira, "gitlab": gitlab,
@@ -282,15 +277,8 @@ def topic_github_items(data, topic):
 
 
 def topic_merge_requests(data, topic):
-    """Native advertised heads identify counterparts, without supplying MR state."""
-    refs = {(item['repo'], item['hash']) for item in topic.get('commits', []) + topic.get('branches', [])}
     by_url = {item['url']: item for item in data.get('gitlab', {}).get('items', [])}
-    selected = {reference['url']: by_url[reference['url']] for reference in topic.get('merge_requests', [])}
-    for branch in data.get('branches', []):
-        if (branch['repo'], branch['hash']) in refs:
-            for mr in branch.get('merge_requests', []):
-                selected[mr['url']] = by_url.get(mr['url'], mr)
-    return list(selected.values())
+    return list({reference['url']: by_url[reference['url']] for reference in topic.get('merge_requests', [])}.values())
 
 
 def work_urls(data, topic):
@@ -492,7 +480,6 @@ def render(data):
     states = [('GitHub', data['metadata'].get('github_status')),
               ('Jira', data.get('jira', {}).get('metadata', {}).get('status')),
               ('local Git', data['metadata'].get('local_status')),
-              ('GitLab refs', data['metadata'].get('gitlab_discovery', {}).get('status')),
               ('GitLab API', data.get('gitlab', {}).get('metadata', {}).get('status'))]
     unavailable = [name + ' unavailable' for name, status in states if status == 'unavailable']
     # With an analysis the agent writes the one source sentence the reader needs.

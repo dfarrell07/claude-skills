@@ -10,11 +10,16 @@ from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from evidence import HOST, decode_json, integer, require, timestamp
-from gitlab_sources import project_path
 
 SCOPE = 'explicit_public_merge_requests'
 MAX_REDIRECTS, MAX_BYTES = 5, 20 * 1024 * 1024
 ERRORS = (OSError, URLError, ValueError, TypeError, KeyError, AttributeError)
+PART = re.compile(r'[A-Za-z0-9_.-]+\Z')
+
+
+def project_path(value):
+    return (isinstance(value, str) and len(value.split('/')) >= 2
+            and all(PART.fullmatch(part) and part not in {'.', '..'} for part in value.split('/')))
 
 
 def verified_aliases(metadata, jira=None):

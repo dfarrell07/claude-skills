@@ -36,7 +36,7 @@ class FollowReferencesTest(unittest.TestCase):
             reads['gitlab'].append(list(urls))
             return {'items': list(gitlab_items), 'metadata': {}}
 
-        gitlab, summary = follow_references(jira, github, [], read_tickets, read_gitlab,
+        gitlab, summary = follow_references(jira, github, read_tickets, read_gitlab,
                                             lambda tickets: reads['history'].append([t['key'] for t in tickets]))
         return reads, gitlab, summary
 

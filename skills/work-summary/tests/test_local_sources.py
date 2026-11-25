@@ -138,9 +138,8 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertIn(str(project), data['commits'])
         self.assertIn(str(home / 'Library'), data['metadata']['scan_exclusions'])
 
-    def test_foreign_tip_retains_own_history_proof_and_backup_ref(self):
+    def test_branch_whose_tip_is_someone_elses_is_not_a_lead_but_its_own_commits_count(self):
         repo = self.repo(self.root / 'repository')
-        self.git(repo, 'update-ref', 'refs/remotes/origin/main', self.git(repo, 'rev-parse', 'HEAD'))
         self.git(repo, 'checkout', '-qb', 'feature')
         self.git(repo, 'commit', '--allow-empty', '-qm', 'Own feature')
         own = self.git(repo, 'rev-parse', 'HEAD')
@@ -148,17 +147,10 @@ class LocalSourcesTest(unittest.TestCase):
                  'commit', '--allow-empty', '-qm', 'Other followup')
         foreign = self.git(repo, 'rev-parse', 'HEAD')
         self.git(repo, 'update-ref', 'refs/codex/backup', foreign)
-        with patch.object(local_sources, 'git', wraps=local_sources.git) as calls:
-            data = self.capture(repo)
-        branch = next(branch for branch in data['branches'] if branch['hash'] == foreign)
-        self.assertEqual(branch['attribution'], 'contains_configured_or_verified_author')
-        self.assertEqual(branch['attribution_commit']['hash'], own)
-        self.assertEqual(branch['attribution_commit']['author_email'], 'own@example.test')
-        self.assertEqual(set(branch['refs']), {'refs/heads/feature', 'refs/codex/backup'})
-        # Ordinary refs get their containment from one listing, not a check per commit.
-        self.assertFalse(any(call.args[1:3] == ('merge-base', '--is-ancestor') for call in calls.call_args_list))
-        self.assertEqual(sum(call.args[1] == 'for-each-ref' and call.args[2].startswith('--merged=')
-                             for call in calls.call_args_list), 1)
+        data = self.capture(repo)
+        self.assertFalse(any(branch['hash'] == foreign for branch in data['branches']))
+        self.assertIn(own, {commit['hash'] for commit in data['commits'][str(repo)]})
+        self.assertNotIn(foreign, {commit['hash'] for commit in data['commits'][str(repo)]})
 
     def test_alias_only_on_older_backup_is_independently_verified(self):
         repo = self.repo(self.root / 'repository')
@@ -180,8 +172,7 @@ class LocalSourcesTest(unittest.TestCase):
                       if alias['email'] == 'historical@example.test'), None)
         self.assertIsNotNone(alias)
         self.assertEqual(alias['source'], 'github_commit_account')
-        backup = next(branch for branch in data['branches'] if branch['hash'] == historical)
-        self.assertFalse(backup['recent_tip'])
+        self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))  # tip is old
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
 
     def test_distinct_push_fork_and_fetch_upstream_are_both_retained(self):
@@ -207,24 +198,53 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
 
-    def test_old_detached_head_is_a_snapshot_without_creating_named_refs(self):
+    def test_detached_head_commits_count_without_creating_refs_or_branch_leads(self):
         repo = self.repo(self.root / 'repository')
         worktree = self.root / 'detached-worktree'
         self.git(repo, 'worktree', 'add', '--detach', str(worktree))
-        with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
-                                  'GIT_COMMITTER_DATE': '2000-01-01T00:00:00Z'}):
-            self.git(worktree, 'commit', '--allow-empty', '-qm', 'Old detached work')
-        historical = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(worktree, 'commit', '--allow-empty', '-qm', 'Detached work')
         detached = self.git(worktree, 'rev-parse', 'HEAD')
         refs_before = self.git(repo, 'for-each-ref', '--format=%(refname):%(objectname)')
         data = self.capture(repo)
         self.assertEqual(self.git(repo, 'for-each-ref', '--format=%(refname):%(objectname)'), refs_before)
-        snapshot = next(branch for branch in data['branches'] if branch['hash'] == detached)
-        self.assertEqual(snapshot['refs'], ['worktree:' + str(worktree)])
-        self.assertTrue(snapshot['detached'])
-        self.assertTrue(snapshot['backup'])
-        self.assertFalse(snapshot['recent_tip'])
-        self.assertEqual({commit['hash'] for commit in data['commits'][str(repo)]}, {historical})
+        self.assertIn(detached, {commit['hash'] for commit in data['commits'][str(repo)]})
+        self.assertFalse(any(branch['hash'] == detached for branch in data['branches']))
+
+    def test_branch_leads_are_own_local_branches_with_tips_in_the_window(self):
+        repo = self.repo(self.root / 'repository')
+        current = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'update-ref', 'refs/remotes/origin/main', current)
+        self.git(repo, 'checkout', '-qb', 'old')
+        with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
+                                  'GIT_COMMITTER_DATE': '2000-01-01T00:00:00Z'}):
+            self.git(repo, 'commit', '--allow-empty', '-qm', 'Old work')
+        self.git(repo, 'checkout', '-q', 'main')
+        data = self.capture(repo)
+        self.assertEqual([(branch['hash'], branch['refs']) for branch in data['branches']],
+                         [(current, ['refs/heads/main'])])
+        self.assertEqual(data['branches'][0]['author_email'], 'own@example.test')
+
+    def test_mailmap_cannot_change_attribution(self):
+        repo = self.repo(self.root / 'repository')
+        (repo / '.mailmap').write_text('Other Author <other@example.test> <own@example.test>\n')
+        data = self.capture(repo)
+        commits = data['commits'][str(repo)]
+        self.assertEqual({commit['author_email'] for commit in commits}, {'own@example.test'})
+        self.assertEqual({branch['author_email'] for branch in data['branches']}, {'own@example.test'})
+
+    def test_branch_window_bounds_and_shared_tips(self):
+        repo = self.repo(self.root / 'repository')
+        for name, when in (('at-start', '2026-01-08T12:00:00Z'), ('future', '2026-01-15T12:00:01Z')):
+            self.git(repo, 'checkout', '-qb', name, 'main')
+            with patch.dict(self.env, {'GIT_AUTHOR_DATE': when, 'GIT_COMMITTER_DATE': when}):
+                self.git(repo, 'commit', '--allow-empty', '-qm', name)
+        self.git(repo, 'checkout', '-q', 'main')
+        at_start = self.git(repo, 'rev-parse', 'at-start')
+        self.git(repo, 'update-ref', 'refs/heads/also-at-start', at_start)
+        start = datetime(2026, 1, 8, 12, tzinfo=timezone.utc)
+        data = local_sources.collect_local([str(repo)], start, start + timedelta(days=7), lambda message: None)
+        self.assertEqual([(branch['hash'], sorted(branch['refs'])) for branch in data['branches']],
+                         [(at_start, ['refs/heads/also-at-start', 'refs/heads/at-start'])])
 
     def test_regular_walk_directories_reuse_canonical_parent(self):
         root = self.root / 'workspace'

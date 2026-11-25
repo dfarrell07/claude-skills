@@ -15,9 +15,10 @@ changing the collector. SKILL.md's credit rules are the short version.
 - Credit commits only to configured or account-verified author emails. Names are
   leads. Committer time places a commit in the window; an older author time marks
   a rebase or cherry-pick, not new implementation.
-- Keep branch tips, backup refs and detached HEADs as snapshots. For a stale
-  worktree, read its surviving administration files and HEAD reflog before
-  calling its history lost. Never fetch, repair worktrees or change refs.
+- Read commits on every ref, including backup refs, detached HEADs and the HEAD
+  reflog a stale worktree's administration files keep. List as branch leads only
+  the user's own local branches whose tip is in the window. Never fetch, repair
+  worktrees or change refs.
 - Clones, scratch copies and generated test repositories repeat or fabricate
   history; deduplicate and check purpose before turning them into accomplishments.
 
@@ -66,10 +67,6 @@ changing the collector. SKILL.md's credit rules are the short version.
 
 ## GitLab
 
-- Match advertised MR head refs to local commits with `git ls-remote` run from an
-  empty directory against the verified remote URL, so the checkout's own config
-  (credential helpers, proxies, SSH commands) cannot take part. A match supplies
-  an MR link, not its state or activity.
 - Read MR details anonymously only from gitlab.com, configured remote
   hosts and hosts named in Jira review fields or the user's own PR descriptions.
   Credit a GitLab account only when its public email matches an already verified

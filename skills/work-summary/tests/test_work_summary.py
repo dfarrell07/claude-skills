@@ -610,8 +610,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertFalse(any("Registered worktree is missing" in warning for warning in data["metadata"]["warnings"]))
         retained = [item for item in data["metadata"]["repositories"][0]["worktrees"] if not item['exists']]
         self.assertEqual(len(retained), 1)
-        self.assertEqual(retained[0]['recovery']['status'], 'ok')
-        self.assertIn(self.git(repo, 'rev-parse', 'HEAD'), retained[0]['recovery']['available_heads'])
+        self.assertIn(self.git(repo, 'rev-parse', 'HEAD'), retained[0]['recovered_heads'])
         self.assertFalse(tree.exists())
 
     def test_hidden_backup_and_symlink_workspace_cycles(self):
@@ -637,18 +636,19 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["commits"][str(bare)][0]["message"], "Bare backup work")
         self.assertTrue(data["metadata"]["repositories"][0]["bare"])
 
-    def test_backup_ref_and_noncommit_tree_are_retained(self):
+    def test_branch_leads_are_own_local_branches_only(self):
         repo = self.repo("ref-backup", "Snapshot work")
         sha = self.git(repo, "rev-parse", "HEAD")
         tree = self.git(repo, "rev-parse", "HEAD^{tree}")
         self.git(repo, "update-ref", "refs/heads/summary-bak0", sha)
+        self.git(repo, "update-ref", "refs/remotes/origin/main", sha)
         self.git(repo, "update-ref", "refs/codex/reviewed-tree", tree)
         data = self.capture(repo)
-        self.assertTrue(any("refs/heads/summary-bak0" in item["refs"] for item in data["branches"]))
-        snapshot = next(item for item in data["branches"] if "refs/codex/reviewed-tree" in item["refs"])
-        self.assertEqual(snapshot["object_type"], "tree")
-        self.assertEqual(snapshot["attribution"], "undated_noncommit_snapshot")
-        self.assertEqual(snapshot["pr_status"], "not_applicable")
+        self.assertEqual(len(data["branches"]), 1)
+        self.assertEqual(data["branches"][0]["hash"], sha)
+        self.assertIn("refs/heads/summary-bak0", data["branches"][0]["refs"])
+        self.assertTrue(all(ref.startswith("refs/heads/") for ref in data["branches"][0]["refs"]))
+        self.assertEqual([row["message"] for row in data["commits"][str(repo)]], ["Snapshot work"])
 
     def test_remote_credentials_are_not_captured(self):
         repo = self.repo("remote")
