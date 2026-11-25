@@ -438,6 +438,25 @@ else:
         self.data["details"]["TEST-1"]["fields"].pop("security")
         self.assertEqual(self.collect()["issues"][0]["detail_status"], "failed")
 
+    def test_newest_page_missing_only_comments_older_than_the_window_is_complete(self):
+        # Jira embeds the newest 100 comments: startAt 59 of 159 leaves out the oldest 59.
+        before, during = comment("old", created="2026-01-01T00:00:00Z"), comment("new", created="2026-01-10T00:00:00Z")
+        at_start = comment("edge", OTHER, created="2026-01-08T12:00:00Z")  # a missing one could share this instant
+        # (embedded rows, total Jira reports, warning expected)
+        for rows, total, warned in (([before, during], 61, False), ([during], 60, True), ([before, during], 62, True),
+                                    ([at_start, during], 61, True)):
+            with self.subTest(rows=[row["id"] for row in rows], total=total):
+                self.data["details"]["TEST-1"] = detail(issue(), rows)
+                self.data["details"]["TEST-1"]["fields"]["comment"].update(startAt=59, total=total)
+                result = self.collect()
+                self.assertEqual([event["comment_id"] for event in result["activity"]], ["new"])
+                self.assertEqual(any("the comments that were read are kept" in warning for warning in self.warnings),
+                                 warned)
+        self.data["details"]["TEST-1"] = detail(issue())
+        self.data["details"]["TEST-1"]["fields"]["comment"].update(startAt=5, total=5)
+        self.collect()
+        self.assertTrue(any("the comments that were read are kept" in warning for warning in self.warnings))
+
     def test_fewer_embedded_comments_than_total_is_a_gap_without_paging(self):
         positive = comment("c2", created="2026-01-11T00:00:00Z", body="https://github.com/org/repo/pull/2")
         for native in ({"startAt": 0, "total": 2}, {"startAt": 1, "total": 1}, {"startAt": 0, "total": 0},

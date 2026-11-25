@@ -158,8 +158,9 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             metadata["coverage"]["details"]["status"] = "partial"
             gap("One ticket's details could not be read; the ticket is still listed.")
             continue
-        # Jira embeds every comment in the detail read (195 of 195 real tickets, up to 97
-        # comments each); if it ever returns fewer than its total, say so rather than page.
+        # Jira embeds the newest 100 comments in the detail read. acli's comment list returns
+        # older ones only with display names and no times, so they could not be credited
+        # anyway; they are missed only if the window reaches back past the embedded ones.
         native = fields.get("comment")
         listed = native.get("comments") if isinstance(native, dict) else None
         listed = listed if isinstance(listed, list) else []
@@ -169,8 +170,10 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                 by_id.setdefault(comment["id"], comment)
         comments = list(by_id.values())
         # Repeated, id-less or undated comments also count as not read.
-        complete = (integer(native.get("startAt")) and native["startAt"] == 0 and integer(native.get("total"))
-                    and native["total"] == len(comments) == len(listed)) if isinstance(native, dict) else False
+        complete = (integer(native.get("startAt")) and integer(native.get("total"))
+                    and native["startAt"] + len(comments) == native["total"]
+                    and len(comments) == len(listed)) if isinstance(native, dict) else False
+        earliest = None
         for comment in comments:
             author = comment.get("author")
             try:
@@ -178,6 +181,7 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
             except ERRORS:
                 complete = False
                 continue
+            earliest = created if earliest is None else min(earliest, created)
             if (verified and isinstance(author, dict) and author.get("accountId") == account_id
                     and start <= created <= end):
                 result["activity"].append({"kind": "comment_created", "key": item["key"], "comment_id": comment["id"],
@@ -185,6 +189,8 @@ def _detail_items(result, selected, start, end, warn, preloaded=None):
                                            "actor_account_id": account_id, "occurred_at": iso(created),
                                            "sensitive": item["sensitive"] or bool(comment.get("visibility")),
                                            "source": comment})
+        if complete and native["startAt"] and not (earliest is not None and earliest < start):
+            complete = False  # older comments are missing and may fall inside the window
         if not complete:
             gap("One ticket's comments could not all be read; the comments that were read are kept.")
         sources = [("description", item["url"], fields.get("description"), item["sensitive"]),
