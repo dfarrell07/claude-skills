@@ -20,6 +20,9 @@ captures; none should change the digest unless stated. Verify every change by di
 9. **Tests:** one shared capture builder in `tests/`; collapse scanner tests into one
    table-driven test.
 
+Collection timed on real data after items 1–5: 12.6 minutes for 90 days (73 before
+the speedups) and about 4 for 7 days.
+
 ## Behaviour to decide
 
 - Maintainer actions on others' PRs (merge, force-push, close without review or
@@ -30,8 +33,6 @@ captures; none should change the digest unless stated. Verify every change by di
 
 ## Qualification still needed
 
-- Time a real quarterly collection on the final code (73 minutes before the last
-  speedups) and update the quarterly reference's timing.
 - Run another round of independent reviews (correctness, design, docs, real 1:1 and
   quarterly forward tests) after the items above, until reviews find nothing material.
 - The `plans/quarterly-review-support.md` qualification notes predate the
