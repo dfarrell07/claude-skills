@@ -451,7 +451,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError):
                 pass
 
-    commits, unattributed, branches = {}, [], []
+    commits, branches = {}, []
     for entry in entries.values():
         configured = list(entry['identities'])
         entry['configured_identities'] = configured
@@ -473,18 +473,6 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
              'object_type': 'commit', 'peeled_type': None}
             for tree in entry['worktrees']
             for sha in tree.get('recovery', {}).get('unreferenced_reflog_heads', [])]
-        leads_seen = set()
-        for record in records.get(entry['path'], []) + tip_records.get(entry['path'], []):
-            if record['author_email'] in unknown and record['author_email'] not in entry['identities']:
-                if record['hash'] in leads_seen:
-                    continue
-                leads_seen.add(record['hash'])
-                in_window = start <= datetime.fromisoformat(record['committed_at'].replace('Z', '+00:00')) <= end
-                unattributed.append({'repo': entry['path'], **record,
-                                     'scope': 'recent_commit' if in_window else 'historical_snapshot',
-                                     'refs': [ref['name'] for ref in snapshot_refs
-                                              if record['hash'] in (ref['hash'], ref.get('peeled_hash'))],
-                                     'reason': 'name_match_only; account attribution unverified'})
         if entry.get('status') != 'ok':
             continue
         try:
@@ -561,4 +549,4 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
                          'scan_unreadable': sorted(set(unreadable)),
                          'repositories': list(entries.values()), 'author_aliases': list(aliases.values())},
-            'commits': commits, 'branches': branches, 'unattributed_commits': unattributed}
+            'commits': commits, 'branches': branches}

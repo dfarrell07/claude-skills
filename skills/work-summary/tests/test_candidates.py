@@ -46,7 +46,7 @@ def capture():
         'gitlab': {'items': [], 'metadata': {}},
         'commits': {path: [commit('a', 'Fix the parser'), commit('b' if path == '/work/repo' else 'c', 'Add tests')]
                     for path in ('/work/repo', '/scratch/repo-copy')},
-        'branches': [], 'unattributed_commits': [],
+        'branches': [],
     }
 
 

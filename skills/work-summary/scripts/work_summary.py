@@ -160,7 +160,6 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                      "warnings": warnings},
         "github": github, "jira": jira, "gitlab": gitlab,
         "commits": local["commits"], "branches": local["branches"],
-        "unattributed_commits": local["unattributed_commits"],
     }
 
 

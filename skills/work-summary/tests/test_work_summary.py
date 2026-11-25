@@ -663,7 +663,6 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.git(repo, "-c", "user.email=historical@example.test", "commit", "--allow-empty", "-qm", "Historical alias")
         unverified = self.capture(repo)
         self.assertEqual(len(unverified["commits"][str(repo)]), 1)
-        self.assertEqual(len(unverified["unattributed_commits"]), 1)
         self.env["GH_ALIAS_EMAIL"] = "historical@example.test"
         verified = self.capture(repo)
         self.assertEqual(len(verified["commits"][str(repo)]), 2)

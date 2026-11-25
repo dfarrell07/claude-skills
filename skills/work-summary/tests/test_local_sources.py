@@ -194,7 +194,7 @@ class LocalSourcesTest(unittest.TestCase):
         self.assertEqual(remotes['upstream/repository']['directions'], ['fetch'])
         self.assertEqual(remotes['own-user/repository']['directions'], ['push'])
 
-    def test_old_unverified_backup_alias_remains_a_historical_lead(self):
+    def test_old_unverified_backup_alias_is_not_credited(self):
         repo = self.repo(self.root / 'repository')
         self.git(repo, 'checkout', '-qb', 'backup/historical')
         with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
@@ -204,10 +204,6 @@ class LocalSourcesTest(unittest.TestCase):
         historical = self.git(repo, 'rev-parse', 'HEAD')
         self.git(repo, 'checkout', '-q', 'main')
         data = self.capture(repo)
-        lead = next(lead for lead in data['unattributed_commits'] if lead['hash'] == historical)
-        self.assertEqual(lead['scope'], 'historical_snapshot')
-        self.assertEqual(lead['committed_at'], '2000-01-01T00:00:00Z')
-        self.assertEqual(lead['refs'], ['refs/heads/backup/historical'])
         self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
 
