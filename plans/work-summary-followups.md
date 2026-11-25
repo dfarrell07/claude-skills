@@ -23,7 +23,7 @@ captures; none should change the digest unless stated. Verify every change by di
    Jira key aliases as a plain dict and drop the second-view alias proof.
 5. **One URL scanner** for GitHub PR, GitLab MR and Jira browse links, and one Jira
    text walker shared by `_source_strings` and `native_review_links`.
-6. **Local sources:** drop `unattributed_commits` (no consumer); keep only own branch
+6. **Local sources:** keep only own branch
    heads with in-window tips; shrink stale-worktree recovery to reflog parsing.
    Decide whether `gitlab_sources.py` (MR head probe, 0 unique MRs measured) stays.
 7. **Dead code:** done, except: consider replacing the no-analysis fallback renderer
