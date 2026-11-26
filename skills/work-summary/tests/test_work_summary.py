@@ -636,7 +636,7 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.assertEqual(data["commits"][str(bare)][0]["message"], "Bare backup work")
         self.assertTrue(data["metadata"]["repositories"][0]["bare"])
 
-    def test_branch_leads_are_own_local_branches_only(self):
+    def test_local_branch_ref_tips_are_credited_once_as_commits(self):
         repo = self.repo("ref-backup", "Snapshot work")
         sha = self.git(repo, "rev-parse", "HEAD")
         tree = self.git(repo, "rev-parse", "HEAD^{tree}")
@@ -644,10 +644,6 @@ print(json.dumps({"total_count": total, "incomplete_results": mode == "incomplet
         self.git(repo, "update-ref", "refs/remotes/origin/main", sha)
         self.git(repo, "update-ref", "refs/codex/reviewed-tree", tree)
         data = self.capture(repo)
-        self.assertEqual(len(data["branches"]), 1)
-        self.assertEqual(data["branches"][0]["hash"], sha)
-        self.assertIn("refs/heads/summary-bak0", data["branches"][0]["refs"])
-        self.assertTrue(all(ref.startswith("refs/heads/") for ref in data["branches"][0]["refs"]))
         self.assertEqual([row["message"] for row in data["commits"][str(repo)]], ["Snapshot work"])
 
     def test_remote_credentials_are_not_captured(self):

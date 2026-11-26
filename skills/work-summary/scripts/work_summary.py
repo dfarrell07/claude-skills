@@ -151,7 +151,7 @@ def collect(days_text, roots, now=None, *, since=None, until=None):
                      "github_status": github_status, "github_user": github_user, "github_host": host,
                      "warnings": warnings},
         "github": github, "jira": jira, "gitlab": gitlab,
-        "commits": local["commits"], "branches": local["branches"],
+        "commits": local["commits"],
     }
 
 
@@ -218,12 +218,6 @@ def validate(data):
         for item in jira_refs:
             require(isinstance(item, dict) and item.get("key") in jira_items
                     and item.get("url") == jira_items[item["key"]]["url"], "Jira citation absent from capture")
-        branch_refs = theme.get("branches", [])
-        require(isinstance(branch_refs, list), "Invalid branch citations")
-        for item in branch_refs:
-            require(isinstance(item, dict) and any(item.get("repo") == branch["repo"]
-                    and item.get("hash") == branch["hash"] for branch in data.get("branches", [])),
-                    "Branch citation absent from capture")
         mr_refs = theme.get('merge_requests', [])
         require(isinstance(mr_refs, list), 'Invalid GitLab MR citations')
         native_mrs = {item['url']: item for item in data.get('gitlab', {}).get('items', [])}
@@ -244,7 +238,7 @@ def validate(data):
         require(isinstance(children, list), "Invalid subtopics")
         for child in children:
             theme_node(child)
-        require(theme["items"] or local or jira_refs or branch_refs or mr_refs or children,
+        require(theme["items"] or local or jira_refs or mr_refs or children,
                 "A theme needs at least one source citation or evidenced subtopic")
         validate_selected_links(data, theme)
 
