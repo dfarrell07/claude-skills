@@ -14,7 +14,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,7 +25,7 @@ H5, WEEK = timedelta(hours=5), timedelta(days=7)
 FLOOR_5H, FLOOR_5H_ORCH = 10, 25  # a 5h pool is blocked at or below this percent left; hold below twice it
 HOLD_BELOW, HOLD_BELOW_ORCH = 0.9, 1.0  # R below this: behind pace
 UNSTARTED_SLACK = timedelta(minutes=2)
-GROUPS = {"personal": ["agy:personal", "agy:personal2", "codex:personal", "codex:personal2", "subagent"],
+GROUPS = {"personal": ["agy:personal", "agy:personal2", "codex:personal", "subagent"],
           "work": ["codex:work"]}
 KICK_MODEL = "gemini-3.8-flash"
 KICK_COOLDOWN = 15 * 60  # seconds; a kicked pool still reads 100% and looks unstarted for a while
@@ -183,6 +182,8 @@ def parse_claude(out, now):
         return pools
     if re.search(r"cost:", out, re.I):  # cost lines only: an API-key or logged-out config, not a subscription
         return "no subscription usage (API key or logged out)"
+    if "using your subscription" in out:  # since late 2026 /usage in -p mode shows a breakdown but no limits
+        return "usage not reported (no limit rows)"
     return no_figures(out)
 
 
@@ -193,14 +194,7 @@ def claude(account, now):
     # Always name the config dir: on macOS an unset CLAUDE_CONFIG_DIR is a separate Keychain login from an explicit
     # ~/.claude (the one cper uses), and it may be logged out.
     env["CLAUDE_CONFIG_DIR"] = f"{HOME}/.claude-per2" if account == "personal2" else f"{HOME}/.claude"
-    cmd = ["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"]
-    out = run(cmd, env)
-    for wait in (3, 10):  # the usage rows sometimes miss (seen near a 5h reset, twice in a row); they come back
-        if "Current " in out:
-            break
-        time.sleep(wait)
-        out = run(cmd, env)
-    return parse_claude(out, now)
+    return parse_claude(run(["claude", "-p", "/usage", "--no-session-persistence", "--strict-mcp-config"], env), now)
 
 
 def parse_codex(reply):
@@ -258,7 +252,7 @@ def parse_agy(out, account="personal"):
     if "Authentication required" in out:
         # personal2's login must stay in its own dir, off the shared keyring
         env = "DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null " if account == "personal2" else ""
-        return f"logged out: run `{env}agy --gemini_dir=~/{AGY_DIRS.get(account, '.gemini')}` once to log in"
+        return f"logged out: run `{env}agy --gemini_dir=$HOME/{AGY_DIRS.get(account, '.gemini')}` once to log in"
     pools = []
     for line in out.splitlines():  # "<pool>\t<limit name>\t<N>%\t<ISO time>" with percent remaining
         f = line.split("\t")

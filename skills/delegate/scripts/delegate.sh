@@ -4,12 +4,13 @@
 #   tool:    agy | codex (claude is refused unless DELEGATE_ALLOW_CLAUDE=1)
 #   account: work | personal | personal2
 # Prints only the output path and size, so callers never pay for the answer
-# until they choose to read it. On failure prints FAIL and leaves no out-file.
+# until they choose to read it. On failure prints FAIL, leaves no out-file and
+# keeps the tool's stderr in <out-file>.err.
 # Optional env:
 #   DELEGATE_MODEL, DELEGATE_EFFORT (low|medium|high|xhigh|max). Unset: per-target defaults
 #     below, trying fallback models in order. Setting DELEGATE_MODEL uses only that model.
 #   DELEGATE_ALLOW_CLAUDE=1   claude targets are refused unless set: claude orchestrates, delegate is for weaker models
-#   DELEGATE_WRITE=1   allow edits (default read-only; agy cannot enforce this)
+#   DELEGATE_WRITE=1   allow edits (default read-only; agy always runs with edits allowed)
 #   DELEGATE_TIMEOUT   seconds before the run is killed (default 1800; agy 3000, since high effort takes ~17 min)
 set -Eeuo pipefail
 umask 077
@@ -33,6 +34,8 @@ prompt=$(<"$prompt_file")
 
 model=${DELEGATE_MODEL:-} effort=${DELEGATE_EFFORT:-} write=${DELEGATE_WRITE:-}
 [[ -z $effort || $effort =~ ^(low|medium|high|xhigh|max)$ ]] || { echo "bad DELEGATE_EFFORT: $effort" >&2; exit 2; }
+unsupported() { echo "unsupported: $target ($1)" >&2; exit 2; }
+need_dir() { [[ -d $1 ]] || unsupported "$1 missing; log in there first"; }
 
 # Defaults per target (see references/models.md for what each account can use).
 case $tool:$account in
@@ -41,14 +44,12 @@ case $tool:$account in
   codex:*)     dmodels="gpt-6-luna"               deffort=medium ;;  # personal quota is scarce
   claude:work) dmodels="haiku"                    deffort=high ;;
   claude:*)    dmodels="claude-sonnet-5-5"        deffort=medium ;;
+  *)           unsupported "unknown tool" ;;
 esac
 timeout_s=${DELEGATE_TIMEOUT:-${dtimeout:-1800}}
 if [[ -n $model ]]; then models=("$model"); else read -ra models <<<"$dmodels"; effort=${effort:-${deffort:-}}; fi
-unsupported() { echo "unsupported: $target ($1)" >&2; exit 2; }
-need_dir() { [[ -d $1 ]] || unsupported "$1 missing; log in there first"; }
-
 exec 3>&2 # the trap can fire while the tool's own stderr redirect is still active
-trap 'echo "FAIL $target: $(tail -c 300 "$err" 2>/dev/null; head -c 300 "$out" 2>/dev/null)" >&3; rm -f "$out"' ERR
+trap 'trap - ERR; echo "FAIL $target: ...$({ tail -c 300 "$err"; head -c 300 "$out"; } 2>/dev/null | tr -s "[:space:]" " ")" >&3 || true; rm -f "$out"' ERR
 
 run() { timeout "$timeout_s" "$@"; }
 
@@ -105,7 +106,6 @@ case $tool in
       *) unsupported "unknown account" ;;
     esac
     run claude -p "${opts[@]}" -- "$prompt" </dev/null >"$out" 2>"$err" ;;
-  *) unsupported "unknown tool" ;;
 esac || return 1
 # Some CLIs exit 0 and write API/quota errors to stdout as the "answer".
 [[ -s $out ]] && ! head -c 40 "$out" | grep -qE "^(API Error|You've hit your)"

@@ -1,4 +1,6 @@
 """Timing rules and parsers in budget.py, on real CLI output captured 2026-11-24 and a fixed clock."""
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -146,7 +148,7 @@ class Parsers(unittest.TestCase):
     def test_agy_logged_out(self):
         hint = b.parse_agy(fixture("agy-loggedout.txt"), "personal2")
         self.assertTrue(hint.startswith("logged out"))
-        self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy --gemini_dir=~/.gemini-per2", hint)
+        self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy --gemini_dir=$HOME/.gemini-per2", hint)
 
     def test_codex_30_day_window(self):
         pools = b.parse_codex(json.loads(fixture("codex-ratelimits.json")))
@@ -180,17 +182,13 @@ class Parsers(unittest.TestCase):
         (p,) = b.parse_claude(out, NOW)
         self.assertEqual((p.name, p.left, p.window), ("session 5h", 30.0, b.H5))
 
-    def test_claude_retries_a_reply_without_figures(self):
-        # 2026-11-24 20:54Z: /usage replied with its header but no usage rows, twice in a row, then worked.
-        replies = iter(["You are currently using your subscription\n\nWhat's contributing", "",
-                        fixture("claude-usage.txt")])
-        run, sleep = b.run, b.time.sleep
-        b.run, b.time.sleep = (lambda *a, **k: next(replies)), (lambda s: None)
-        try:
-            pools = b.claude("personal", NOW)
-        finally:
-            b.run, b.time.sleep = run, sleep
-        self.assertEqual(len(pools), 2)
+    def test_claude_usage_without_limits_is_not_an_error(self):
+        # Since late 2026, `claude -p /usage` prints only the usage breakdown, with no limit rows.
+        out = "You are currently using your subscription to power your Claude Code usage\n\nWhat's contributing"
+        status = b.parse_claude(out, NOW)
+        self.assertEqual(status, "usage not reported (no limit rows)")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(b.report("t", [("subagent", "claude", status)], NOW))
 
     def test_claude_without_subscription(self):
         self.assertTrue(b.parse_claude(fixture("claude-usage-nosub.txt"), NOW).startswith("no subscription"))
