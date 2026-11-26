@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.parse
 
+UNBOUND = 'native authenticated account identity unavailable for '
 VERSION = 1
 KINDS = {'jira_identity', 'jira_inventory', 'jira_context', 'jira_issue', 'jira_comments',
          'jira_history', 'jira_metadata', 'git_identity', 'git_search',
@@ -486,6 +487,7 @@ class Collector:
                     raise ValueError('conflicting native Git identities')
                 self.packet['identities']['github'] = identity
         by_id = {s['id']: s for s in self.packet['sources']}
+        unbound = {}
         for s in self.packet['sources']:
             if s['kind'].endswith('identity'):
                 continue
@@ -496,7 +498,13 @@ class Collector:
             if ref and (ref['service'] != s['service'] or ref['site'] != s['site'] or ref['kind'] != required_kind):
                 raise ValueError('source authenticated identity/site mismatch')
             if not ref:
-                self.gap(s['id'], 'native authenticated account identity unavailable')
+                unbound.setdefault(s['service'], []).append(s['id'])
+        # One summary gap, not one per source, so real coverage gaps stay visible; check() reports each source.
+        # Source ids are free-form, so match the summary by id and reason; an imported source named alike keeps its gaps.
+        self.packet['gaps'] = [g for g in self.packet['gaps'] if not (g['source'] == 'native_identity' and g['reason'].startswith(UNBOUND))]
+        if unbound:
+            self.gap('native_identity', UNBOUND + ', '.join(
+                f"{len(ids)} {service} source{'s' if len(ids) > 1 else ''} (first: {ids[0]})" for service, ids in sorted(unbound.items())))
 
     def native_jira(self):
         self.cli_jira_identity_verified = False
@@ -1097,15 +1105,20 @@ def parser():
     sub = p.add_subparsers(dest='command', required=True)
     c = sub.add_parser('collect', help='collect read-only evidence into a private run directory')
     default = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'personal-jira-triage' / (dt.datetime.now().strftime('%Y%m%dT%H%M%S') + '-' + os.urandom(4).hex())
-    c.add_argument('--run-dir', default=str(default))
-    c.add_argument('--imports')
-    c.add_argument('--offline', action='store_true')
-    for arg in ['issue', 'pr', 'root', 'plan-root']:
-        c.add_argument('--' + arg, action='append', default=[])
-    c.add_argument('--github-host', default='github.com')
-    c.add_argument('--timeout', type=float, default=30)
+    c.add_argument('--run-dir', default=str(default),
+                   help='new private packet directory (default: $XDG_STATE_HOME/personal-jira-triage/<timestamp>)')
+    c.add_argument('--imports', help='manifest of captured connector evidence (see references/evidence.md)')
+    c.add_argument('--offline', action='store_true', help='read Jira and PRs only from --imports (local Git discovery still runs)')
+    helps = {'issue': 'triage only this Jira key (repeatable); without it, all active assigned work',
+             'pr': 'also capture this PR URL (repeatable)',
+             'root': 'local repository search root, searched 4 levels deep (repeatable; default: the working directory)',
+             'plan-root': 'directory of Markdown plans scanned for issue keys (repeatable)'}
+    for arg, text in helps.items():
+        c.add_argument('--' + arg, action='append', default=[], help=text)
+    c.add_argument('--github-host', default='github.com', help='Git host for gh reads (default: github.com)')
+    c.add_argument('--timeout', type=float, default=30, help='seconds per native command (default: 30)')
     ck = sub.add_parser('check', help='validate a saved packet offline')
-    ck.add_argument('packet_dir')
+    ck.add_argument('packet_dir', help='absolute path of a collected packet directory')
     return p
 
 

@@ -563,6 +563,26 @@ class PacketCase(unittest.TestCase):
         self.assertFalse(any(s["kind"] == "jira_comments" for s in packet["sources"]))
         self.assertTrue(any(g["source"] == KEY + ":jira_comments" for g in packet["gaps"]))
 
+    def test_unbound_identity_sources_share_one_summary_gap_recounted_each_pass(self):
+        collector = triage.Collector(self.root / "identity-summary", 10)
+        collector.add("jira", "example.atlassian.net", "jira_issue", "DEMO-1", {"key": "DEMO-1", "fields": {}})
+        collector.gap("native_identity", "an imported source with this id keeps its own gap")
+        collector.gap("other", triage.UNBOUND + "stale")
+        collector.identities()
+        collector.add("jira", "example.atlassian.net", "jira_issue", "DEMO-2", {"key": "DEMO-2", "fields": {}})
+        collector.add("git", "github.com", "git_pr", "example/demo#7", {
+            "number": 7, "html_url": "https://github.com/example/demo/pull/7", "head": {"sha": "head"},
+            "base": {"sha": "base", "repo": {"full_name": "example/demo"}}})
+        collector.identities()
+        summary = [g for g in collector.packet["gaps"]
+                   if g["source"] == "native_identity" and g["reason"].startswith(triage.UNBOUND)]
+        self.assertEqual(len(summary), 1)
+        self.assertIn("1 git source ", summary[0]["reason"])
+        self.assertIn("2 jira sources", summary[0]["reason"])
+        self.assertIn({"source": "native_identity", "reason": "an imported source with this id keeps its own gap"},
+                      collector.packet["gaps"])
+        self.assertIn({"source": "other", "reason": triage.UNBOUND + "stale"}, collector.packet["gaps"])
+
     def test_cached_imported_issue_comments_keep_original_cutoff_and_reader(self):
         self.issue["fields"]["comment"] = self.embedded_comments()
         self.update_source("issue", self.issue)
@@ -975,7 +995,12 @@ class PacketCase(unittest.TestCase):
             self.assertTrue(pr["complete"])
             self.assertEqual(pr.get("identity_ref"), "git-identity" if case == "same-account" else None)
             if case != "same-account":
-                self.assertTrue(any(g["source"] == pr["id"] and "identity unavailable" in g["reason"] for g in packet["gaps"]))
+                gaps = [g for g in packet["gaps"] if "identity unavailable" in g["reason"]]
+                self.assertEqual(len(gaps), 1, "unbound sources share one summary gap")
+                self.assertEqual(gaps[0]["source"], "native_identity")
+                self.assertIn("git source", gaps[0]["reason"])
+                report = triage.check(destination)
+                self.assertIn("missing native identity: " + pr["id"], report["provisional"])
 
     def test_registered_worktrees_are_discovered_once_and_missing_paths_reported(self):
         self.complete_discovery_imports()

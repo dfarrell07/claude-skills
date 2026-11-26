@@ -133,7 +133,7 @@ of drafts for user review; collection and validation are read-only.
 
 ```text
 /personal-jira-triage                  # All accessible assigned work and relevant PRs
-/personal-jira-triage PROJECT-123       # Include a specific issue
+/personal-jira-triage PROJECT-123       # Triage only this issue
 /personal-jira-triage first batch of 2  # Narrow the proposed batch
 ```
 

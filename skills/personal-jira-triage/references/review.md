@@ -54,10 +54,10 @@ Review the current draft hash and every declared decision
 input fingerprint. A concrete unresolved material objection holds the candidate; majority voting cannot remove it.
 Fix supported findings from evidence, recompute the changed draft hash and re-review affected drafts.
 
-After review, refresh mutable decision inputs: target and supporting issue/owner/child evidence, comments, relevant PR heads/checks
-and operation/visibility metadata. Refresh artifact availability only when acceptance depends on it. Reuse immutable source blobs.
-Store the actual refresh receipt and cutoff; materially changed input fingerprints invalidate affected reviews even when the target
-issue itself did not change. A receipt cannot make stale captures fresh. Bound the correction loop and hold persistent disagreement.
+After review, refresh mutable decision inputs as [the evidence reference](evidence.md#final-refresh-and-limits) describes.
+Refresh artifact availability only when acceptance depends on it. Materially changed input fingerprints invalidate affected reviews
+even when the target issue itself did not change, and a receipt cannot make stale captures fresh. Bound the correction loop and hold
+persistent disagreement.
 
 Run the offline checker, then report inventory, deep-triage and independently reviewed first-batch coverage separately.
 Save its actual output beside the packet and verify the reviewed-batch IDs against both returned reviewer reports before presenting.
