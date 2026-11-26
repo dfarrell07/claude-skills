@@ -1,27 +1,15 @@
 # Work-summary follow-ups
 
-Status: open, October 18, 2026. Recorded after the simplification and review rounds on
-PR #39. Each item came from an expert review measured against real weekly and quarterly
-captures; none should change the digest unless stated. Verify every change by diffing
+Status: open, November 25, 2026. Items 1–8 of the simplification round are
+done (PRs 59–68); their history is in git. Verify every change by diffing
 `render --candidates` on a real weekly and quarterly capture before and after.
 
-## Simplification (about −750 script and −900 test lines)
+## Open
 
-1. **Jira comments:** done. Comment edits are no longer credited anywhere.
-2. **Jira public history:** done, except: optionally show field names in the digest
-   ("status→Closed").
-3. **Contextual links:** done.
-4. **Modules:** done.
-5. **One URL scanner:** done.
-6. **Local sources:** done. The GitLab MR head probe is removed.
-7. **Dead code:** done, except: consider replacing the no-analysis fallback renderer
-   with the digest.
-8. **Wording:** done.
-9. **Tests:** one shared capture builder in `tests/`; collapse scanner tests into one
-   table-driven test.
-
-Collection timed on real data after items 1–5: 12.6 minutes for 90 days (73 before
-the speedups) and about 4 for 7 days.
+- **Tests:** one shared capture builder in `tests/`; collapse the scanner tests
+  into one table-driven test.
+- **Digest:** optionally show Jira field names ("status→Closed").
+- **Fallback renderer:** consider replacing the no-analysis list with the digest.
 
 ## Behaviour to decide
 
@@ -31,9 +19,17 @@ the speedups) and about 4 for 7 days.
 - Bot-authored backport PRs carrying the user's commits no longer appear in the digest.
 - Branch-name ticket keys no longer pair PRs with tickets (search results lack head refs).
 
+## Quarterly refinements, from use
+
+- Calendar: a reusable private fiscal calendar, or resolve each request explicitly.
+- Questions: a saved private question set, if repeated use justifies it.
+- Output: answer length and grouping; core links stay under briefing themes, and
+  answer starters keep a separate evidence view unless requested otherwise.
+- Continuity: a private theme and commitment index across runs, and how the user
+  corrects it.
+- Supplemental evidence: which sources to include for teaching, adoption and feedback.
+
 ## Qualification still needed
 
-- Run another round of independent reviews (correctness, design, docs, real 1:1 and
-  quarterly forward tests) after the items above, until reviews find nothing material.
-- The `plans/quarterly-review-support.md` qualification notes predate the
-  simplification; summarize them against the current design.
+Another round of independent reviews (correctness, design, docs, real 1:1 and
+quarterly forward tests) until reviews find nothing material.

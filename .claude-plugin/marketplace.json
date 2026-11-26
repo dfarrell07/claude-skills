@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "claude-skills",
-      "description": "Productivity skills for collecting and reporting on work activities",
+      "description": "Work summaries, Jira, notes, CVE triage, career advocacy, delegation to other agent CLIs and cross-profile session discovery",
       "author": {
         "name": "Daniel Farrell",
         "email": "dfarrell@redhat.com"
