@@ -113,7 +113,7 @@ the progression spreadsheet. See `reference/analysis-guide.md`.
 ## /cve-agent
 
 Continuous Submariner security agent. Discovers, triages,
-verifies, fixes, and audits CVEs across all active branches.
+verifies, and audits CVEs across all active branches.
 
 ```bash
 /cve-agent                   # One cycle, interactive
