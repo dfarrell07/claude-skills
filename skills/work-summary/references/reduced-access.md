@@ -2,8 +2,7 @@
 
 Use the capabilities this session actually has. A missing CLI, expired login or
 one provider's rate limit affects only that source: keep collecting from the
-others and name what was not searched. Do not install tools, sign in, request new
-permissions, fetch repositories or extract credentials as a prerequisite.
+others and name what was not searched.
 
 SKILL.md's [Pick a path](../SKILL.md#pick-a-path) table chooses the route. What
 each partial route can and cannot say:
@@ -107,19 +106,14 @@ refs or scan unreachable objects.
   session. A failed commit lookup cannot show that a branch has no PR, and a
   connector that exposes only default branches cannot show that local or backup
   branches do not exist.
-- **Jira:** credit activity only from native comment author account IDs and
-  timestamps. Display names, bodies or projected rows without actors cannot prove
+- **Jira:** credit comments only from native author account IDs and timestamps,
+  and field changes only from history entries with a native actor and time
+  (public history when only `acli` is available). Display names, bodies or projected rows without actors cannot prove
   who acted or when. Keep restricted titles private. When writing the list by
   hand, explicit Jira URLs in PR bodies can stand as unverified context if Jira
   is unavailable, and PR URLs from Jira if GitHub is; the renderer accepts only
   links the collector captured.
-- **GitLab:** API authentication and Git SSH access are independent. When
-  collecting by hand (the collector does not do this) for a known project, a
-  bounded `git ls-remote --refs REMOTE 'refs/merge-requests/*/head'`
-  can match MR heads to local commits without fetching. Run it with the remote's
-  URL from an empty directory rather than inside the checkout, so the checkout's
-  own config (credential helpers, proxies, SSH commands) cannot take part. A match
-  supplies an MR link, not its state, author or activity.
+- **GitLab:** API authentication and Git SSH access are independent.
   Anonymous public MR detail reads can work without login, but only for hosts
   the user already works with.
 - **Per-operation access:** a denied user endpoint does not make public item,

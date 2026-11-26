@@ -57,7 +57,6 @@ class CapabilitiesTest(unittest.TestCase):
                 local, status, capability = capabilities.collect_local_safely(
                     Mock(side_effect=error), [], None, None, warnings.append)
                 self.assertEqual(status, 'unavailable')
-                self.assertEqual(local['branches'], [])
                 self.assertNotIn(str(error), warnings[0])
                 self.assertEqual(capability['status'], 'unavailable')
         local = capabilities.empty_local()

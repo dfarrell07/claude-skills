@@ -48,8 +48,8 @@ bash "$SKILL_DIR/scripts/work-summary.sh" \
 bash "$SKILL_DIR/scripts/render-report.sh" --candidates "$RUN_DIR/data.json" > "$RUN_DIR/candidates.md"
 ```
 
-The dates are an illustration. Run the collection in the background and read
-the supplied questions and material meanwhile. `--root /path` (repeatable) narrows local discovery. Do not
+The dates are an illustration. Read the supplied questions and material while
+the collection runs. `--root /path` (repeatable) narrows local discovery. Do not
 mix positional days with explicit dates. In connector-only mode use the same
 interval directly and do not claim the collector ran.
 
@@ -67,8 +67,6 @@ describe each. Small clusters are supporting detail, not bullets. When reading:
   theme by count and kind without titles.
 - Ticket titles are current and may name a later release than the work.
 - Long periods hit search caps and incomplete history; read the coverage section.
-
-A busy quarter takes about 13 minutes to collect, against about 4 for a week.
 
 Earlier reviews, weekly summaries and 1:1 notes are leads for continuity, not an
 inventory or separate accomplishments: one continuing effort is one theme with
@@ -154,6 +152,5 @@ ready, and do not hold up the briefing for them.
 Compare each answer with its question, period and evidence: personal attribution,
 event dates, impact claims, important omissions, current intent and link choice.
 The briefing should read as a reminder of major efforts, not a ticket inventory.
-Mention material source gaps in one line outside the paste-ready text. Keep
-captures, personal references and generated answers in private storage outside
-tracked files; public tests and examples use synthetic people and work.
+Mention material source gaps in one line outside the paste-ready text. The
+[privacy rules](../SKILL.md#privacy) apply to the briefing and its answers too.

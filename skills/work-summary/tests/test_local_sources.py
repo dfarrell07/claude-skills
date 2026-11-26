@@ -96,7 +96,6 @@ class LocalSourcesTest(unittest.TestCase):
             data = self.capture(repo)
         self.assertFalse(any(call.args[1:4] == ('merge-base', '--is-ancestor', foreign)
                              for call in calls.call_args_list))
-        self.assertFalse(any(branch['hash'] == foreign for branch in data['branches']))
 
     def test_precise_go_build_cache_exclusion_preserves_backups_and_explicit_roots(self):
         home = self.home
@@ -148,7 +147,6 @@ class LocalSourcesTest(unittest.TestCase):
         foreign = self.git(repo, 'rev-parse', 'HEAD')
         self.git(repo, 'update-ref', 'refs/codex/backup', foreign)
         data = self.capture(repo)
-        self.assertFalse(any(branch['hash'] == foreign for branch in data['branches']))
         self.assertIn(own, {commit['hash'] for commit in data['commits'][str(repo)]})
         self.assertNotIn(foreign, {commit['hash'] for commit in data['commits'][str(repo)]})
 
@@ -172,7 +170,6 @@ class LocalSourcesTest(unittest.TestCase):
                       if alias['email'] == 'historical@example.test'), None)
         self.assertIsNotNone(alias)
         self.assertEqual(alias['source'], 'github_commit_account')
-        self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))  # tip is old
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
 
     def test_distinct_push_fork_and_fetch_upstream_are_both_retained(self):
@@ -195,10 +192,9 @@ class LocalSourcesTest(unittest.TestCase):
         historical = self.git(repo, 'rev-parse', 'HEAD')
         self.git(repo, 'checkout', '-q', 'main')
         data = self.capture(repo)
-        self.assertFalse(any(branch['hash'] == historical for branch in data['branches']))
         self.assertNotIn(historical, {commit['hash'] for commit in data['commits'][str(repo)]})
 
-    def test_detached_head_commits_count_without_creating_refs_or_branch_leads(self):
+    def test_detached_head_commits_count_without_creating_refs(self):
         repo = self.repo(self.root / 'repository')
         worktree = self.root / 'detached-worktree'
         self.git(repo, 'worktree', 'add', '--detach', str(worktree))
@@ -208,21 +204,6 @@ class LocalSourcesTest(unittest.TestCase):
         data = self.capture(repo)
         self.assertEqual(self.git(repo, 'for-each-ref', '--format=%(refname):%(objectname)'), refs_before)
         self.assertIn(detached, {commit['hash'] for commit in data['commits'][str(repo)]})
-        self.assertFalse(any(branch['hash'] == detached for branch in data['branches']))
-
-    def test_branch_leads_are_own_local_branches_with_tips_in_the_window(self):
-        repo = self.repo(self.root / 'repository')
-        current = self.git(repo, 'rev-parse', 'HEAD')
-        self.git(repo, 'update-ref', 'refs/remotes/origin/main', current)
-        self.git(repo, 'checkout', '-qb', 'old')
-        with patch.dict(self.env, {'GIT_AUTHOR_DATE': '2000-01-01T00:00:00Z',
-                                  'GIT_COMMITTER_DATE': '2000-01-01T00:00:00Z'}):
-            self.git(repo, 'commit', '--allow-empty', '-qm', 'Old work')
-        self.git(repo, 'checkout', '-q', 'main')
-        data = self.capture(repo)
-        self.assertEqual([(branch['hash'], branch['refs']) for branch in data['branches']],
-                         [(current, ['refs/heads/main'])])
-        self.assertEqual(data['branches'][0]['author_email'], 'own@example.test')
 
     def test_mailmap_cannot_change_attribution(self):
         repo = self.repo(self.root / 'repository')
@@ -230,9 +211,8 @@ class LocalSourcesTest(unittest.TestCase):
         data = self.capture(repo)
         commits = data['commits'][str(repo)]
         self.assertEqual({commit['author_email'] for commit in commits}, {'own@example.test'})
-        self.assertEqual({branch['author_email'] for branch in data['branches']}, {'own@example.test'})
 
-    def test_branch_window_bounds_and_shared_tips(self):
+    def test_commit_window_bounds_on_branch_tips(self):
         repo = self.repo(self.root / 'repository')
         for name, when in (('at-start', '2026-01-08T12:00:00Z'), ('future', '2026-01-15T12:00:01Z')):
             self.git(repo, 'checkout', '-qb', name, 'main')
@@ -243,8 +223,10 @@ class LocalSourcesTest(unittest.TestCase):
         self.git(repo, 'update-ref', 'refs/heads/also-at-start', at_start)
         start = datetime(2026, 1, 8, 12, tzinfo=timezone.utc)
         data = local_sources.collect_local([str(repo)], start, start + timedelta(days=7), lambda message: None)
-        self.assertEqual([(branch['hash'], sorted(branch['refs'])) for branch in data['branches']],
-                         [(at_start, ['refs/heads/also-at-start', 'refs/heads/at-start'])])
+        future = self.git(repo, 'rev-parse', 'future')
+        hashes = [commit['hash'] for commit in data['commits'][str(repo)]]
+        self.assertEqual(hashes.count(at_start), 1)
+        self.assertNotIn(future, hashes)
 
     def test_regular_walk_directories_reuse_canonical_parent(self):
         root = self.root / 'workspace'

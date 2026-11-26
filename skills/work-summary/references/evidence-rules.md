@@ -16,8 +16,7 @@ changing the collector. SKILL.md's credit rules are the short version.
   leads. Committer time places a commit in the window; an older author time marks
   a rebase or cherry-pick, not new implementation.
 - Read commits on every ref, including backup refs, detached HEADs and the HEAD
-  reflog a stale worktree's administration files keep. List as branch leads only
-  the user's own local branches whose tip is in the window. Never fetch, repair
+  reflog a stale worktree's administration files keep. Never fetch, repair
   worktrees or change refs.
 - Clones, scratch copies and generated test repositories repeat or fabricate
   history; deduplicate and check purpose before turning them into accomplishments.

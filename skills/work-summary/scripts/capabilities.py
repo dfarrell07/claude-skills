@@ -29,7 +29,7 @@ def empty_local():
     """An unavailable inventory contains no claims about repositories searched."""
     return {'metadata': {'repos_searched': 0, 'repos_skipped': 0, 'repos_with_commits': 0,
                          'scan_roots': [], 'scan_exclusions': [], 'repositories': [], 'author_aliases': []},
-            'commits': {}, 'branches': []}
+            'commits': {}}
 
 
 def collect_local_safely(collector, roots, start, end, warn, **kwargs):

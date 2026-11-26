@@ -372,7 +372,7 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
             except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, AttributeError):
                 pass
 
-    commits, branches = {}, []
+    commits = {}
     for entry in entries.values():
         configured = list(entry['identities'])
         entry['configured_identities'] = configured
@@ -383,22 +383,8 @@ def collect_local(roots, start, end, warn, api=None, identity=None, author_email
         found = [record for record in records.get(entry['path'], []) if record['author_email'] in entry['identities']]
         if found:
             commits[entry['path']] = found
-        if entry.get('status') != 'ok':
-            continue
-        # Branch leads: the user's own local branches whose tip falls in the window. Commits on
-        # every other ref (remote, backup, detached, stale worktree) are already in commits.
-        info = {record['hash']: record for record in tip_records.get(entry['path'], [])}
-        grouped = {}
-        for ref in entry['refs']:
-            if ref['name'].startswith('refs/heads/') and ref['object_type'] == 'commit':
-                grouped.setdefault(ref['hash'], []).append(ref['name'])
-        for sha, names in grouped.items():
-            tip = info.get(sha)
-            if (tip and tip['author_email'] in entry['identities']
-                    and start <= datetime.fromisoformat(tip['committed_at'].replace('Z', '+00:00')) <= end):
-                branches.append({'repo': entry['path'], **tip, 'refs': names})
     return {'metadata': {'repos_searched': len(entries), 'repos_skipped': skipped, 'repos_with_commits': len(commits),
                          'scan_roots': [str(root.absolute()) for root in scan_roots], 'scan_exclusions': sorted(set(exclusions)),
                          'scan_unreadable': sorted(set(unreadable)),
                          'repositories': list(entries.values()), 'author_aliases': list(aliases.values())},
-            'commits': commits, 'branches': branches}
+            'commits': commits}

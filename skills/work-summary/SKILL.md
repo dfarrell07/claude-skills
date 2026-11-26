@@ -1,6 +1,6 @@
 ---
 name: work-summary
-description: "Draft a ranked, link-selective list of what I did in the last N days for a weekly 1:1, or a quarterly accomplishment briefing with check-in answer starters, from Git, GitHub, GitLab, Jira and supplied notes. Use for 'what did I do this week', 1:1 prep, status updates, quarterly check-ins and self-reviews. Works with whatever tools or connectors are available. Not for promotion packets or career advocacy."
+description: "Draft a ranked, link-selective list of what I did in the last N days for a weekly 1:1, or a quarterly accomplishment briefing with check-in answer starters, from Git, GitHub, Jira, linked GitLab MRs and supplied notes. Use for 'what did I do this week', 1:1 prep, status updates, quarterly check-ins and self-reviews. Works with whatever tools or connectors are available. Not for promotion packets or career advocacy."
 version: 3.0.0
 argument-hint: "[days] | quarterly [review details]"
 user-invocable: true
@@ -26,8 +26,7 @@ Two outputs, both for the user to edit and send themselves:
 ```
 
 Arguments arrive as `$ARGUMENTS` when the host expands them; otherwise use the
-user's request. Missing review questions or personal reflection never block
-discovering and presenting the work.
+user's request.
 
 ## Pick a path
 
@@ -35,12 +34,13 @@ discovering and presenting the work.
 | --- | --- |
 | Shell and Python 3.10+ | [Weekly workflow](#weekly-workflow) below. Git, `gh` and `acli` are each optional. |
 | Connectors (GitHub, Jira) but no shell | [Connector quick path](references/reduced-access.md#connector-quick-path). |
-| Git and a shell, but no Python 3.10+ or Git older than 2.37 | [Native Git](references/reduced-access.md#native-git-without-python). |
+| Git and a shell, but no Python 3.10+ | [Native Git](references/reduced-access.md#native-git-without-python). |
+| Python 3.10+ but Git older than 2.37 | The weekly workflow (it skips local Git), plus [Native Git](references/reduced-access.md#native-git-without-python) for local repositories. |
 | Only notes, links or a saved capture | Summarize that evidence with its own dates; it is not a fresh account scan. |
 | Nothing readable | Say no personal work could be verified. Do not invent work or call it empty. |
 
 Use access that already works. Never install tools, log in, change
-authentication, fetch repositories or request broader permissions to produce a
+authentication, fetch repositories, extract credentials or request broader permissions to produce a
 summary. A failing source limits that source only. If a connector and a CLI use
 different accounts or sites, keep their evidence separate.
 
@@ -66,7 +66,10 @@ different accounts or sites, keep their evidence separate.
    `RUN_DIR` path across tool calls.
 
 2. **Read the digest, not the capture.** `data.json` is tens of megabytes for a
-   week and more for a quarter.
+   week and more for a quarter. The digest itself can run to tens of thousands
+   of tokens, mostly local commits; read it one level-2 section at a time, and
+   in the local commits section scan the repository headers first, skipping
+   scratch clones that repeat commits from another repository.
 
    ```bash
    bash "$SKILL_DIR/scripts/render-report.sh" --candidates "$RUN_DIR/data.json" > "$RUN_DIR/candidates.md"
@@ -79,11 +82,10 @@ different accounts or sites, keep their evidence separate.
    the URL or hashes to cite and the related links you may select. It ends with
    source status and warning counts. Jira changes marked "exact change unverified"
    and open PRs "updated in the window without recorded events" are leads: confirm
-   them with `acli`/`gh` or local commits before crediting them. For details the
-   digest lacks, `jq` the capture: `.github.prs`, `.github.context_prs`,
-   `.github.activity`, `.jira.issues`, `.jira.activity`, `.commits["PATH"]` and
-   `.gitlab.items`. Open PR bodies or tickets through `gh`/`acli` or
-   targeted `jq` reads of `data.json` when a claim needs more than a title.
+   them with `acli`/`gh` or local commits before crediting them. When a claim
+   needs more than a title, open the item with `gh`/`acli` or `jq` the capture:
+   `.github.prs`, `.github.context_prs`, `.github.activity`, `.jira.issues`,
+   `.jira.activity`, `.commits["PATH"]` and `.gitlab.items`.
 
 3. **Choose and rank topics** using [Credit only what happened](#credit-only-what-happened)
    and [Select and rank](#select-and-rank).
@@ -103,8 +105,8 @@ different accounts or sites, keep their evidence separate.
    [Weekly output](#weekly-output)). Return the list.
 
 Validation checks that citations and links exist in the capture, not that the
-prose is true. Without `--analysis` the renderer produces a conservative list of
-merges and activity; use it only as a fallback.
+prose is true. Without `--analysis` the renderer prints a conservative fallback
+list; do not return it as the summary.
 
 ## Credit only what happened
 
@@ -156,17 +158,21 @@ describe its state accurately.
 the link belongs in the update. For each topic keep:
 
 - the core Jira ticket that tracks this specific work (not its epic, release
-  umbrella, a neighbour or a ticket a later comment says is the wrong one),
+  umbrella, a neighbour or a ticket only quoted in passing). Read later comments
+  first: a request to disassociate a PR, a scope mismatch or a split can make an
+  early ticket wrong. With no current core ticket, keep the implementation link
+  alone.
 - the implementation or review artifacts the reader needs. Prefer the primary PR
   over equivalent backports and describe branch coverage in prose, but keep
   separate PRs that implement distinct necessary pieces. If one link cannot
   identify several distinct contributions, add their links or narrow the
-  description to what the chosen links show.
+  description to what the chosen links show. Include a prerequisite only when it
+  explains the current blocker, and prefer a replacement over a closed proposal.
 
 There is no link quota and no need for a Jira/PR pair; a bullet can have no links.
-Before keeping a URL, ask what the reader learns by opening it that the other links
-do not already provide. [Editorial selection](references/editorial-selection.md)
-covers harder cases.
+Before keeping a URL, ask what the reader learns by opening it that the
+description and other links do not already show; if removing it leaves the work
+and its status equally clear, omit it.
 
 ## Weekly output
 
@@ -218,8 +224,7 @@ bullets, in order; `in_progress` may be omitted or `[]`.
 | `description` | The one-line bullet text (required). |
 | `items` | GitHub citations `{"repo", "number", "url"}`. |
 | `jira` | Jira citations `{"key", "url"}`. |
-| `commits` | Local citations `{"repo": PATH, "hash": FULL_HASH}` from the digest. |
-| `branches` | Your local branch tips in the window, `{"repo", "hash"}` from `data.json` `branches[]`; rarely needed. |
+| `commits` | Local citations `{"repo": PATH, "hash": FULL_40_CHAR_HASH}` from the digest. |
 | `merge_requests` | GitLab citations `{"url"}`. |
 | `links` | URLs to display, in order: this node's citations or their related links. `[]` shows none; omit for the citations. |
 | `subtopics` | Child themes with the same fields. A parent may rely on its children's citations. |
