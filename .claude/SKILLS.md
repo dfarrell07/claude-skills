@@ -78,7 +78,8 @@ Take and manage persistent markdown notes organized by topic.
 /notes list                     # List all topics
 ```
 
-Notes are stored as plain markdown files in `~/notes-ai/<topic>/`.
+Notes are stored as plain markdown files in `~/notes-ai/<topic>/`; saving one
+commits it locally there and never pushes.
 
 ## /career-advocate
 

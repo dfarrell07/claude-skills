@@ -22,7 +22,7 @@ run_with_retry() {
 cmd_my_issues() {
   run_with_retry acli jira workitem search \
     --jql 'assignee = currentUser() AND status NOT IN (Closed, Done, Resolved) ORDER BY updated DESC' \
-    --json --limit 50
+    --json --paginate
 }
 
 cmd_search() {
