@@ -1,17 +1,18 @@
 # Evidence, packets and drafts
 
 The helper uses Python 3.10+ and the standard library. It provides `collect` and offline `check`; there is no writer.
-Resolve its absolute path relative to the loaded skill, and pass arguments as arrays. Confirm options with `--help`.
+Resolve its absolute path relative to the loaded skill, and pass arguments as arrays. `--help` describes each option.
 
 ```text
-python3 ABSOLUTE_HELPER collect --run-dir ABSOLUTE_PRIVATE_DIRECTORY
+python3 ABSOLUTE_HELPER collect [--run-dir ABSOLUTE_PRIVATE_DIRECTORY]
   [--imports ABSOLUTE_MANIFEST] [--offline]
   [--issue KEY]... [--pr URL]... [--root PATH]... [--plan-root PATH]...
   [--github-host HOST] [--timeout SECONDS]
 python3 ABSOLUTE_HELPER check ABSOLUTE_PACKET_DIRECTORY
 ```
 
-Use new or empty unique private run paths outside repositories/installations, normally under the user's state directory.
+Use new or empty unique private run paths outside repositories/installations; the default is a new directory under
+`$XDG_STATE_HOME/personal-jira-triage/`. `--root` defaults to the working directory.
 Never store tokens, private Jira exports or internal issue content in the public skill tree. Keep existing checkouts, configurations
 and completed receipts intact. On resume, inspect current evidence and prior receipts before proposing the same delta again.
 
@@ -29,10 +30,10 @@ matching import.
 Incomplete collection returns exit 2 while retaining named gaps.
 Valid empty collection is success. `check` returns 0 for valid packets, including honest held/provisional results; invalid packets or
 unsupported audited-ready claims return 2. It checks consistency with saved evidence, not live freshness or semantic acceptance.
-Save the actual `check` output beside the packet. An empty `audited_drafts` list means zero validated independently reviewed drafts;
-without a successful saved check and actual native returned-report ledger, reviewed-batch coverage remains zero.
+Save the actual `check` output beside the packet; [the reviewer reference](review.md) defines how it counts toward reviewed coverage.
 `provisional` lists detected limitations, not every provisional draft. Empty errors or limitations do not certify necessity, semantic
-inspection or readiness; read each draft's `ready` value and the validated `audited_drafts` list.
+inspection or readiness; read each draft's `ready` value and the validated `audited_drafts` list first, since `provisional` is
+usually long.
 
 ## Collect and enrich
 
@@ -249,6 +250,19 @@ Supported draft request shapes are:
 These illustrate request shapes, not complete draft records or useful empty comment bodies. Field edits support `summary`,
 `description` and editable custom fields with existing native ADF or an explicitly supported native textarea schema.
 Direct assignee/status/resolution field changes are disallowed.
+A minimal provisional description draft (the `baseline` values are source IDs from `packet.json`; `request.fields.description`
+holds the complete rebuilt ADF document, not just the changed node):
+
+```json
+{"id": "d1", "key": "PROJ-1", "kind": "fields", "ready": "provisional",
+ "baseline": {"issue": "ISSUE_SOURCE_ID", "comments": "COMMENTS_SOURCE_ID", "metadata": "METADATA_SOURCE_ID_OR_NULL"},
+ "evidence": ["ISSUE_SOURCE_ID"], "decision_inputs": ["ISSUE_SOURCE_ID", "COMMENTS_SOURCE_ID"],
+ "preserved_fields": ["summary"],
+ "request": {"fields": {"description": {"type": "doc", "version": 1, "content": ["...every existing node, with the patch applied..."]}}},
+ "adf_changes": {"description": [{"op": "replace", "path": ["content", 0, "content", 0, "text"], "old": "Old", "value": "New"}]},
+ "hash": "..."}
+```
+
 Comments use the explicitly selected visibility at creation. Transitions require live metadata and required resolution values.
 The helper validates mechanics; semantic necessity, original acceptance, audience suitability and authorization remain agent/reviewer work.
 
@@ -295,7 +309,9 @@ When `--issue` selects only refresh inputs, carry forward the original recorded 
 the collector's new `triage_keys` focus does not replace the user's broader request or authorize changes to supporting context.
 Neither route fabricates a final receipt; supporting metadata/child/PR evidence needs its own fresh captures.
 Cover target state/comments, relevant supporting owner/child evidence, PR heads/checks/statuses and needed operation/visibility metadata.
-Reuse immutable blobs; do not refresh unrelated inventory indefinitely. Changed material inputs invalidate affected reviews.
+Reconcile against the latest complete snapshot (above), never a union. Reuse immutable blobs; do not refresh unrelated
+inventory indefinitely. Changed material inputs invalidate affected reviews;
+retain only decisions and reviews still valid for their exact saved fingerprints.
 The receipt cutoff cannot precede the referenced captures. Current material reviewer objections hold the draft;
 historical objections bound to older payload/evidence revisions remain history rather than permanently blocking a corrected draft.
 
