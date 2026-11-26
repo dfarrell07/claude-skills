@@ -44,3 +44,4 @@ jobs:
             This PR was automatically closed due to inactivity.
             If you believe this is still relevant, please reopen and update it.
           exempt-pr-labels: 'confirmed,security'
+          exempt-draft-pr: true
