@@ -25,8 +25,11 @@ allowed-tools: Bash, Read, Write, Agent
 
 ## Step 0: Collect Contributions
 
+`SCRIPT_DIR` is the directory containing this file. Shell variables do not
+persist between Bash calls, so reuse the literal paths Step 0 prints.
+
 ```bash
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="<this skill's base directory, shown when it loads>"
 ARGS="$(echo "$ARGUMENTS" | xargs)"
 
 # Parse mode (first word, default: promote)
@@ -75,7 +78,6 @@ fi
 # Create secure temp directory
 CA_TMPDIR=$(mktemp -d /tmp/career-advocate-XXXXXXXXXX)
 chmod 700 "$CA_TMPDIR"
-trap 'rm -rf "$CA_TMPDIR"' EXIT
 
 # Collect contributions
 SINCE_FLAG=""
@@ -165,4 +167,5 @@ Present the full document to the user. Print a summary line:
 Saved to private/history/YYYY-MM-DD-<mode>.md (N words, SINCE to UNTIL)
 ```
 
-Clean up is handled by the trap in Step 0.
+Then delete the collection directory with `rm -rf` and the literal `CA_TMPDIR`
+path Step 0 printed.

@@ -158,7 +158,7 @@ done
 # ============================================================
 
 REPOS_FILE="$SCRIPT_DIR/../private/repos.yml"
-declare -A SEEN_REPOS
+declare -A SEEN_REPOS=()
 REPO_LIST=()
 
 add_repo() {
@@ -179,7 +179,7 @@ else
   echo "Falling back to directory scan..." >&2
 
   if [[ -n "$AUTHOR_EMAIL" ]]; then
-    for base_dir in "$HOME/go/src" "$HOME/konflux" "$HOME/projects" "$PWD"; do
+    for base_dir in "$HOME/src" "$HOME/go/src" "$HOME/projects" "$PWD"; do
       [[ ! -d "$base_dir" ]] && continue
       while IFS= read -r -d '' git_dir; do
         add_repo "${git_dir%/.git}"
@@ -204,7 +204,7 @@ else
   IDX=0
   for repo_path in "${REPO_LIST[@]}"; do
     commits=$(git -C "$repo_path" log --author="$AUTHOR_EMAIL" \
-      --since="$SINCE" --until="$UNTIL" --format='%h|%s' 2>/dev/null \
+      --since="$SINCE 00:00" --until="$UNTIL 23:59:59" --format='%h|%s' 2>/dev/null \
       | grep -v '^[a-f0-9]*|cve-agent run' || true)
     [[ -z "$commits" ]] && continue
 
@@ -235,15 +235,17 @@ mkdir -p "$WORK_DIR/stats"
 if [[ -n "$AUTHOR_EMAIL" ]]; then
   IDX=0
   for repo_path in "${REPO_LIST[@]}"; do
-    stats=$(git -C "$repo_path" log --author="$AUTHOR_EMAIL" \
-      --since="$SINCE" --until="$UNTIL" --numstat --format="" 2>/dev/null \
+    # A repo without commits makes git exit 128; under pipefail that must not end the run.
+    stats=$({ git -C "$repo_path" log --author="$AUTHOR_EMAIL" \
+      --since="$SINCE 00:00" --until="$UNTIL 23:59:59" --numstat --format="" 2>/dev/null || true; } \
       | awk '$1 != "-" && NF == 3 {
           ins += $1; del += $2
           # Extract extension from basename only
           n = split($3, pathparts, "/")
           fname = pathparts[n]
           m = split(fname, fparts, ".")
-          if (m > 1) ext["." fparts[m]]++
+          # git quotes unusual names; keep extensions JSON-safe
+          if (m > 1) { e = fparts[m]; gsub(/[^A-Za-z0-9_+-]/, "", e); if (e != "") ext["." e]++ }
         }
         END {
           printf "{\"insertions\":%d,\"deletions\":%d,\"file_types\":{", ins, del
@@ -254,11 +256,11 @@ if [[ -n "$AUTHOR_EMAIL" ]]; then
             first = 0
           }
           print "}}"
-        }' 2>/dev/null || echo '{"insertions":0,"deletions":0,"file_types":{}}')
+        }')
 
-    new_files=$(git -C "$repo_path" log --author="$AUTHOR_EMAIL" \
-      --since="$SINCE" --until="$UNTIL" --diff-filter=A \
-      --name-only --format="" 2>/dev/null | wc -l | tr -d ' ')
+    new_files=$({ git -C "$repo_path" log --author="$AUTHOR_EMAIL" \
+      --since="$SINCE 00:00" --until="$UNTIL 23:59:59" --diff-filter=A \
+      --name-only --format="" 2>/dev/null || true; } | wc -l | tr -d ' ')
 
     echo "$stats" | jq --argjson nf "$new_files" '. + {new_files: $nf}' \
       > "$WORK_DIR/stats/$IDX.json"

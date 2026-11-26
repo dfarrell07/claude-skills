@@ -24,7 +24,7 @@ AUTHOR_EMAIL=$(git config user.email 2>/dev/null || echo "")
 TODAY=$(date +%Y-%m-%d)
 
 # --- Load existing registry ---
-declare -A KNOWN_REPOS
+declare -A KNOWN_REPOS=()
 if [[ -f "$REPOS_FILE" ]]; then
   while IFS= read -r path; do
     [[ -n "$path" ]] && KNOWN_REPOS[$path]=1
@@ -33,7 +33,7 @@ if [[ -f "$REPOS_FILE" ]]; then
 fi
 
 # --- Helper ---
-declare -A DISCOVERED
+declare -A DISCOVERED=()
 add_discovered() {
   local repo_path="$1"
   [[ -d "$repo_path/.git" ]] || return 0
@@ -69,7 +69,7 @@ else
 fi
 
 # --- Strategy 2: Directory scan ---
-SCAN_DIRS=("$HOME/go/src" "$HOME/konflux" "$HOME/projects" "$PWD")
+SCAN_DIRS=("$HOME/src" "$HOME/go/src" "$HOME/projects" "$PWD")
 
 CONFIG_FILE="$PRIVATE_DIR/config.yml"
 if [[ -f "$CONFIG_FILE" ]] && command -v yq &>/dev/null; then
@@ -138,6 +138,7 @@ mkdir -p "$PRIVATE_DIR"
   NEW_COUNT=0
 
   while IFS= read -r repo_path; do
+    [[ -n "$repo_path" ]] || continue  # no repos found: printf still emits one empty line
     remote=$(git -C "$repo_path" remote get-url origin 2>/dev/null || echo "local")
     hosting=$(detect_hosting "$remote")
     echo "  $repo_path:"
