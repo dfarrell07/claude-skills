@@ -28,4 +28,15 @@ for acct in personal personal2; do
   python3 -I "$root/skills/delegate/scripts/budget.py" "claude:$acct" >/dev/null
   expect "budget claude:$acct" "$want"
 done
+# Unknown tools fail fast with `unsupported` (exit 2); a bad multi.sh mode leaves no run directory.
+rc=0; err=$(bash "$root/skills/delegate/scripts/delegate.sh" foo:work "$tmp/prompt" "$tmp/out-foo" 2>&1) || rc=$?
+if [[ $rc == 2 && $err == "unsupported: foo:work"* ]]; then echo "ok   unknown tool unsupported"; else echo "FAIL unknown tool: rc=$rc $err"; fail=1; fi
+mkdir "$tmp/t"; rc=0; TMPDIR=$tmp/t bash "$root/skills/delegate/scripts/multi.sh" bogus "$tmp/prompt" codex:work 2>/dev/null || rc=$?
+if [[ $rc == 2 && -z $(ls -A "$tmp/t") ]]; then echo "ok   bad mode leaves no run dir"; else echo "FAIL bad mode: rc=$rc"; fail=1; fi
+# A failing tool gives exactly one FAIL line (both fallback models fail), leaves no out-file and terminates.
+mkdir -p "$tmp/home/.codex"
+printf '#!/bin/sh\necho "line one\nYou have hit your limit" >&2; exit 1\n' >"$tmp/bin/codex"; chmod +x "$tmp/bin/codex"
+rc=0; err=$(timeout 30 bash "$root/skills/delegate/scripts/delegate.sh" codex:work "$tmp/prompt" "$tmp/out-codex" 2>&1) || rc=$?
+if [[ $rc == 1 && $(grep -c . <<<"$err") == 1 && $err == "FAIL codex:work: "*"hit your limit"* && ! -e $tmp/out-codex ]]; then
+  echo "ok   failed run prints one FAIL line"; else echo "FAIL failed run: rc=$rc $err"; fail=1; fi
 exit $fail

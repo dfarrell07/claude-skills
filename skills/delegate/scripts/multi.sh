@@ -9,6 +9,7 @@
 set -Eeuo pipefail
 
 mode=${1:?usage: multi.sh parallel|chain <prompt-file> <tool:account>...}
+[[ $mode == parallel || $mode == chain ]] || { echo "mode must be parallel or chain" >&2; exit 2; }
 prompt=$(realpath "${2:?prompt file}")
 shift 2
 (($#)) || { echo "need at least one target" >&2; exit 2; }
@@ -48,5 +49,4 @@ TEMPLATE
       fi
       bash "$delegate" "$t" "$step" "$dir/$i.md" || { echo "chain stopped at step $i" >&2; exit 1; }
     done ;;
-  *) echo "mode must be parallel or chain" >&2; exit 2 ;;
 esac

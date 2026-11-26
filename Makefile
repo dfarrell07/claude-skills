@@ -57,5 +57,5 @@ peers-test:
 	@PYTHONDONTWRITEBYTECODE=1 python3 skills/peers/tests/test_peers.py
 
 delegate-test:
-	@python3 -I skills/delegate/tests/test_budget.py
+	@PYTHONDONTWRITEBYTECODE=1 python3 -I skills/delegate/tests/test_budget.py
 	@bash skills/delegate/tests/test_config_dir.sh

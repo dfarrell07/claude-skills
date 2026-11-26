@@ -16,7 +16,9 @@ listens on a messaging socket, and `to` accepts `uds:<socket path>`.
 
 **Arguments:** $ARGUMENTS
 
-`SKILL_DIR` is the directory containing this file.
+`SKILL_DIR` is the directory containing this file. With no session name,
+run step 1, show the list and stop. The message text is what the user asked
+to send; ask if there is none.
 
 1. Run `<SKILL_DIR>/scripts/peers.py` with the absolute path written out
    and no arguments. It lists live sessions in `~/.claude`, `~/.claude-*`
@@ -29,5 +31,5 @@ listens on a messaging socket, and `to` accepts `uds:<socket path>`.
    `from=` attribute and can reply to it the same way.
 
 A successful send means the message is in the recipient's inbox, not that it
-was read. A session in a different permission mode holds it for its user's
-approval. To prove it was read, ask for a reply.
+was read. A recipient that prompts for permissions shows the message to its
+user before acting on it. To prove it was read, ask for a reply.
